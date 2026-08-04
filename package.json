@@ -10,7 +10,8 @@
     "test": "node --test tests/*.test.js",
     "start": "node --env-file-if-exists=.env server/index.js",
     "dev": "node --env-file-if-exists=.env --watch server/index.js",
-    "test:e2e": "node --test tests/e2e.test.js"
+    "test:e2e": "node --test tests/e2e.test.js",
+    "kb:index": "node --env-file-if-exists=.env scripts/kb-index.js"
   },
   "keywords": [],
   "author": "",

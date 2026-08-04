@@ -77,3 +77,40 @@ test('tryParse recovers JSON wrapped in prose', () => {
   assert.deepStrictEqual(tryParse('Вот ответ: {"a":1} конец'), { a: 1 });
   assert.strictEqual(tryParse('no json here'), null);
 });
+
+/* ---------------- knowledge base ---------------- */
+const os = require('os');
+const fs = require('fs');
+const pathMod = require('path');
+const kb = require('../server/services/kb');
+
+test('kb: loadSourceChunks reads чанки.jsonl and falls back to пункты.json', () => {
+  const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'kb-'));
+  const vec = pathMod.join(dir, '09_Векторный-индекс', 'СП 42.13330');
+  const jsn = pathMod.join(dir, '04_JSON', 'ГОСТ 21.508-2020');
+  fs.mkdirSync(vec, { recursive: true });
+  fs.mkdirSync(jsn, { recursive: true });
+  fs.writeFileSync(pathMod.join(vec, 'чанки.jsonl'), JSON.stringify({
+    'документ': 'СП 42.13330', 'пункт': '5.3', 'приоритет': 'высокий',
+    'текст': 'Минимальные отступы от красных линий устанавливаются градостроительным регламентом и составляют не менее установленных значений для данной зоны.',
+  }) + '\n');
+  fs.writeFileSync(pathMod.join(jsn, 'пункты.json'), JSON.stringify([
+    { 'номер': '4.1', 'уровень': 1, 'текст': 'Рабочую документацию генеральных планов выполняют в соответствии с требованиями настоящего стандарта и ГОСТ Р 21.101 на основе утверждённой проектной документации.' },
+    { 'номер': 'x', 'уровень': 1, 'текст': 'коротко' },
+  ]));
+  const chunks = kb.loadSourceChunks(dir);
+  assert.strictEqual(chunks.length, 2, 'short clause is filtered out');
+  assert.ok(chunks.some((c) => c.doc === 'СП 42.13330' && c.clause === '5.3'));
+  assert.ok(chunks.some((c) => c.doc === 'ГОСТ 21.508-2020' && c.clause === '4.1'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('kb: cosine and keyword scoring behave sanely', () => {
+  const a = Float32Array.from([1, 0, 0]), b = Float32Array.from([1, 0, 0]), c = Float32Array.from([0, 1, 0]);
+  assert.ok(kb.cosine(a, b) > 0.99);
+  assert.ok(kb.cosine(a, c) < 0.01);
+  const words = 'противопожарные разрывы между зданиями'.toLowerCase().split(/\s+/);
+  const hit = kb.keywordScore(words, 'СП 4.13130: противопожарные разрывы между зданиями и сооружениями');
+  const miss = kb.keywordScore(words, 'озеленение территории жилой застройки');
+  assert.ok(hit > miss);
+});

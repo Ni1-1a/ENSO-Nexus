@@ -50,7 +50,12 @@ const config = {
   rateLimitGeneral: int('RATE_LIMIT_GENERAL', 120),
   rateLimitExpensive: int('RATE_LIMIT_EXPENSIVE', 12),
 
-  promptVersion: '1.0.0',
+  // Knowledge base (RAG)
+  kbDir: process.env.KB_DIR || '',
+  kbEmbeddingModel: process.env.KB_EMBEDDING_MODEL || 'text-embedding-qwen3-embedding-0.6b',
+  kbTopK: int('KB_TOP_K', 6),
+
+  promptVersion: '1.1.0',
 };
 
 // Static resolution; 'auto' may be upgraded mock → local by the startup probe in index.js.

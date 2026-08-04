@@ -140,6 +140,22 @@ async function runAnalysis(sessionId, { instruction }) {
 
   const messages = [];
   if (ctx.stateText) messages.push({ role: 'user', content: `<session_state>\n${ctx.stateText}\n</session_state>` });
+
+  // RAG: релевантные пункты нормативной базы (если KB_DIR настроен и проиндексирован)
+  try {
+    const kb = require('../kb');
+    const facts = db.prepare('SELECT key, value FROM facts WHERE session_id = ? LIMIT 20').all(sessionId);
+    const kbQuery = [
+      instruction,
+      ctx.session.comment,
+      ...facts.map((f) => `${f.key} ${f.value}`),
+    ].join(' ').slice(0, 1500);
+    const excerpts = await kb.excerptsFor(kbQuery);
+    if (excerpts) messages.push({ role: 'user', content: `<knowledge_base>\n${excerpts}\n</knowledge_base>` });
+  } catch (err) {
+    console.warn('[kb] excerpts skipped:', err.message);
+  }
+
   if (ctx.docBlocks.length) messages.push({ role: 'user', content: ctx.docBlocks });
   for (const m of ctx.history) messages.push(m);
   messages.push({ role: 'user', content: instruction });

@@ -22,8 +22,11 @@ router.use(generalLimit);
 
 /* ---------- health ---------- */
 router.get('/health', (req, res) => {
+  let kb = { enabled: false };
+  try { kb = require('../services/kb').status(); } catch {}
   res.json({
     ok: true,
+    kb,
     aiMode: config.aiMode,
     model: config.aiMode === 'live' ? config.anthropicModel
       : config.aiMode === 'local' ? config.localAiModel : null,
