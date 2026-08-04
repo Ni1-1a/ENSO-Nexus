@@ -77,7 +77,7 @@ function flattenForLocal(content) {
   }).join('\n\n');
 }
 
-async function callLocalModel({ system, messages, sessionId, jsonSchema = true, maxTokens }) {
+async function callLocalModel({ system, messages, sessionId, jsonSchema = true, maxTokens, attempt = 1 }) {
   const body = {
     model: config.localAiModel,
     max_tokens: maxTokens || config.localAiMaxTokens,
@@ -106,6 +106,12 @@ async function callLocalModel({ system, messages, sessionId, jsonSchema = true, 
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
+    // LM Studio мог выгрузить модель (память/очередь) — она подгружается сама, ждём и повторяем
+    if (/unload|not loaded|no models? loaded|model.*not found/i.test(detail) && attempt <= 3) {
+      console.warn(`[local-ai] модель выгружена, повтор ${attempt}/3 через ${attempt * 20} c`);
+      await new Promise((r) => setTimeout(r, attempt * 20000));
+      return callLocalModel({ system, messages, sessionId, jsonSchema, maxTokens, attempt: attempt + 1 });
+    }
     // some local models reject json_schema — one retry in plain-JSON mode
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callLocalModel({
