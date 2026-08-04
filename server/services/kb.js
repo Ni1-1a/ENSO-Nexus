@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 );
 CREATE TABLE IF NOT EXISTS kb_meta (key TEXT PRIMARY KEY, value TEXT);
 `);
+try { db.exec("ALTER TABLE kb_chunks ADD COLUMN kb TEXT DEFAULT 'main'"); } catch { /* уже есть */ }
 
 const MAX_CHUNK_CHARS = 1400;
 const MIN_CHUNK_CHARS = 80;
@@ -39,6 +40,27 @@ function loadSourceChunks(kbDir) {
   const vecDir = path.join(kbDir, '09_Векторный-индекс');
   const jsonDir = path.join(kbDir, '04_JSON');
   const seenDocs = new Set();
+
+  // произвольные .md/.txt в корне и подпапках базы (кроме служебных 0*_/1*_) —
+  // основной формат для «живых» баз вроде базы с отметками Гриши
+  const walkLoose = (dir, depth = 0) => {
+    if (!fs.existsSync(dir) || depth > 2) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.') || /^\d+_/.test(e.name)) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walkLoose(p, depth + 1); continue; }
+      if (!/\.(md|txt)$/i.test(e.name) || e.name === 'README.md') continue;
+      const text = cleanText(fs.readFileSync(p, 'utf8'));
+      const doc = e.name.replace(/\.(md|txt)$/i, '');
+      for (let i = 0; i < text.length; i += MAX_CHUNK_CHARS) {
+        const piece = text.slice(i, i + MAX_CHUNK_CHARS);
+        if (piece.length >= MIN_CHUNK_CHARS) chunks.push({ doc, clause: '', priority: 'отметка', text: piece });
+      }
+    }
+  };
+  // в структурированной базе (есть 04_JSON/09_Векторный-индекс) свободные файлы не индексируем — там кураторская структура
+  const structured = fs.existsSync(vecDir) || fs.existsSync(jsonDir);
+  if (!structured) walkLoose(kbDir);
 
   if (fs.existsSync(vecDir)) {
     for (const doc of fs.readdirSync(vecDir)) {
@@ -105,13 +127,19 @@ async function embed(texts) {
 function toBlob(vec) { return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength); }
 function fromBlob(buf) { return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4); }
 
-/** Полная (пере)индексация базы. Возвращает статистику. */
+/** Полная (пере)индексация всех подключённых баз. Возвращает статистику. */
 async function reindex({ log = () => {} } = {}) {
-  if (!config.kbDir) throw new Error('KB_DIR не задан');
-  const chunks = loadSourceChunks(config.kbDir);
+  if (!config.kbBases.length) throw new Error('KB_DIR не задан');
+  const chunks = [];
+  for (const base of config.kbBases) {
+    const baseChunks = fs.existsSync(base.dir) ? loadSourceChunks(base.dir) : [];
+    for (const c of baseChunks) c.kb = base.id;
+    log(`База «${base.label}»: ${baseChunks.length} чанков`);
+    chunks.push(...baseChunks);
+  }
   log(`Чанков к индексации: ${chunks.length}`);
   db.exec('DELETE FROM kb_chunks');
-  const insert = db.prepare('INSERT INTO kb_chunks (doc, clause, text, priority, embedding) VALUES (?,?,?,?,?)');
+  const insert = db.prepare('INSERT INTO kb_chunks (doc, clause, text, priority, embedding, kb) VALUES (?,?,?,?,?,?)');
 
   let embedded = 0, failed = false;
   const BATCH = 32;
@@ -132,11 +160,11 @@ async function reindex({ log = () => {} } = {}) {
       }
     }
     if (vecs) {
-      batch.forEach((c, j) => insert.run(c.doc, c.clause, c.text, c.priority, toBlob(vecs[j])));
+      batch.forEach((c, j) => insert.run(c.doc, c.clause, c.text, c.priority, toBlob(vecs[j]), c.kb || 'main'));
       embedded += batch.length;
       if ((i / BATCH) % 20 === 0) log(`…${embedded}/${chunks.length}`);
     } else {
-      for (const c of chunks.slice(i)) insert.run(c.doc, c.clause, c.text, c.priority, null);
+      for (const c of chunks.slice(i)) insert.run(c.doc, c.clause, c.text, c.priority, null, c.kb || 'main');
     }
   }
   db.prepare('INSERT INTO kb_meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
@@ -152,7 +180,11 @@ function status() {
   const docs = db.prepare('SELECT COUNT(DISTINCT doc) c FROM kb_chunks').get().c;
   const withVectors = db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE embedding IS NOT NULL').get().c;
   const indexedAt = db.prepare("SELECT value FROM kb_meta WHERE key = 'indexed_at'").get()?.value || null;
-  return { enabled: !!config.kbDir, chunks, docs, withVectors, indexedAt };
+  const bases = config.kbBases.map((b) => ({
+    id: b.id, label: b.label,
+    chunks: db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE kb = ?').get(b.id).c,
+  }));
+  return { enabled: !!config.kbBases.length, chunks, docs, withVectors, indexedAt, bases };
 }
 
 /* ---------------- поиск ---------------- */
@@ -163,7 +195,7 @@ function loadCache() {
   // кэш автоматически перечитывается после переиндексации (в т.ч. из другого процесса)
   const indexedAt = db.prepare("SELECT value FROM kb_meta WHERE key = 'indexed_at'").get()?.value || null;
   if (cache && indexedAt === cacheIndexedAt) return cache;
-  const rows = db.prepare('SELECT id, doc, clause, text, priority, embedding FROM kb_chunks').all();
+  const rows = db.prepare('SELECT id, doc, clause, text, priority, embedding, kb FROM kb_chunks').all();
   cache = rows.map((r) => ({ ...r, vec: r.embedding ? fromBlob(r.embedding) : null, embedding: undefined }));
   cacheIndexedAt = indexedAt;
   return cache;
@@ -182,10 +214,10 @@ function keywordScore(queryWords, text) {
   return score / (queryWords.length || 1);
 }
 
-/** Топ-K релевантных чанков для запроса. Никогда не бросает — при сбое вернёт []. */
-async function search(query, k = config.kbTopK) {
+/** Топ-K релевантных чанков для запроса (в выбранной базе). Никогда не бросает — при сбое вернёт []. */
+async function search(query, k = config.kbTopK, kbId = 'main') {
   try {
-    const rows = loadCache();
+    const rows = loadCache().filter((r) => (r.kb || 'main') === kbId);
     if (!rows.length || !query.trim()) return [];
     const withVec = rows.filter((r) => r.vec);
     let scored;
@@ -209,10 +241,11 @@ async function search(query, k = config.kbTopK) {
 }
 
 /** Блок выдержек для контекста модели. */
-async function excerptsFor(query) {
-  const found = await search(query);
+async function excerptsFor(query, kbId = 'main') {
+  const found = await search(query, config.kbTopK, kbId);
   if (!found.length) return '';
-  return '## Выдержки из нормативной базы (справочно; цитируй с шифром и пунктом)\n' +
+  const base = config.kbBases.find((b) => b.id === kbId);
+  return `## Выдержки из базы знаний «${base ? base.label : kbId}» (справочно; цитируй с шифром и пунктом)\n` +
     found.map((f) => `- [${f.doc}${f.clause ? `, п. ${f.clause}` : ''}] ${f.text.slice(0, 700)}`).join('\n');
 }
 

@@ -21,12 +21,16 @@ const expensiveLimit = rateLimit(config.rateLimitExpensive);
 router.use(generalLimit);
 
 /* ---------- health ---------- */
-router.get('/health', (req, res) => {
+router.get('/health', async (req, res) => {
   let kb = { enabled: false };
+  let providers = [];
   try { kb = require('../services/kb').status(); } catch {}
+  try { providers = await require('../services/providers').listProviders(); } catch {}
   res.json({
     ok: true,
     kb,
+    providers,
+    kbBases: config.kbBases.map((b) => ({ id: b.id, label: b.label })),
     aiMode: config.aiMode,
     model: config.aiMode === 'live' ? config.anthropicModel
       : config.aiMode === 'local' ? config.localAiModel : null,
@@ -63,6 +67,11 @@ function sessionView(session) {
     id: session.id,
     jobStatus: session.job_status,
     comment: session.comment,
+    settings: {
+      aiProvider: session.ai_provider || '',
+      aiModel: session.ai_model || '',
+      kbChoice: session.kb_choice || 'main',
+    },
     aiRequests: session.ai_requests,
     createdAt: session.created_at,
     updatedAt: session.updated_at,
@@ -141,6 +150,38 @@ router.delete('/sessions/:id/files/:fileId', sessionAuth, (req, res) => {
   db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
   pipeline.logEvent(req.session.id, 'Файл удалён', row.original_name);
   res.json({ ok: true });
+});
+
+/* ---------- settings: нейросеть и база знаний ---------- */
+router.post('/sessions/:id/settings', sessionAuth, express.json(), async (req, res, next) => {
+  try {
+    const { aiProvider, aiModel, kbChoice } = req.body || {};
+    const updates = {};
+    if (aiProvider !== undefined) {
+      if (aiProvider === '') {
+        updates.ai_provider = ''; updates.ai_model = '';
+      } else {
+        const check = await require('../services/providers').validateChoice(String(aiProvider), aiModel ? String(aiModel) : '');
+        if (!check.ok) return res.status(400).json({ error: check.error });
+        updates.ai_provider = String(aiProvider);
+        updates.ai_model = aiModel ? String(aiModel) : '';
+      }
+    }
+    if (kbChoice !== undefined) {
+      if (!config.kbBases.some((b) => b.id === kbChoice)) {
+        return res.status(400).json({ error: 'Неизвестная база знаний' });
+      }
+      updates.kb_choice = String(kbChoice);
+    }
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Нет изменений' });
+    const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
+    db.prepare(`UPDATE sessions SET ${sets}, updated_at = ? WHERE id = ?`)
+      .run(...Object.values(updates), now(), req.session.id);
+    pipeline.logEvent(req.session.id, 'Настройки анализа изменены',
+      [updates.ai_provider !== undefined ? `нейросеть: ${updates.ai_provider || 'по умолчанию'}${updates.ai_model ? ` (${updates.ai_model})` : ''}` : '',
+       updates.kb_choice ? `база: ${updates.kb_choice}` : ''].filter(Boolean).join(', '));
+    res.json({ ok: true });
+  } catch (err) { next(err); }
 });
 
 /* ---------- comment / messages ---------- */

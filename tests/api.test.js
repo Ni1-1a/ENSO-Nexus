@@ -199,3 +199,33 @@ test('message length limit enforced', async () => {
   });
   assert.strictEqual(long.status, 400);
 });
+
+test('settings: провайдер и база знаний per session', async () => {
+  const s = await createSession();
+  // demo всегда доступен
+  const ok = await api(`/api/sessions/${s.id}/settings`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aiProvider: 'demo', aiModel: 'demo' }),
+  });
+  assert.strictEqual(ok.status, 200);
+  // неизвестный провайдер и недоступный ChatGPT (без ключа) отклоняются
+  const bad = await api(`/api/sessions/${s.id}/settings`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aiProvider: 'skynet' }),
+  });
+  assert.strictEqual(bad.status, 400);
+  const noKey = await api(`/api/sessions/${s.id}/settings`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aiProvider: 'chatgpt' }),
+  });
+  assert.strictEqual(noKey.status, 400);
+  assert.match(noKey.body.error, /OPENAI_API_KEY/);
+  // неизвестная база отклоняется; выбор сохраняется в сессии
+  const badKb = await api(`/api/sessions/${s.id}/settings`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kbChoice: 'nope' }),
+  });
+  assert.strictEqual(badKb.status, 400);
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(view.body.settings.aiProvider, 'demo');
+});

@@ -59,6 +59,21 @@
         <button id="btn-save-comment" class="btn btn-secondary btn-sm" type="button">Сохранить комментарий</button>
       </div>
 
+      <div class="settings-card">
+        <h3>Настройки анализа</h3>
+        <div class="field">
+          <label for="sel-model">Нейросеть</label>
+          <select id="sel-model" disabled>
+            <option value="">Загрузка…</option>
+          </select>
+          <p id="model-note" class="hint" hidden></p>
+        </div>
+        <div class="field">
+          <label for="sel-kb">База знаний</label>
+          <select id="sel-kb" disabled></select>
+        </div>
+      </div>
+
       <button id="btn-process" class="btn btn-primary btn-block" type="button" disabled>
         Запустить обработку
       </button>

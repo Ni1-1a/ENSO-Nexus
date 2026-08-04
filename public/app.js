@@ -137,6 +137,18 @@ function render() {
     $('comment').value = v.comment || '';
   }
 
+  // настройки анализа
+  const busy = ['queued', 'running'].includes(v.jobStatus);
+  $('sel-model').disabled = busy;
+  $('sel-kb').disabled = busy || !$('sel-kb').options.length;
+  if (v.settings && document.activeElement !== $('sel-model')) {
+    $('sel-model').value = v.settings.aiProvider ? `${v.settings.aiProvider}|${v.settings.aiModel || ''}` : '';
+    if ($('sel-model').selectedIndex === -1) $('sel-model').value = '';
+  }
+  if (v.settings && document.activeElement !== $('sel-kb')) {
+    $('sel-kb').value = v.settings.kbChoice || 'main';
+  }
+
   // status + events
   $('job-status').dataset.status = v.jobStatus;
   $('job-status').textContent = STATUS_LABELS[v.jobStatus] || v.jobStatus;
@@ -195,6 +207,44 @@ function render() {
   $('facts-card').hidden = v.facts.length === 0;
   $('facts-list').innerHTML = v.facts.map((f) =>
     `<div><dt>${esc(f.key)}</dt><dd>${esc(f.value)}${f.source ? ` <span class="meta">(${esc(f.source)})</span>` : ''}</dd></div>`).join('');
+}
+
+/* ---------------- настройки анализа (нейросеть + база) ---------------- */
+function renderSettingsOptions(health) {
+  const sel = $('sel-model');
+  sel.innerHTML = '<option value="">По умолчанию (как настроен сервер)</option>';
+  for (const p of health.providers || []) {
+    const group = document.createElement('optgroup');
+    group.label = p.label + (p.available ? '' : ` — ${p.note}`);
+    const models = p.models.length ? p.models : ['(модели не найдены)'];
+    for (const m of models) {
+      const opt = document.createElement('option');
+      opt.value = `${p.id}|${p.models.length ? m : ''}`;
+      opt.textContent = m;
+      opt.disabled = !p.available;
+      group.appendChild(opt);
+    }
+    sel.appendChild(group);
+  }
+  const kbSel = $('sel-kb');
+  kbSel.innerHTML = '';
+  for (const b of health.kbBases || []) {
+    const opt = document.createElement('option');
+    const count = (health.kb.bases || []).find((x) => x.id === b.id)?.chunks;
+    opt.value = b.id;
+    opt.textContent = `${b.label}${count !== undefined ? ` (${count} фрагм.)` : ''}`;
+    kbSel.appendChild(opt);
+  }
+}
+
+async function saveSettings(patch) {
+  try {
+    await api(`/sessions/${state.session.id}/settings`, { method: 'POST', json: patch });
+    toast('Настройки сохранены');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+  await refresh().catch(() => {});
 }
 
 /* ---------------- data flow ---------------- */
@@ -281,6 +331,7 @@ async function init() {
     $('limits-line').textContent =
       `Форматы: ${health.limits.allowedExtensions.join(', ')} · до ${health.limits.maxFileSizeMb} МБ/файл · ` +
       `до ${health.limits.maxFiles} файлов · всего до ${health.limits.maxTotalUploadMb} МБ`;
+    renderSettingsOptions(health);
   } catch (err) {
     toast('Сервер недоступен: ' + err.message, 'error');
     return;
@@ -302,6 +353,12 @@ async function init() {
   ['dragover', 'dragenter'].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add('dragover'); }));
   ['dragleave', 'drop'].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove('dragover'); }));
   dz.addEventListener('drop', (e) => uploadFiles(e.dataTransfer.files));
+
+  $('sel-model').addEventListener('change', () => {
+    const [aiProvider, aiModel] = ($('sel-model').value || '|').split('|');
+    saveSettings({ aiProvider, aiModel });
+  });
+  $('sel-kb').addEventListener('change', () => saveSettings({ kbChoice: $('sel-kb').value }));
 
   $('btn-save-comment').addEventListener('click', async () => {
     try {

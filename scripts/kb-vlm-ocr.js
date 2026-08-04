@@ -52,7 +52,7 @@ const OCR_PROMPT =
   '3) сноски и примечания — после таблицы; 4) колонтитулы и номера страниц опусти; ' +
   '5) не добавляй никаких комментариев от себя — только содержимое страницы. Язык — русский.';
 
-async function ocrPage(png) {
+async function ocrPage(png, attempt = 1) {
   const res = await fetch(`${config.localAiBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -70,7 +70,15 @@ async function ocrPage(png) {
     }),
     signal: AbortSignal.timeout(600000),
   });
-  if (!res.ok) throw new Error(`VLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 200);
+    if (/unload|not loaded|no models? loaded/i.test(detail) && attempt <= 4) {
+      console.log(`  модель выгружена — повтор ${attempt}/4 через ${attempt * 20} с`);
+      await new Promise((r) => setTimeout(r, attempt * 20000));
+      return ocrPage(png, attempt + 1);
+    }
+    throw new Error(`VLM HTTP ${res.status}: ${detail}`);
+  }
   const data = await res.json();
   return {
     text: data.choices?.[0]?.message?.content || '',

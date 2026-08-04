@@ -85,6 +85,15 @@ CREATE TABLE IF NOT EXISTS results (
 );
 `);
 
+// лёгкие миграции: добавление колонок в существующие таблицы
+for (const sql of [
+  "ALTER TABLE sessions ADD COLUMN ai_provider TEXT DEFAULT ''",
+  "ALTER TABLE sessions ADD COLUMN ai_model TEXT DEFAULT ''",
+  "ALTER TABLE sessions ADD COLUMN kb_choice TEXT DEFAULT 'main'",
+]) {
+  try { db.exec(sql); } catch { /* колонка уже есть */ }
+}
+
 const now = () => new Date().toISOString();
 
 module.exports = { db, now };

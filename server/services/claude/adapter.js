@@ -43,9 +43,25 @@ function recordUsage(sessionId, usage) {
   console.log(`[tokens] session=${sessionId} in=${input} out=${output}`);
 }
 
+/** Действующий провайдер сессии: выбор пользователя, иначе глобальный режим сервера. */
+function effectiveProvider(session) {
+  if (session && session.ai_provider) return { provider: session.ai_provider, model: session.ai_model || '' };
+  return { provider: config.aiMode === 'live' ? 'claude' : config.aiMode === 'local' ? 'lmstudio' : 'demo', model: '' };
+}
+
 /** Returns { text, truncated } — truncated means the output hit the token cap (JSON likely incomplete). */
-async function callModel({ system, messages, sessionId }) {
-  if (config.aiMode === 'local') return callLocalModel({ system, messages, sessionId });
+async function callModel({ system, messages, sessionId, route }) {
+  if (route.provider === 'lmstudio') {
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.localAiBaseUrl, model: route.model || config.localAiModel });
+  }
+  if (route.provider === 'ollama') {
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.ollamaBaseUrl, model: route.model });
+  }
+  if (route.provider === 'chatgpt') {
+    if (!config.openaiApiKey) throw new AiUnavailableError('ChatGPT не настроен: нужен OPENAI_API_KEY на сервере.');
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel });
+  }
+  if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
   const response = await client().messages.create({
     model: config.anthropicModel,
     max_tokens: config.anthropicMaxTokens,
@@ -77,9 +93,9 @@ function flattenForLocal(content) {
   }).join('\n\n');
 }
 
-async function callLocalModel({ system, messages, sessionId, jsonSchema = true, maxTokens, attempt = 1 }) {
+async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, jsonSchema = true, maxTokens, attempt = 1 }) {
   const body = {
-    model: config.localAiModel,
+    model: model || config.localAiModel,
     max_tokens: maxTokens || config.localAiMaxTokens,
     temperature: 0.2,
     messages: [
@@ -94,15 +110,17 @@ async function callLocalModel({ system, messages, sessionId, jsonSchema = true, 
     };
   }
   let res;
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {
-    res = await fetch(`${config.localAiBaseUrl}/chat/completions`, {
+    res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(config.anthropicRequestTimeoutMs),
     });
   } catch (err) {
-    throw new AiUnavailableError('Локальный AI-сервер (LM Studio) недоступен. Убедитесь, что он запущен, и повторите.');
+    throw new AiUnavailableError(`AI-сервер (${baseUrl.replace(/https?:\/\//, '').split('/')[0]}) недоступен. Убедитесь, что он запущен, и повторите.`);
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -110,13 +128,13 @@ async function callLocalModel({ system, messages, sessionId, jsonSchema = true, 
     if (/unload|not loaded|no models? loaded|model.*not found/i.test(detail) && attempt <= 3) {
       console.warn(`[local-ai] модель выгружена, повтор ${attempt}/3 через ${attempt * 20} c`);
       await new Promise((r) => setTimeout(r, attempt * 20000));
-      return callLocalModel({ system, messages, sessionId, jsonSchema, maxTokens, attempt: attempt + 1 });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, jsonSchema, maxTokens, attempt: attempt + 1 });
     }
     // some local models reject json_schema — one retry in plain-JSON mode
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
-      return callLocalModel({
+      return callOpenAiCompat({
         system: system + '\n\nОтвечай ТОЛЬКО валидным JSON строго по описанной схеме, без пояснений вокруг.',
-        messages, sessionId, jsonSchema: false, maxTokens,
+        messages, sessionId, baseUrl, apiKey, model, jsonSchema: false, maxTokens,
       });
     }
     console.error('[local-ai]', res.status, detail.slice(0, 500));
@@ -136,11 +154,13 @@ async function callLocalModel({ system, messages, sessionId, jsonSchema = true, 
  * validates the structured answer, retries once on invalid structure.
  */
 async function runAnalysis(sessionId, { instruction }) {
-  const provider = config.aiMode === 'local' ? 'local' : 'anthropic';
-  const ctx = await buildContext(sessionId, provider);
+  const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+  const route = effectiveProvider(session0);
+  const docProvider = route.provider === 'claude' ? 'anthropic' : 'local';
+  const ctx = await buildContext(sessionId, docProvider);
   checkBudget(ctx.session);
 
-  if (config.aiMode === 'mock') {
+  if (route.provider === 'demo') {
     return mock.runAnalysis(sessionId, ctx, instruction);
   }
 
@@ -156,7 +176,7 @@ async function runAnalysis(sessionId, { instruction }) {
       ctx.session.comment,
       ...facts.map((f) => `${f.key} ${f.value}`),
     ].join(' ').slice(0, 1500);
-    const excerpts = await kb.excerptsFor(kbQuery);
+    const excerpts = await kb.excerptsFor(kbQuery, (session0 && session0.kb_choice) || 'main');
     if (excerpts) messages.push({ role: 'user', content: `<knowledge_base>\n${excerpts}\n</knowledge_base>` });
   } catch (err) {
     console.warn('[kb] excerpts skipped:', err.message);
@@ -168,7 +188,7 @@ async function runAnalysis(sessionId, { instruction }) {
 
   let out;
   try {
-    out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId });
+    out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId, route });
   } catch (err) {
     throw wrapApiError(err);
   }
@@ -185,7 +205,7 @@ async function runAnalysis(sessionId, { instruction }) {
     messages.push({ role: 'assistant', content: out.text.slice(0, 6000) || '(пустой ответ)' });
     messages.push({ role: 'user', content: correction });
     try {
-      out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId });
+      out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId, route });
     } catch (err) {
       throw wrapApiError(err);
     }
@@ -228,8 +248,8 @@ async function maybeCompact(sessionId) {
     const userText = `${ctx.stateText}\n\nПоследние сообщения:\n${ctx.history.map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : '[документы]'}`).join('\n').slice(0, 30000)}`;
     let summary = '';
     if (config.aiMode === 'local') {
-      ({ text: summary } = await callLocalModel({
-        system, messages: [{ role: 'user', content: userText }], sessionId, jsonSchema: false, maxTokens: 1500,
+      ({ text: summary } = await callOpenAiCompat({
+        system, messages: [{ role: 'user', content: userText }], sessionId, baseUrl: config.localAiBaseUrl, jsonSchema: false, maxTokens: 1500,
       }));
     } else {
       const response = await client().messages.create({

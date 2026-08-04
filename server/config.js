@@ -50,13 +50,28 @@ const config = {
   rateLimitGeneral: int('RATE_LIMIT_GENERAL', 120),
   rateLimitExpensive: int('RATE_LIMIT_EXPENSIVE', 12),
 
-  // Knowledge base (RAG)
+  // Knowledge bases (RAG) — несколько баз, выбор в интерфейсе per session
   kbDir: process.env.KB_DIR || '',
+  kbGrishaDir: process.env.KB_GRISHA_DIR || '',
   kbEmbeddingModel: process.env.KB_EMBEDDING_MODEL || 'text-embedding-qwen3-embedding-0.6b',
   kbTopK: int('KB_TOP_K', 6),
 
+  // Дополнительные AI-провайдеры (выбор в интерфейсе per session)
+  openaiApiKey: process.env.OPENAI_API_KEY || '',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-5.2',
+  openaiBaseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+
   promptVersion: '1.1.0',
 };
+
+// Базы знаний: главная всегда 'main'; база Гриши подключается при наличии каталога.
+const path2 = require('path');
+config.kbBases = [];
+if (config.kbDir) config.kbBases.push({ id: 'main', label: 'Общая база', dir: config.kbDir });
+const grishaDir = config.kbGrishaDir ||
+  (config.kbDir ? path2.join(path2.dirname(config.kbDir), 'Knowledge-Base-Гриша') : '');
+if (grishaDir) config.kbBases.push({ id: 'grisha', label: 'База с отметками Гриши', dir: grishaDir });
 
 // Static resolution; 'auto' may be upgraded mock → local by the startup probe in index.js.
 config.aiMode =
