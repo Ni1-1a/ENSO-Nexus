@@ -1,0 +1,24 @@
+# Render.com Blueprint — деплой backend+frontend одним web-сервисом.
+# Порядок: положить содержимое папки Web в git-репозиторий → Render → New → Blueprint.
+services:
+  - type: web
+    name: enso-nexus-pilot1
+    runtime: node
+    plan: free            # бесплатный тариф: сервис засыпает после 15 минут простоя
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false        # значение задаётся вручную в дашборде Render, не хранится в git
+      - key: ANTHROPIC_MODEL
+        value: claude-opus-5
+      - key: SESSION_TTL_HOURS
+        value: "72"
+      # На платном тарифе с persistent-диском добавьте:
+      # - key: DATA_DIR
+      #   value: /var/data
+# disk:                    # бесплатный тариф диски не поддерживает; данные эфемерны
+#   name: data
+#   mountPath: /var/data
+#   sizeGB: 1

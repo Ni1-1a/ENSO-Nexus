@@ -1,0 +1,98 @@
+# ENSO Nexus · Pilot 1 · Web
+
+Веб-приложение для пилота «Посадка здания на земельный участок / генплан по ГОСТ 21.508-2020».
+
+Пользователь загружает исходные данные (ГПЗУ, ТЗ, топосъёмку и др.), сервер анализирует их с помощью Claude (Anthropic API) по методике «12 шагов посадки здания», при нехватке данных задаёт уточняющие вопросы и формирует выходные файлы: текстовый отчёт, JSON с фактами/ТЭП, эскизный DXF и ZIP-архив.
+
+## Структура
+
+```
+Web/
+├── server/                  # backend (Node.js + Express)
+│   ├── index.js             # точка входа
+│   ├── app.js               # сборка Express-приложения + фоновая очистка сессий
+│   ├── config.js            # вся конфигурация из переменных окружения
+│   ├── db.js                # SQLite (node:sqlite): сессии, сообщения, файлы, вопросы, факты, события, результаты
+│   ├── middleware/          # rate limiting, авторизация сессий, security headers, ошибки
+│   ├── routes/api.js        # REST API (см. API.md)
+│   └── services/
+│       ├── validation.js    # проверка файлов по magic bytes, санитизация имён
+│       ├── pipeline.js      # асинхронная задача обработки, журнал этапов
+│       ├── outputs.js       # генерация ОТЧЁТ.md / session-data.json / DXF / ZIP
+│       ├── dxf.js           # минимальный DXF-писатель (R12)
+│       └── claude/          # AI-адаптер
+│           ├── adapter.js   # вызовы Anthropic API, retry, budget, structured output
+│           ├── schema.js    # JSON-схема ответа модели + серверная валидация
+│           ├── memory.js    # память сессии: резюме + факты + Q&A + последние сообщения + документы
+│           └── mock.js      # честный демо-режим (без ключа)
+├── prompts/system-prompt.md # версионируемый системный промт (promptVersion 1.0.0)
+├── public/                  # frontend (vanilla HTML/CSS/JS, без сборки)
+├── tests/                   # unit / API / e2e (node:test)
+├── Dockerfile               # контейнерный деплой
+├── render.yaml              # blueprint для Render.com
+└── .env.example             # шаблон переменных окружения
+```
+
+## Стек
+
+- **Backend:** Node.js ≥ 22.5, Express 4, встроенный `node:sqlite`, multer (загрузка), adm-zip (архивы и чтение DOCX), `@anthropic-ai/sdk`.
+- **Frontend:** семантический HTML + CSS + vanilla JS (без фреймворка и без шага сборки), Plus Jakarta Sans.
+- **AI:** Claude через официальный Anthropic API, модель по умолчанию `claude-opus-5`, structured outputs (`output_config.format`), prompt caching системного промта.
+
+## Установка и локальный запуск
+
+```bash
+cd "ENSO-Nexus/Pilot 1/Web"
+npm ci                      # или npm install
+cp .env.example .env        # заполнить ANTHROPIC_API_KEY (иначе — демо-режим)
+npm start                   # http://localhost:3000
+```
+
+`npm start` поднимает и backend, и frontend (статика отдаётся тем же сервером). Отдельного запуска frontend не требуется. Для разработки: `npm run dev` (перезапуск при изменениях).
+
+Без `ANTHROPIC_API_KEY` приложение работает в **демо-режиме**: интерфейс и весь конвейер работают, но ответы формирует помеченная заглушка (баннер в UI + пометка в каждом ответе).
+
+## Переменные окружения
+
+Полный список с значениями по умолчанию — в [.env.example](.env.example) и [server/config.js](server/config.js). Ключевые:
+
+| Переменная | Назначение |
+|---|---|
+| `ANTHROPIC_API_KEY` | Ключ Anthropic API (только на сервере; без него — демо-режим) |
+| `ANTHROPIC_MODEL` | Модель (по умолчанию `claude-opus-5`) |
+| `ANTHROPIC_MAX_TOKENS`, `ANTHROPIC_REQUEST_TIMEOUT`, `ANTHROPIC_MAX_RETRIES` | Параметры запросов к API |
+| `DATA_DIR` | Каталог данных (SQLite, загрузки, результаты) |
+| `MAX_FILE_SIZE_MB`, `MAX_TOTAL_UPLOAD_MB`, `MAX_FILES_PER_SESSION` | Лимиты загрузки |
+| `MAX_AI_REQUESTS_PER_SESSION`, `MAX_TOKENS_PER_SESSION` | Бюджет AI на сессию |
+| `SESSION_TTL_HOURS` | Автоудаление сессий (по умолчанию 72 ч) |
+
+## Тесты
+
+```bash
+npm test          # все: unit + API + e2e (17 тестов)
+npm run test:e2e  # только e2e smoke
+```
+
+Тесты используют временный `DATA_DIR` и демо-режим AI, сеть не требуется.
+
+## Сборка
+
+Шаг сборки отсутствует (vanilla frontend). Для контейнера:
+
+```bash
+docker build -t enso-pilot1-web .
+docker run -p 3000:3000 -e ANTHROPIC_API_KEY=... enso-pilot1-web
+```
+
+## Основные пользовательские сценарии
+
+1. Открыть страницу — сессия создаётся автоматически (или восстанавливается из localStorage).
+2. Загрузить файлы (drag-and-drop или диалог), при необходимости удалить лишние.
+3. Добавить комментарий к исходным данным.
+4. «Запустить обработку» — статус и журнал этапов обновляются с сервера (polling).
+5. Ответить на уточняющие вопросы — обработка продолжается автоматически.
+6. Получить итоговый ответ, отчёт и файлы; скачать по одному или ZIP-архивом.
+7. Обновить страницу — сессия и вся история восстанавливаются.
+8. «Удалить сессию» — все данные сессии стираются с сервера.
+
+Подробности API — в [API.md](API.md), деплой — в [DEPLOYMENT.md](DEPLOYMENT.md), отчёт о разработке — в [REPORT.md](REPORT.md).
