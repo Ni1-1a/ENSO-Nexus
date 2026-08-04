@@ -15,8 +15,19 @@ bash scripts/serve-public.sh stop   # остановка
 Ограничения этого варианта:
 - URL вида `https://<случайные-слова>.trycloudflare.com` **меняется при каждом перезапуске** туннеля/компьютера — новую ссылку смотреть в `logs/public-url.txt`;
 - сервис доступен, только пока компьютер включён и в сети;
-- quick-туннели Cloudflare — для тестов/пилотов, без SLA. Для постоянного адреса: бесплатный named tunnel Cloudflare (нужен аккаунт Cloudflare + свой домен) или вариант B.
 - LM Studio должен быть запущен с загруженной моделью (`qwen/qwen3-vl-30b`), иначе приложение честно перейдёт в демо-режим.
+
+### Постоянный адрес (named tunnel Cloudflare)
+
+На этом Mac уже работает именованный Cloudflare-туннель (автозапуск при загрузке, connector `4865d400-fc61-4f53-8abb-1ab311ce2588`). Чтобы получить постоянный адрес, в дашборде Cloudflare добавляется второй публичный хостнейм к этому же туннелю:
+
+1. [one.dash.cloudflare.com](https://one.dash.cloudflare.com) → **Networks → Tunnels** → открыть туннель со статусом HEALTHY (connector ID выше) → **Edit**.
+2. Вкладка **Public Hostname** → **Add a public hostname**:
+   - Subdomain: `pilot1` (или любой другой), Domain: ваш домен;
+   - Service: Type **HTTP**, URL **localhost:3000**.
+3. Save — DNS-запись создастся автоматически, адрес `https://pilot1.<домен>` заработает через ~1 минуту и переживает перезагрузки.
+
+После этого quick-туннель (`cloudflared tunnel --url…` в `scripts/serve-public.sh`) не обязателен — достаточно работающего сервера приложения (`npm start` под `caffeinate`).
 
 ## Вариант B: облачная платформа
 
