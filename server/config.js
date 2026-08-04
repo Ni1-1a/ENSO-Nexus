@@ -21,7 +21,8 @@ const config = {
   // Local model (OpenAI-compatible server, e.g. LM Studio)
   aiProviderEnv: (process.env.AI_PROVIDER || 'auto').toLowerCase(), // auto | anthropic | local | mock
   localAiBaseUrl: process.env.LOCAL_AI_BASE_URL || 'http://localhost:1234/v1',
-  localAiModel: process.env.LOCAL_AI_MODEL || 'qwen/qwen3-vl-30b',
+  localAiModel: process.env.LOCAL_AI_MODEL || 'qwen/qwen3-coder-30b', // чат/анализ (структурный JSON)
+  localAiOcrModel: process.env.LOCAL_AI_OCR_MODEL || 'qwen/qwen3-vl-30b', // vision-модель для VLM-OCR
   localAiMaxTokens: int('LOCAL_AI_MAX_TOKENS', 8192),
   localAiTimeoutMs: int('LOCAL_AI_TIMEOUT', 480000), // очередь LM Studio может быть занята (OCR и др.)
   localAiDocCharLimit: int('LOCAL_AI_DOC_CHAR_LIMIT', 24000),

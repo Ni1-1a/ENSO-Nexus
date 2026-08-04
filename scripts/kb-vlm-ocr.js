@@ -57,7 +57,7 @@ async function ocrPage(png, attempt = 1) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: config.localAiModel,
+      model: config.localAiOcrModel,
       max_tokens: 6000,
       temperature: 0,
       messages: [{
