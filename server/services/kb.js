@@ -146,11 +146,15 @@ function status() {
 
 /* ---------------- поиск ---------------- */
 let cache = null;
-function invalidateCache() { cache = null; }
+let cacheIndexedAt = null;
+function invalidateCache() { cache = null; cacheIndexedAt = null; }
 function loadCache() {
-  if (cache) return cache;
+  // кэш автоматически перечитывается после переиндексации (в т.ч. из другого процесса)
+  const indexedAt = db.prepare("SELECT value FROM kb_meta WHERE key = 'indexed_at'").get()?.value || null;
+  if (cache && indexedAt === cacheIndexedAt) return cache;
   const rows = db.prepare('SELECT id, doc, clause, text, priority, embedding FROM kb_chunks').all();
   cache = rows.map((r) => ({ ...r, vec: r.embedding ? fromBlob(r.embedding) : null, embedding: undefined }));
+  cacheIndexedAt = indexedAt;
   return cache;
 }
 
