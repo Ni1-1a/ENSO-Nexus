@@ -213,6 +213,27 @@ router.post('/sessions/:id/process', sessionAuth, expensiveLimit, express.json()
   );
 });
 
+/* ---------- сравнение моделей ---------- */
+router.post('/sessions/:id/compare', sessionAuth, expensiveLimit, express.json(), async (req, res, next) => {
+  try {
+    const models = Array.isArray(req.body?.models) ? req.body.models : [];
+    if (models.length < 2 || models.length > 4) {
+      return res.status(400).json({ error: 'Выберите от 2 до 4 моделей для сравнения' });
+    }
+    const providersSvc = require('../services/providers');
+    const routes = [];
+    for (const m of models) {
+      const provider = String(m?.provider || '');
+      const model = m?.model ? String(m.model) : '';
+      const check = await providersSvc.validateChoice(provider, model);
+      if (!check.ok) return res.status(400).json({ error: check.error });
+      routes.push({ provider, model });
+    }
+    await pipeline.startComparison(req.session.id, routes, req.body?.instruction ? String(req.body.instruction).slice(0, config.maxMessageLength) : '');
+    res.status(202).json({ ok: true, jobStatus: 'queued' });
+  } catch (err) { next(err); }
+});
+
 /* ---------- clarifying questions ---------- */
 router.post('/sessions/:id/questions/:qid/answer', sessionAuth, expensiveLimit, express.json(), (req, res, next) => {
   const answer = String(req.body?.answer ?? '').trim();

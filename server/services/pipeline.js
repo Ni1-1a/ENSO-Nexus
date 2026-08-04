@@ -108,4 +108,94 @@ async function runJob(sessionId, instruction) {
   }
 }
 
-module.exports = { startProcessing, logEvent, addMessage, runningJobs };
+/* ---------------- сравнение моделей ---------------- */
+
+function fmtRoute(r) { return r.model ? `${r.provider}: ${r.model}` : r.provider; }
+
+/**
+ * Сравнительный прогон: один и тот же анализ выполняется каждой из выбранных
+ * моделей ПОСЛЕДОВАТЕЛЬНО (локальные модели делят один LM Studio), результаты
+ * не изменяют факты/вопросы сессии — формируется файл сравнения и сводка в чат.
+ */
+async function startComparison(sessionId, routes, instruction) {
+  const session = db.prepare("SELECT * FROM sessions WHERE id = ? AND status = 'active'").get(sessionId);
+  if (!session) throw Object.assign(new Error('Сессия не найдена'), { status: 404 });
+  if (runningJobs.has(sessionId)) throw Object.assign(new Error('Обработка уже выполняется'), { status: 409 });
+  if (runningJobs.size >= config.maxConcurrentJobs) {
+    throw Object.assign(new Error('Сервер занят: превышен лимит одновременных задач.'), { status: 429 });
+  }
+  const filesCount = db.prepare('SELECT COUNT(*) AS c FROM files WHERE session_id = ?').get(sessionId).c;
+  if (filesCount === 0) throw Object.assign(new Error('Сначала загрузите хотя бы один файл исходных данных'), { status: 400 });
+
+  runningJobs.add(sessionId);
+  setJobStatus(sessionId, 'queued');
+  logEvent(sessionId, 'Сравнение моделей поставлено в очередь', routes.map(fmtRoute).join(' · '));
+  runComparison(sessionId, routes, instruction).catch((err) => console.error('[compare]', err));
+}
+
+async function runComparison(sessionId, routes, instruction) {
+  const adapter2 = require('./claude/adapter');
+  const { saveResult } = require('./outputs');
+  const task = instruction ||
+    'Проанализируй загруженные материалы по методике 12 шагов: извлеки факты, определи ограничения, ' +
+    'сформируй краткий отчёт. Если данных не хватает — перечисли вопросы, но всё равно верни status=completed с тем, что удалось установить.';
+  const runs = [];
+  try {
+    setJobStatus(sessionId, 'running');
+    for (let i = 0; i < routes.length; i++) {
+      const route = routes[i];
+      logEvent(sessionId, `Сравнение: модель ${i + 1}/${routes.length}`, fmtRoute(route));
+      const before = db.prepare('SELECT input_tokens + output_tokens AS t FROM sessions WHERE id = ?').get(sessionId).t;
+      const t0 = Date.now();
+      try {
+        const result = await adapter2.analyzeOnce(sessionId, { instruction: task, route });
+        const tokens = db.prepare('SELECT input_tokens + output_tokens AS t FROM sessions WHERE id = ?').get(sessionId).t - before;
+        runs.push({ route, ok: true, result, seconds: Math.round((Date.now() - t0) / 1000), tokens });
+        logEvent(sessionId, `Сравнение: ${fmtRoute(route)} — готово`, `${runs[i].seconds} с`);
+      } catch (err) {
+        runs.push({ route, ok: false, error: err.message, seconds: Math.round((Date.now() - t0) / 1000), tokens: 0 });
+        logEvent(sessionId, `Сравнение: ${fmtRoute(route)} — ошибка`, err.message, 'warn');
+      }
+    }
+
+    const md = buildComparisonMd(runs, task);
+    saveResult(sessionId, 'СРАВНЕНИЕ-МОДЕЛЕЙ.md', 'Сравнительный прогон моделей', 'md', md);
+
+    const okRuns = runs.filter((r) => r.ok);
+    const summary = ['## Сравнение моделей завершено', '',
+      '| Модель | Статус | Время | Токены | Фактов | Вопросов |', '|---|---|---|---|---|---|',
+      ...runs.map((r) => r.ok
+        ? `| ${fmtRoute(r.route)} | ${r.result.status} | ${r.seconds} с | ${r.tokens} | ${r.result.facts.length} | ${r.result.questions.length} |`
+        : `| ${fmtRoute(r.route)} | ошибка | ${r.seconds} с | — | — | — |`),
+      '', okRuns.length ? 'Полные ответы каждой модели — в файле **СРАВНЕНИЕ-МОДЕЛЕЙ.md** (блок «Результаты»).' : 'Ни одна модель не ответила успешно.',
+    ].join('\n');
+    addMessage(sessionId, 'assistant', 'result', summary);
+    logEvent(sessionId, 'Сравнение завершено', `успешно: ${okRuns.length}/${runs.length}`);
+    setJobStatus(sessionId, okRuns.length ? 'completed' : 'failed');
+  } catch (err) {
+    logEvent(sessionId, 'Произошла ошибка сравнения', err.message, 'error');
+    setJobStatus(sessionId, 'failed');
+  } finally {
+    runningJobs.delete(sessionId);
+  }
+}
+
+function buildComparisonMd(runs, task) {
+  const parts = ['# Сравнительный прогон моделей', '', `Задание: ${task}`, '', 'Дата: ' + now(), '',
+    '| Модель | Статус | Время | Токены | Фактов | Вопросов | Предупреждений |', '|---|---|---|---|---|---|---|',
+    ...runs.map((r) => r.ok
+      ? `| ${fmtRoute(r.route)} | ${r.result.status} | ${r.seconds} с | ${r.tokens} | ${r.result.facts.length} | ${r.result.questions.length} | ${r.result.warnings.length} |`
+      : `| ${fmtRoute(r.route)} | ОШИБКА: ${r.error} | ${r.seconds} с | — | — | — | — |`)];
+  for (const r of runs) {
+    parts.push('', '---', '', `## ${fmtRoute(r.route)}`);
+    if (!r.ok) { parts.push('', `Ошибка: ${r.error}`); continue; }
+    parts.push('', `**Статус:** ${r.result.status}`, '', '### Ответ', '', r.result.message);
+    if (r.result.questions.length) parts.push('', '### Вопросы', ...r.result.questions.map((q) => `- ${q.text}`));
+    if (r.result.facts.length) parts.push('', '### Факты', ...r.result.facts.map((f) => `- ${f.key} = ${f.value} (${f.source})`));
+    if (r.result.tep.length) parts.push('', '### ТЭП', ...r.result.tep.map((t) => `- ${t.name}: ${t.value} ${t.unit}`));
+    if (r.result.report_markdown) parts.push('', '### Отчёт', '', r.result.report_markdown);
+  }
+  return parts.join('\n');
+}
+
+module.exports = { startProcessing, startComparison, logEvent, addMessage, runningJobs };

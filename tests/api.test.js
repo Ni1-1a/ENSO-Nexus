@@ -229,3 +229,30 @@ test('settings: провайдер и база знаний per session', async 
   const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
   assert.strictEqual(view.body.settings.aiProvider, 'demo');
 });
+
+test('compare: валидация и прогон по двум моделям (demo)', async () => {
+  const s = await createSession();
+  const HJ = { ...auth(s), 'Content-Type': 'application/json' };
+  // до загрузки файлов и с 1 моделью — отказ
+  const one = await api(`/api/sessions/${s.id}/compare`, { method: 'POST', headers: HJ, body: JSON.stringify({ models: [{ provider: 'demo' }] }) });
+  assert.strictEqual(one.status, 400);
+  await api(`/api/sessions/${s.id}/files`, { method: 'POST', headers: auth(s), body: uploadForm([['ТЗ.txt', 'задание: склад', 'text/plain']]) });
+  const badProv = await api(`/api/sessions/${s.id}/compare`, { method: 'POST', headers: HJ, body: JSON.stringify({ models: [{ provider: 'demo' }, { provider: 'skynet' }] }) });
+  assert.strictEqual(badProv.status, 400);
+  // два прогона demo — механика сравнения от начала до конца
+  const go = await api(`/api/sessions/${s.id}/compare`, { method: 'POST', headers: HJ, body: JSON.stringify({ models: [{ provider: 'demo', model: 'demo' }, { provider: 'demo', model: 'demo' }] }) });
+  assert.strictEqual(go.status, 202);
+  await waitJob(s, ['completed', 'failed']);
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(view.body.jobStatus, 'completed');
+  const cmp = view.body.results.find((r) => r.filename === 'СРАВНЕНИЕ-МОДЕЛЕЙ.md');
+  assert.ok(cmp, 'файл сравнения создан');
+  const dl = await fetch(`${base}/api/sessions/${s.id}/results/${cmp.id}/download`, { headers: auth(s) });
+  const text = await dl.text();
+  assert.ok(text.includes('Сравнительный прогон'));
+  assert.ok((text.match(/## demo/g) || []).length === 2, 'обе модели в файле');
+  // сводка в чате
+  assert.ok(view.body.messages.some((m) => m.content.includes('Сравнение моделей завершено')));
+  // факты/вопросы сессии сравнением не затронуты
+  assert.strictEqual(view.body.questions.length, 0);
+});

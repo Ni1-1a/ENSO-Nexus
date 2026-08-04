@@ -141,6 +141,7 @@ function render() {
   const busy = ['queued', 'running'].includes(v.jobStatus);
   $('sel-model').disabled = busy;
   $('sel-kb').disabled = busy || !$('sel-kb').options.length;
+  updateCompareButton();
   if (v.settings && document.activeElement !== $('sel-model')) {
     $('sel-model').value = v.settings.aiProvider ? `${v.settings.aiProvider}|${v.settings.aiModel || ''}` : '';
     if ($('sel-model').selectedIndex === -1) $('sel-model').value = '';
@@ -235,6 +236,33 @@ function renderSettingsOptions(health) {
     opt.textContent = `${b.label}${count !== undefined ? ` (${count} фрагм.)` : ''}`;
     kbSel.appendChild(opt);
   }
+
+  // чекбоксы доступных моделей для сравнения
+  const list = $('compare-list');
+  list.innerHTML = '';
+  for (const p of health.providers || []) {
+    if (!p.available) continue;
+    for (const m of p.models) {
+      const label = document.createElement('label');
+      label.innerHTML = `<input type="checkbox" data-provider="${esc(p.id)}" data-model="${esc(m)}">` +
+        `<span>${esc(m)}</span><span class="cl-provider">${esc(p.label)}</span>`;
+      list.appendChild(label);
+    }
+  }
+  list.addEventListener('change', updateCompareButton);
+  updateCompareButton();
+}
+
+function selectedCompareModels() {
+  return [...document.querySelectorAll('#compare-list input:checked')]
+    .map((cb) => ({ provider: cb.dataset.provider, model: cb.dataset.model }));
+}
+
+function updateCompareButton() {
+  const n = selectedCompareModels().length;
+  const busy = state.view && ['queued', 'running'].includes(state.view.jobStatus);
+  $('btn-compare').disabled = busy || n < 2 || n > 4 || !state.view || !state.view.files.length;
+  $('btn-compare').textContent = n >= 2 ? `Запустить сравнение (${n})` : 'Запустить сравнение (выберите 2–4)';
 }
 
 async function saveSettings(patch) {
@@ -359,6 +387,16 @@ async function init() {
     saveSettings({ aiProvider, aiModel });
   });
   $('sel-kb').addEventListener('change', () => saveSettings({ kbChoice: $('sel-kb').value }));
+
+  $('btn-compare').addEventListener('click', async () => {
+    const models = selectedCompareModels();
+    try {
+      await api(`/sessions/${state.session.id}/compare`, { method: 'POST', json: { models } });
+      toast(`Сравнение ${models.length} моделей запущено — это займёт несколько минут`);
+      $('compare-details').open = false;
+      await refresh();
+    } catch (err) { toast(err.message, 'error'); }
+  });
 
   $('btn-save-comment').addEventListener('click', async () => {
     try {

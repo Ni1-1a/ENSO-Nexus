@@ -7,7 +7,7 @@
   <meta name="description" content="AI-сервис анализа исходных данных для посадки здания на земельный участок и подготовки генплана по ГОСТ 21.508">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=3">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231e1b4b'/><path d='M25 70 L25 40 L50 25 L75 40 L75 70 Z' fill='none' stroke='%23818cf8' stroke-width='6'/></svg>">
 </head>
 <body>
@@ -72,6 +72,14 @@
           <label for="sel-kb">База знаний</label>
           <select id="sel-kb" disabled></select>
         </div>
+        <details id="compare-details">
+          <summary>Сравнение моделей</summary>
+          <p class="hint">Один и тот же анализ выполняется каждой выбранной моделью (по очереди), результат — сводная таблица и файл сравнения.</p>
+          <div id="compare-list" class="compare-list"></div>
+          <button id="btn-compare" class="btn btn-secondary btn-sm btn-block" type="button" disabled>
+            Запустить сравнение
+          </button>
+        </details>
       </div>
 
       <button id="btn-process" class="btn btn-primary btn-block" type="button" disabled>
@@ -131,6 +139,6 @@
     <p>ENSO Nexus Pilot 1 · Данные сессии хранятся <span id="ttl-hours">72</span> ч и удаляются автоматически. Файлы изолированы по сессиям.</p>
   </footer>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

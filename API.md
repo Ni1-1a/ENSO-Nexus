@@ -74,6 +74,7 @@ curl -X POST "$BASE/api/sessions/$ID/files" \
 |---|---|---|
 | POST | `/api/sessions/:id/settings` | `{ aiProvider, aiModel, kbChoice }` — выбор нейросети (`claude`/`chatgpt`/`lmstudio`/`ollama`/`demo`; `""` = по умолчанию сервера) и базы знаний (`main`/`grisha`). Недоступный провайдер → 400 с причиной. Список доступного — в `/api/health` (`providers`, `kbBases`) |
 | POST | `/api/sessions/:id/process` | Запустить обработку загруженных данных → `202` |
+| POST | `/api/sessions/:id/compare` | `{ models: [{provider, model}, …] }` (2–4 шт.) — сравнительный прогон: один анализ каждой моделью по очереди, без изменения фактов/вопросов сессии; итог — файл `СРАВНЕНИЕ-МОДЕЛЕЙ.md` и сводная таблица в чате → `202` |
 | POST | `/api/sessions/:id/messages` | `{ "text": "…" }` — сообщение помощнику; сохраняется и запускает обработку → `202` |
 | POST | `/api/sessions/:id/questions/:qid/answer` | `{ "answer": "…" }` — ответ на уточняющий вопрос. Если вопросов `pending` не осталось — обработка продолжается автоматически. Ответ: `{ ok, continued, pending }` |
 

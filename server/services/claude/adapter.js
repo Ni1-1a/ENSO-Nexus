@@ -155,7 +155,12 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
  */
 async function runAnalysis(sessionId, { instruction }) {
   const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
-  const route = effectiveProvider(session0);
+  return analyzeOnce(sessionId, { instruction, route: effectiveProvider(session0) });
+}
+
+/** Один прогон анализа с явным маршрутом (используется и обычной обработкой, и сравнением моделей). */
+async function analyzeOnce(sessionId, { instruction, route }) {
+  const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   const docProvider = route.provider === 'claude' ? 'anthropic' : 'local';
   const ctx = await buildContext(sessionId, docProvider);
   checkBudget(ctx.session);
@@ -286,4 +291,4 @@ function wrapApiError(err) {
   return err;
 }
 
-module.exports = { runAnalysis, maybeCompact, BudgetExceededError, AiUnavailableError, tryParse };
+module.exports = { runAnalysis, analyzeOnce, effectiveProvider, maybeCompact, BudgetExceededError, AiUnavailableError, tryParse };

@@ -14,7 +14,8 @@ function createApp() {
   app.use(cors);
   app.use(express.json({ limit: '256kb' }));
   app.use('/api', apiRouter);
-  app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h', index: 'index.html' }));
+  // без maxAge: браузер ревалидирует по ETag (304) — обновления интерфейса доходят сразу
+  app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html' }));
   app.use(notFound);
   app.use(errorHandler);
   return app;
