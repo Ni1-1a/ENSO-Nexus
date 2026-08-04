@@ -117,14 +117,25 @@ async function reindex({ log = () => {} } = {}) {
   const BATCH = 32;
   for (let i = 0; i < chunks.length && !failed; i += BATCH) {
     const batch = chunks.slice(i, i + BATCH);
-    try {
-      const vecs = await embed(batch.map((c) => `${c.doc} п.${c.clause}: ${c.text}`.slice(0, MAX_CHUNK_CHARS)));
+    let vecs = null;
+    for (let attempt = 1; attempt <= 4 && !vecs; attempt++) {
+      try {
+        vecs = await embed(batch.map((c) => `${c.doc} п.${c.clause}: ${c.text}`.slice(0, MAX_CHUNK_CHARS)));
+      } catch (err) {
+        if (attempt === 4) {
+          log(`Эмбеддинги недоступны после ${attempt} попыток (${err.message}) — сохраняю без векторов (поиск по словам)`);
+          failed = true;
+        } else {
+          log(`…повтор ${attempt} (эмбеддинги: ${err.message})`);
+          await new Promise((r) => setTimeout(r, attempt * 15000)); // LM Studio мог быть занят другой задачей
+        }
+      }
+    }
+    if (vecs) {
       batch.forEach((c, j) => insert.run(c.doc, c.clause, c.text, c.priority, toBlob(vecs[j])));
       embedded += batch.length;
       if ((i / BATCH) % 20 === 0) log(`…${embedded}/${chunks.length}`);
-    } catch (err) {
-      log(`Эмбеддинги недоступны (${err.message}) — сохраняю без векторов (поиск по словам)`);
-      failed = true;
+    } else {
       for (const c of chunks.slice(i)) insert.run(c.doc, c.clause, c.text, c.priority, null);
     }
   }
