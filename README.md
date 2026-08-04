@@ -37,7 +37,10 @@ Web/
 
 - **Backend:** Node.js ≥ 22.5, Express 4, встроенный `node:sqlite`, multer (загрузка), adm-zip (архивы и чтение DOCX), `@anthropic-ai/sdk`.
 - **Frontend:** семантический HTML + CSS + vanilla JS (без фреймворка и без шага сборки), Plus Jakarta Sans.
-- **AI:** Claude через официальный Anthropic API, модель по умолчанию `claude-opus-5`, structured outputs (`output_config.format`), prompt caching системного промта.
+- **AI:** три режима (выбираются автоматически, `AI_PROVIDER=auto`):
+  1. **anthropic** — Claude через официальный Anthropic API (`claude-opus-5`, structured outputs, prompt caching) при наличии `ANTHROPIC_API_KEY`;
+  2. **local** — локальная модель через OpenAI-совместимый сервер LM Studio (`http://localhost:1234/v1`, по умолчанию `qwen/qwen3-vl-30b`, structured output через `response_format: json_schema`; PDF передаются извлечённым текстом через pdf-parse, сканы честно помечаются);
+  3. **mock** — помеченная демо-заглушка, если недоступны оба.
 
 ## Установка и локальный запуск
 
@@ -58,7 +61,9 @@ npm start                   # http://localhost:3000
 
 | Переменная | Назначение |
 |---|---|
-| `ANTHROPIC_API_KEY` | Ключ Anthropic API (только на сервере; без него — демо-режим) |
+| `ANTHROPIC_API_KEY` | Ключ Anthropic API (только на сервере) |
+| `AI_PROVIDER` | `auto` (по умолч.) / `anthropic` / `local` / `mock` |
+| `LOCAL_AI_BASE_URL`, `LOCAL_AI_MODEL`, `LOCAL_AI_MAX_TOKENS` | Локальная модель (LM Studio) |
 | `ANTHROPIC_MODEL` | Модель (по умолчанию `claude-opus-5`) |
 | `ANTHROPIC_MAX_TOKENS`, `ANTHROPIC_REQUEST_TIMEOUT`, `ANTHROPIC_MAX_RETRIES` | Параметры запросов к API |
 | `DATA_DIR` | Каталог данных (SQLite, загрузки, результаты) |

@@ -1,6 +1,24 @@
 # Деплой — ENSO Nexus Pilot 1 Web
 
-## Выбранная платформа
+## Вариант A (текущий): свой компьютер + Cloudflare quick tunnel
+
+Работает сейчас, без аккаунтов и подписок: сервер приложения крутится на этом Mac (AI — локальная модель в LM Studio), публичный HTTPS даёт бесплатный quick-туннель Cloudflare.
+
+```bash
+cd "ENSO-Nexus/Pilot 1/Web"
+bash scripts/serve-public.sh        # старт: печатает публичный URL (и в logs/public-url.txt)
+bash scripts/serve-public.sh stop   # остановка
+```
+
+Скрипт: запускает `npm start` под `caffeinate -i` (Mac не уснёт, пока сервер работает; крышку не закрывать), поднимает `cloudflared tunnel --url http://localhost:3000` и сохраняет URL.
+
+Ограничения этого варианта:
+- URL вида `https://<случайные-слова>.trycloudflare.com` **меняется при каждом перезапуске** туннеля/компьютера — новую ссылку смотреть в `logs/public-url.txt`;
+- сервис доступен, только пока компьютер включён и в сети;
+- quick-туннели Cloudflare — для тестов/пилотов, без SLA. Для постоянного адреса: бесплатный named tunnel Cloudflare (нужен аккаунт Cloudflare + свой домен) или вариант B.
+- LM Studio должен быть запущен с загруженной моделью (`qwen/qwen3-vl-30b`), иначе приложение честно перейдёт в демо-режим.
+
+## Вариант B: облачная платформа
 
 **Render.com (free tier)** — рекомендованный вариант: один web-сервис обслуживает и API, и статику, HTTPS из коробки, деплой из git-репозитория по готовому [render.yaml](render.yaml). Альтернативы с тем же кодом: Railway, Fly.io, любой Docker-хостинг (готов [Dockerfile](Dockerfile)).
 
@@ -8,14 +26,8 @@
 
 ## Порядок деплоя (Render)
 
-1. Создать git-репозиторий с содержимым папки `Web/` и запушить на GitHub/GitLab:
-   ```bash
-   cd "ENSO-Nexus/Pilot 1/Web"
-   git init && git add . && git commit -m "ENSO Nexus Pilot 1 Web"
-   git remote add origin <URL вашего репозитория>
-   git push -u origin main
-   ```
-   `.gitignore` уже исключает `node_modules/`, `data/`, `.env` — секреты и данные в git не попадают.
+1. Запушить папку `Web/` на GitHub. Локальный git-репозиторий уже создан (коммит готов). Через **GitHub Desktop**: File → Add Local Repository → выбрать `ENSO-Nexus/Pilot 1/Web` → Push (репозиторий `Ni1-1a/ENSO-Nexus` уже создан на GitHub; в диалоге публикации выбрать его или нажать Publish).
+   `.gitignore` уже исключает `node_modules/`, `data/`, `logs/`, `.env` — секреты и данные пользователей в git не попадают. **Не публикуйте всю папку ENSO-Nexus целиком**: в ней есть закрытые документы и файлы с паролями (например, `n8n-Docker/.nc_pg_password`).
 2. В [dashboard.render.com](https://dashboard.render.com): **New → Blueprint** → указать репозиторий. Render прочитает `render.yaml` и создаст сервис `enso-nexus-pilot1`.
    (Либо **New → Web Service** вручную: Build `npm ci`, Start `npm start`, Health check `/api/health`.)
 3. В настройках сервиса → **Environment** добавить секрет:
