@@ -6,7 +6,19 @@ const { db, now } = require('./db');
 const { securityHeaders, cors, notFound, errorHandler } = require('./middleware');
 const { router: apiRouter, deleteSessionData } = require('./routes/api');
 
+/** Восстановление после рестарта: «зависшие» задачи помечаются ошибкой, сессии разблокируются. */
+function recoverInterruptedJobs() {
+  const stuck = db.prepare("SELECT id FROM sessions WHERE job_status IN ('queued','running')").all();
+  for (const s of stuck) {
+    db.prepare("UPDATE sessions SET job_status = 'failed', updated_at = ? WHERE id = ?").run(now(), s.id);
+    db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+      .run(s.id, 'Произошла ошибка', 'Обработка была прервана перезапуском сервера — запустите её повторно.', 'error', now());
+  }
+  if (stuck.length) console.log(`[recovery] прерванных задач: ${stuck.length}`);
+}
+
 function createApp() {
+  recoverInterruptedJobs();
   const app = express();
   app.set('trust proxy', 1); // behind Render/railway proxy: correct req.ip for rate limiting
   app.disable('x-powered-by');

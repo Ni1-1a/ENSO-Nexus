@@ -62,14 +62,23 @@ echo "Приложение опубликовано: $URL"
 echo "Постоянная ссылка (не меняется): https://ni1-1a.github.io/ENSO-Nexus/"
 
 # watchdog: каждую минуту проверяет сервер и туннель, чинит упавшее
+# (сервер перезапускается только после ДВУХ подряд неудачных проверок — под пиковой
+# нагрузкой LM Studio машина может коротко «замирать», рестарт убил бы активную задачу)
 (
+  server_fails=0
   while true; do
     sleep 60
-    if ! curl -s -m 5 -o /dev/null http://localhost:3000/api/health; then
-      echo "$(date '+%F %T') сервер недоступен — перезапуск" >> logs/watchdog.log
-      kill "$(cat logs/server.pid 2>/dev/null)" 2>/dev/null
-      start_server
-      sleep 8
+    if curl -s -m 10 -o /dev/null http://localhost:3000/api/health; then
+      server_fails=0
+    else
+      server_fails=$((server_fails + 1))
+      if [ "$server_fails" -ge 2 ]; then
+        echo "$(date '+%F %T') сервер недоступен (${server_fails} проверки) — перезапуск" >> logs/watchdog.log
+        kill "$(cat logs/server.pid 2>/dev/null)" 2>/dev/null
+        start_server
+        server_fails=0
+        sleep 8
+      fi
     fi
     url=$(cat logs/public-url.txt 2>/dev/null || true)
     ok=0

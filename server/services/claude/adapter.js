@@ -117,10 +117,14 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(config.anthropicRequestTimeoutMs),
+      signal: AbortSignal.timeout(config.localAiTimeoutMs),
     });
   } catch (err) {
-    throw new AiUnavailableError(`AI-сервер (${baseUrl.replace(/https?:\/\//, '').split('/')[0]}) недоступен. Убедитесь, что он запущен, и повторите.`);
+    const host = baseUrl.replace(/https?:\/\//, '').split('/')[0];
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new AiUnavailableError(`AI-сервер (${host}) не ответил за ${Math.round(config.localAiTimeoutMs / 60000)} мин — вероятно, занят другой задачей. Повторите позже.`);
+    }
+    throw new AiUnavailableError(`AI-сервер (${host}) недоступен. Убедитесь, что он запущен, и повторите.`);
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
