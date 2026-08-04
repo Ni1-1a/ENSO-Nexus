@@ -110,14 +110,24 @@ function chunkPage(doc, page, md) {
   const allChunks = [];
 
   for (const page of pages) {
+    const outFile = path.join(outDir, `p${String(page).padStart(3, '0')}.md`);
+    if (fs.existsSync(outFile) && fs.statSync(outFile).size > 0) {
+      console.log(`стр. ${page}: уже распознана — пропуск`);
+      continue;
+    }
     const t0 = Date.now();
     const png = renderPage(pdf, page, dpi);
     let { text, truncated } = await ocrPage(png);
     if (truncated) console.log(`  ! стр. ${page}: ответ упёрся в лимит, текст может быть неполным`);
-    fs.writeFileSync(path.join(outDir, `p${String(page).padStart(3, '0')}.md`), text);
-    const chunks = chunkPage(doc, page, text);
-    allChunks.push(...chunks);
-    console.log(`стр. ${page}: ${text.length} симв., чанков ${chunks.length}, ${(Date.now() - t0) / 1000 | 0} с`);
+    fs.writeFileSync(outFile, text);
+    console.log(`стр. ${page}: ${text.length} симв., ${(Date.now() - t0) / 1000 | 0} с`);
+  }
+
+  // чанки пересобираются из ВСЕХ распознанных страниц документа — запуск идемпотентен
+  for (const f of fs.readdirSync(outDir).filter((n) => /^p\d+\.md$/.test(n)).sort()) {
+    const page = parseInt(f.slice(1), 10);
+    const text = fs.readFileSync(path.join(outDir, f), 'utf8');
+    if (text.trim()) allChunks.push(...chunkPage(doc, page, text));
   }
 
   // добавляем чанки в векторный индекс базы (с резервной копией)
