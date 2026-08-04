@@ -17,17 +17,13 @@ bash scripts/serve-public.sh stop   # остановка
 - сервис доступен, только пока компьютер включён и в сети;
 - LM Studio должен быть запущен с загруженной моделью (`qwen/qwen3-vl-30b`), иначе приложение честно перейдёт в демо-режим.
 
-### Постоянный адрес (named tunnel Cloudflare)
+### Постоянная ссылка (работает сейчас, домен не нужен)
 
-На этом Mac уже работает именованный Cloudflare-туннель (автозапуск при загрузке, connector `4865d400-fc61-4f53-8abb-1ab311ce2588`). Чтобы получить постоянный адрес, в дашборде Cloudflare добавляется второй публичный хостнейм к этому же туннелю:
+**https://ni1-1a.github.io/ENSO-Nexus/** — постоянная страница-вход на GitHub Pages (ветка `gh-pages` этого репозитория). Она мгновенно перенаправляет на текущий адрес туннеля и **обновляется автоматически**: `scripts/serve-public.sh` после получения нового quick-URL вызывает `scripts/update-public-link.sh`, который коммитит новую страницу-редирект в `gh-pages` и пушит (GitHub Pages пересобирается за ~10–30 с). Эту ссылку можно раздавать пользователям — она не меняется.
 
-1. [one.dash.cloudflare.com](https://one.dash.cloudflare.com) → **Networks → Tunnels** → открыть туннель со статусом HEALTHY (connector ID выше) → **Edit**.
-2. Вкладка **Public Hostname** → **Add a public hostname**:
-   - Subdomain: `pilot1` (или любой другой), Domain: ваш домен;
-   - Service: Type **HTTP**, URL **localhost:3000**.
-3. Save — DNS-запись создастся автоматически, адрес `https://pilot1.<домен>` заработает через ~1 минуту и переживает перезагрузки.
+### Постоянный адрес на своём домене (опция на будущее)
 
-После этого quick-туннель (`cloudflared tunnel --url…` в `scripts/serve-public.sh`) не обязателен — достаточно работающего сервера приложения (`npm start` под `caffeinate`).
+Если появится собственный домен: добавить его в Cloudflare (бесплатный план), выполнить `cloudflared tunnel login` (авторизация в браузере), затем `cloudflared tunnel create pilot1` + `cloudflared tunnel route dns pilot1 pilot1.<домен>` + локальный config с ingress `http://localhost:3000` — получится адрес вида `https://pilot1.<домен>` без страницы-редиректа. Настроенные MCP-серверы Cloudflare (`.mcp.json` в рабочей директории) позволяют сделать это и через API после OAuth-авторизации.
 
 ## Вариант B: облачная платформа
 
