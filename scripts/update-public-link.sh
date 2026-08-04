@@ -14,10 +14,13 @@ fi
 WT=$(mktemp -d)
 trap 'rm -rf "$WT"' EXIT
 
-# ветка gh-pages: берём с origin, либо создаём пустую
-if git fetch origin gh-pages 2>/dev/null; then
-  git worktree add --detach "$WT" origin/gh-pages >/dev/null
-  git -C "$WT" switch -c gh-pages >/dev/null 2>&1 || git -C "$WT" checkout -b gh-pages >/dev/null 2>&1
+# ветка gh-pages: синхронизируем с origin, либо создаём пустую
+git fetch origin gh-pages >/dev/null 2>&1 || true
+if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+  git branch -f gh-pages origin/gh-pages >/dev/null 2>&1
+  git worktree add "$WT" gh-pages >/dev/null
+elif git show-ref --verify --quiet refs/heads/gh-pages; then
+  git worktree add "$WT" gh-pages >/dev/null
 else
   git worktree add --detach "$WT" >/dev/null
   git -C "$WT" checkout --orphan gh-pages >/dev/null 2>&1

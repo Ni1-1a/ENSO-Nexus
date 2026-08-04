@@ -43,6 +43,7 @@ function recordUsage(sessionId, usage) {
   console.log(`[tokens] session=${sessionId} in=${input} out=${output}`);
 }
 
+/** Returns { text, truncated } — truncated means the output hit the token cap (JSON likely incomplete). */
 async function callModel({ system, messages, sessionId }) {
   if (config.aiMode === 'local') return callLocalModel({ system, messages, sessionId });
   const response = await client().messages.create({
@@ -57,8 +58,13 @@ async function callModel({ system, messages, sessionId }) {
     throw new AiUnavailableError('Модель отклонила запрос по соображениям безопасности.');
   }
   const text = response.content.find((b) => b.type === 'text')?.text || '';
-  return text;
+  return { text, truncated: response.stop_reason === 'max_tokens' };
 }
+
+const LOCAL_COMPACT_RULE =
+  '\n\nЖёсткий бюджет ответа — 8000 токенов, обрезанный JSON недопустим. Пиши компактно: ' +
+  'report_markdown — не длиннее ~1000 слов (только существенное по шагам), message — 3–6 предложений, ' +
+  'facts — не более 20, без повторов.';
 
 /** OpenAI-compatible local server (LM Studio). Content blocks are flattened to text. */
 function flattenForLocal(content) {
@@ -77,7 +83,7 @@ async function callLocalModel({ system, messages, sessionId, jsonSchema = true, 
     max_tokens: maxTokens || config.localAiMaxTokens,
     temperature: 0.2,
     messages: [
-      { role: 'system', content: system },
+      { role: 'system', content: jsonSchema ? system + LOCAL_COMPACT_RULE : system },
       ...messages.map((m) => ({ role: m.role, content: flattenForLocal(m.content) })),
     ],
   };
@@ -115,7 +121,8 @@ async function callLocalModel({ system, messages, sessionId, jsonSchema = true, 
     input_tokens: data.usage?.prompt_tokens || 0,
     output_tokens: data.usage?.completion_tokens || 0,
   });
-  return data.choices?.[0]?.message?.content || '';
+  const choice = data.choices?.[0];
+  return { text: choice?.message?.content || '', truncated: choice?.finish_reason === 'length' };
 }
 
 /**
@@ -137,30 +144,35 @@ async function runAnalysis(sessionId, { instruction }) {
   for (const m of ctx.history) messages.push(m);
   messages.push({ role: 'user', content: instruction });
 
-  let text;
+  let out;
   try {
-    text = await callModel({ system: SYSTEM_PROMPT, messages, sessionId });
+    out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId });
   } catch (err) {
     throw wrapApiError(err);
   }
 
-  let parsed = tryParse(text);
+  let parsed = tryParse(out.text);
   let check = validateResponse(parsed);
   if (!check.ok) {
-    // limited retry: ask the model to fix its structure
+    // limited retry: truncation gets a "be compact" correction, everything else — a schema correction
     const session2 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     checkBudget(session2);
-    messages.push({ role: 'assistant', content: text.slice(0, 8000) });
-    messages.push({ role: 'user', content: `Твой предыдущий ответ не прошёл валидацию схемы (${check.error}). Верни корректный JSON строго по схеме.` });
+    const correction = out.truncated
+      ? 'Твой предыдущий ответ был обрезан по лимиту токенов и JSON не завершился. Сформируй ответ заново, значительно компактнее: report_markdown — не длиннее ~800 слов, message — 3–5 предложений, facts — только ключевые. Верни полный валидный JSON.'
+      : `Твой предыдущий ответ не прошёл валидацию схемы (${check.error}). Верни корректный JSON строго по схеме.`;
+    messages.push({ role: 'assistant', content: out.text.slice(0, 6000) || '(пустой ответ)' });
+    messages.push({ role: 'user', content: correction });
     try {
-      text = await callModel({ system: SYSTEM_PROMPT, messages, sessionId });
+      out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId });
     } catch (err) {
       throw wrapApiError(err);
     }
-    parsed = tryParse(text);
+    parsed = tryParse(out.text);
     check = validateResponse(parsed);
     if (!check.ok) {
-      throw new AiUnavailableError('Модель вернула некорректный ответ. Попробуйте повторить обработку.');
+      throw new AiUnavailableError(out.truncated
+        ? 'Ответ модели дважды превысил лимит токенов. Попробуйте ещё раз или разбейте задачу: попросите краткий отчёт.'
+        : 'Модель вернула некорректный ответ. Попробуйте повторить обработку.');
     }
   }
   return check.value;
@@ -194,9 +206,9 @@ async function maybeCompact(sessionId) {
     const userText = `${ctx.stateText}\n\nПоследние сообщения:\n${ctx.history.map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : '[документы]'}`).join('\n').slice(0, 30000)}`;
     let summary = '';
     if (config.aiMode === 'local') {
-      summary = await callLocalModel({
+      ({ text: summary } = await callLocalModel({
         system, messages: [{ role: 'user', content: userText }], sessionId, jsonSchema: false, maxTokens: 1500,
-      });
+      }));
     } else {
       const response = await client().messages.create({
         model: config.anthropicModel,
