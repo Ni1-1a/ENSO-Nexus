@@ -22,7 +22,9 @@ start_tunnel() {
   local url=""
   for _ in $(seq 1 30); do
     sleep 1
-    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' logs/tunnel.log | head -1 || true)
+    # хост API (api.trycloudflare.com) встречается в строках ОШИБОК cloudflared —
+    # без фильтра битый запуск туннеля записывал его в public-url.txt как «URL»
+    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' logs/tunnel.log | grep -v '^https://api\.trycloudflare\.com$' | head -1 || true)
     [ -n "$url" ] && break
   done
   if [ -n "$url" ]; then
