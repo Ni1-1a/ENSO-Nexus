@@ -127,7 +127,10 @@ function ensureLoaded(modelId, { onProgress = () => {} } = {}) {
     try { loaded = await listLoaded(); } catch { return { ok: true, managed: false }; }
 
     const target = loaded.find((m) => m.modelKey === modelId && m.type !== 'embedding');
-    if (target && target.contextLength >= wantCtx && target.contextLength <= wantCtx * 4) {
+    // «уже загружена корректно» = контекст не меньше нужного И веса + KV фактического
+    // контекста укладываются в бюджет памяти (262144 по умолчанию — не укладываются)
+    if (target && target.contextLength >= wantCtx &&
+        target.sizeBytes + kvBytes(modelId, target.contextLength) <= MEMORY_BUDGET_BYTES) {
       return { ok: true, managed: true, alreadyLoaded: true };
     }
     if (target) {

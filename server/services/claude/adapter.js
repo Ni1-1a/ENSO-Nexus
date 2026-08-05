@@ -87,14 +87,14 @@ function effectiveProvider(session) {
 /** Returns { text, truncated } — truncated means the output hit the token cap (JSON likely incomplete). */
 async function callModel({ system, messages, sessionId, route }) {
   if (route.provider === 'lmstudio') {
-    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.localAiBaseUrl, model: route.model || config.localAiModel });
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.localAiBaseUrl, model: route.model || config.localAiModel, provider: 'lmstudio' });
   }
   if (route.provider === 'ollama') {
-    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.ollamaBaseUrl, model: route.model });
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.ollamaBaseUrl, model: route.model, provider: 'ollama' });
   }
   if (route.provider === 'chatgpt') {
     if (!config.openaiApiKey) throw new AiUnavailableError('ChatGPT не настроен: нужен OPENAI_API_KEY на сервере.');
-    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel });
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel, provider: 'chatgpt' });
   }
   if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
   progress.set(sessionId, {
@@ -116,10 +116,12 @@ async function callModel({ system, messages, sessionId, route }) {
   return { text, truncated: response.stop_reason === 'max_tokens' };
 }
 
-const LOCAL_COMPACT_RULE =
-  `\n\nЖёсткий бюджет ответа — ${Math.max(1000, config.localAiMaxTokens - 2000)} токенов, обрезанный JSON недопустим. Пиши компактно: ` +
-  'report_markdown — не длиннее ~1200 слов (только существенное по шагам), message — 3–6 предложений, ' +
-  'facts — не более 20, без повторов.';
+/** Правило компактности для локальных моделей — от фактического бюджета ответа. */
+function compactRule(maxTokens) {
+  return `\n\nЖёсткий бюджет ответа — ${Math.max(1000, maxTokens - 2000)} токенов, обрезанный JSON недопустим. Пиши компактно: ` +
+    'report_markdown — не длиннее ~1200 слов (только существенное по шагам), message — 3–6 предложений, ' +
+    'facts — не более 20, без повторов.';
+}
 
 /** OpenAI-compatible local server (LM Studio). Content blocks are flattened to text. */
 function flattenForLocal(content) {
@@ -130,6 +132,79 @@ function flattenForLocal(content) {
     if (b.type === 'image') return '[изображение — в локальном режиме не анализируется]';
     return '';
   }).join('\n\n');
+}
+
+/* ---------- бюджет контекста: промпт + ответ должны помещаться в окно модели ---------- */
+/**
+ * Замер 2026-08-05: русский текст в токенизаторе Qwen ≈ 2,5 симв/токен, но
+ * цифро-ёмкие документы (CSV/DXF, таблицы) токенизируются плотнее — берём 2,2
+ * с запасом. Фактическое соотношение печатается в лог после каждого ответа.
+ */
+const CHARS_PER_TOKEN = 2.2;
+
+function messagesChars(messages) {
+  return messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
+}
+
+/**
+ * Усекает промпт до budgetChars, жертвуя в порядке важности:
+ * старая история диалога → выдержки базы знаний → тексты документов → состояние сессии.
+ * System (первое) и текущая инструкция (последнее сообщение) не трогаются.
+ * Возвращает человекочитаемый список того, что было сокращено.
+ */
+function trimToBudget(messages, budgetChars) {
+  const notes = [];
+  const kindOf = (m) => {
+    const head = String(m.content).slice(0, 30);
+    if (head.startsWith('<session_state>')) return 'state';
+    if (head.startsWith('<knowledge_base>')) return 'kb';
+    if (head.startsWith('<uploaded_document')) return 'docs';
+    return 'history';
+  };
+  const over = () => messagesChars(messages) - budgetChars;
+
+  // 1) старые сообщения истории; system, финальная инструкция и последние 4 реплики сохраняются
+  let removed = 0;
+  while (over() > 0) {
+    const history = messages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m, i }) => i > 0 && i < messages.length - 1 && kindOf(m) === 'history');
+    if (history.length <= 4) break;
+    messages.splice(history[0].i, 1);
+    removed++;
+  }
+  if (removed) notes.push(`убрано ${removed} старых сообщений истории`);
+
+  // 2) выдержки базы знаний
+  if (over() > 0) {
+    const kb = messages.find((m) => kindOf(m) === 'kb');
+    if (kb && kb.content.length > 8000) {
+      kb.content = kb.content.slice(0, 8000) + '\n…[выдержки сокращены по лимиту контекста]\n</knowledge_base>';
+      notes.push('сокращены выдержки базы знаний');
+    }
+  }
+
+  // 3) тексты документов (усечение с конца, последние документы страдают первыми)
+  if (over() > 0) {
+    const docs = messages.find((m) => kindOf(m) === 'docs');
+    if (docs && docs.content.length > 8000) {
+      const keep = Math.max(8000, docs.content.length - over());
+      if (keep < docs.content.length) {
+        docs.content = docs.content.slice(0, keep) + '\n…[тексты документов обрезаны по лимиту контекста модели]';
+        notes.push('усечены тексты документов');
+      }
+    }
+  }
+
+  // 4) состояние сессии — крайний случай
+  if (over() > 0) {
+    const st = messages.find((m) => kindOf(m) === 'state');
+    if (st && st.content.length > 6000) {
+      st.content = st.content.slice(0, 6000) + '\n…[состояние сокращено]\n</session_state>';
+      notes.push('сокращено состояние сессии');
+    }
+  }
+  return notes;
 }
 
 /** Чтение SSE-потока /chat/completions; onToken(count) — для живого прогресса. */
@@ -160,9 +235,10 @@ async function readSseStream(res, onToken) {
   return { text, usage, truncated: finish === 'length' };
 }
 
-async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, jsonSchema = true, maxTokens, stream = true, attempt = 1 }) {
+async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true }) {
   const modelId = model || config.localAiModel;
   const isLmStudio = baseUrl === config.localAiBaseUrl;
+  const providerId = provider || (isLmStudio ? 'lmstudio' : 'openai-compat');
 
   // Явная загрузка модели с нужным контекстом (вместо непредсказуемого JIT):
   // при нехватке памяти менеджер осознанно выгружает другие модели.
@@ -179,12 +255,21 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     }
   }
 
+  // Бюджет окна модели: у маленьких окон сначала ужимается ответ (max_tokens),
+  // чтобы промпту гарантированно осталось не меньше четверти окна.
+  const ctxTokens = isLmStudio ? modelManager.desiredContext(modelId) : 0;
+  const reserveTokens = ctxTokens ? Math.max(2048, Math.round(ctxTokens * 0.05)) : 0;
+  let effMaxTokens = maxTokens || config.localAiMaxTokens;
+  if (ctxTokens && ctxTokens - effMaxTokens - reserveTokens < ctxTokens / 4) {
+    effMaxTokens = Math.max(1024, ctxTokens - reserveTokens - Math.ceil(ctxTokens / 4));
+  }
+
   const body = {
     model: modelId,
-    max_tokens: maxTokens || config.localAiMaxTokens,
+    max_tokens: effMaxTokens,
     temperature: 0.2,
     messages: [
-      { role: 'system', content: jsonSchema ? system + LOCAL_COMPACT_RULE : system },
+      { role: 'system', content: jsonSchema ? system + compactRule(effMaxTokens) : system },
       ...messages.map((m) => ({ role: m.role, content: flattenForLocal(m.content) })),
     ],
   };
@@ -199,8 +284,34 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     };
   }
 
+  // Бюджет контекста: промпт + max_tokens не должны превышать окно модели,
+  // иначе LM Studio вернёт 400 или молча отбросит середину промпта.
+  if (isLmStudio) {
+    const budgetChars = Math.floor((ctxTokens - effMaxTokens - reserveTokens) * CHARS_PER_TOKEN);
+    const beforeChars = messagesChars(body.messages);
+    if (beforeChars > budgetChars) {
+      const notes = trimToBudget(body.messages, budgetChars);
+      const afterChars = messagesChars(body.messages);
+      const detail = `${Math.round(beforeChars / 1000)} → ${Math.round(afterChars / 1000)} тыс. символов: ${notes.join('; ') || 'сокращать нечего'}`;
+      console.warn(`[local-ai] промпт превышает контекст ${ctxTokens} токенов — ${notes.length ? 'усечён' : 'усечь не удалось'} (${detail})`);
+      if (logTrimEvent && notes.length) {
+        try {
+          db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+            .run(sessionId, 'Материалы сокращены под контекст модели', detail, 'warn', now());
+        } catch { /* журнал не должен ронять обработку */ }
+      }
+    }
+    // финальный зажим: ответу — не больше, чем осталось в окне после промпта
+    const promptTokensEst = Math.ceil(messagesChars(body.messages) / CHARS_PER_TOKEN);
+    const room = ctxTokens - promptTokensEst - reserveTokens;
+    if (room < body.max_tokens) {
+      body.max_tokens = Math.max(1024, room);
+      if (jsonSchema) body.messages[0].content = system + compactRule(body.max_tokens);
+    }
+  }
+
   progress.set(sessionId, {
-    phase: 'waiting_model', model: modelId, provider: isLmStudio ? 'lmstudio' : 'openai-compat',
+    phase: 'waiting_model', model: modelId, provider: providerId,
     label: `Запрос отправлен — модель ${modelId} обрабатывает контекст…`, tokensOut: 0,
   });
 
@@ -237,17 +348,17 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       } else {
         await new Promise((r) => setTimeout(r, attempt * 15000));
       }
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, jsonSchema, maxTokens, stream, attempt: attempt + 1 });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false });
     }
     // сервер не понял параметры стриминга — повтор без стриминга
     if (stream && /stream/i.test(detail)) {
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, jsonSchema, maxTokens, stream: false, attempt });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false });
     }
     // некоторые модели не принимают json_schema — один повтор в режиме «просто JSON»
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callOpenAiCompat({
         system: system + '\n\nОтвечай ТОЛЬКО валидным JSON строго по описанной схеме, без пояснений вокруг.',
-        messages, sessionId, baseUrl, apiKey, model, jsonSchema: false, maxTokens, stream,
+        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false,
       });
     }
     throw new AiUnavailableError(humanizeLocalError(res.status, detail));
@@ -277,6 +388,11 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     input_tokens: usage?.prompt_tokens || 0,
     output_tokens: usage?.completion_tokens || 0,
   });
+  if (isLmStudio && usage?.prompt_tokens) {
+    // калибровка оценки CHARS_PER_TOKEN по фактическому расходу токенов
+    const sentChars = messagesChars(body.messages);
+    console.log(`[local-ai] калибровка: ${(sentChars / usage.prompt_tokens).toFixed(2)} симв/токен (промпт ${usage.prompt_tokens} ток., ${Math.round(sentChars / 1000)} тыс. симв.)`);
+  }
   return { text, truncated };
 }
 
@@ -389,7 +505,12 @@ async function maybeCompact(sessionId) {
   try {
     checkBudget(ctx.session);
     const system = 'Сожми диалог в резюме для памяти AI-ассистента по генплану. Сохрани: требования пользователя, ключевые факты и числа с источниками, принятые решения, ответы на вопросы, открытые вопросы. Без воды.';
-    const userText = `${ctx.stateText}\n\nПоследние сообщения:\n${ctx.history.map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : '[документы]'}`).join('\n').slice(0, 30000)}`;
+    let userText = `${ctx.stateText}\n\nПоследние сообщения:\n${ctx.history.map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : '[документы]'}`).join('\n').slice(0, 30000)}`;
+    if (config.aiMode === 'local') {
+      // trimToBudget этот формат промпта не режет — укладываем в половину окна модели сами
+      const capChars = Math.floor(modelManager.desiredContext(config.localAiModel) * CHARS_PER_TOKEN / 2);
+      userText = userText.slice(0, capChars);
+    }
     let summary = '';
     if (config.aiMode === 'local') {
       ({ text: summary } = await callOpenAiCompat({
@@ -415,6 +536,10 @@ function wrapApiError(err) {
   if (err instanceof BudgetExceededError || err instanceof AiUnavailableError) return err;
   let Anthropic;
   try { Anthropic = require('@anthropic-ai/sdk'); } catch { return err; }
+  if (err instanceof Anthropic.APIError) {
+    // полная причина — в консоль и logs/ai-errors.log; раньше тело ошибки Anthropic терялось
+    logAiError({ where: 'anthropic', status: err.status, detail: String(err.message || '').slice(0, 2000) });
+  }
   if (err instanceof Anthropic.AuthenticationError) {
     return new AiUnavailableError('AI-сервис не настроен (ошибка авторизации). Обратитесь к администратору.');
   }
@@ -425,6 +550,10 @@ function wrapApiError(err) {
     return new AiUnavailableError('Нет соединения с AI-сервисом. Повторите попытку позже.');
   }
   if (err instanceof Anthropic.APIError) {
+    if (err.status === 400) {
+      const reason = String(err.message || '').replace(/^\d+\s+/, '').slice(0, 200);
+      return new AiUnavailableError(`AI-сервис отклонил запрос (400)${reason ? `: ${reason}` : ''}.`);
+    }
     return new AiUnavailableError(`AI-сервис временно недоступен (${err.status || '5xx'}). Повторите попытку позже.`);
   }
   return err;

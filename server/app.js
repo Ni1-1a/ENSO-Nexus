@@ -3,7 +3,7 @@ const path = require('path');
 const express = require('express');
 const config = require('./config');
 const { db, now } = require('./db');
-const { securityHeaders, cors, notFound, errorHandler } = require('./middleware');
+const { securityHeaders, cors, notFound, logErrorResponses, errorHandler } = require('./middleware');
 const { router: apiRouter, deleteSessionData } = require('./routes/api');
 
 /** Восстановление после рестарта: «зависшие» задачи помечаются ошибкой, сессии разблокируются. */
@@ -25,7 +25,7 @@ function createApp() {
   app.use(securityHeaders);
   app.use(cors);
   app.use(express.json({ limit: '256kb' }));
-  app.use('/api', apiRouter);
+  app.use('/api', logErrorResponses, apiRouter);
   // без maxAge: браузер ревалидирует по ETag (304) — обновления интерфейса доходят сразу
   app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html' }));
   app.use(notFound);

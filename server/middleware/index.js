@@ -68,6 +68,21 @@ function notFound(req, res) {
   res.status(404).json({ error: 'Не найдено' });
 }
 
+/**
+ * Каждый ответ 4xx/5xx с телом {error} попадает в серверный лог вместе с маршрутом —
+ * причина любой клиентской ошибки (в т.ч. 400) видна без дополнительной отладки.
+ */
+function logErrorResponses(req, res, next) {
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode >= 400 && body && body.error) {
+      console.warn(`[http ${res.statusCode}] ${req.method} ${req.originalUrl} — ${body.error}`);
+    }
+    return json(body);
+  };
+  next();
+}
+
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
   if (err.type === 'entity.too.large') {
@@ -84,4 +99,4 @@ function errorHandler(err, req, res, next) {
   res.status(status).json({ error: status >= 500 ? 'Внутренняя ошибка сервера' : err.message });
 }
 
-module.exports = { rateLimit, sessionAuth, securityHeaders, cors, notFound, errorHandler };
+module.exports = { rateLimit, sessionAuth, securityHeaders, cors, notFound, logErrorResponses, errorHandler };

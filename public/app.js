@@ -5,12 +5,29 @@ const $ = (id) => document.getElementById(id);
 const state = {
   session: null,          // {id, token}
   view: null,             // last session view from server
+  health: null,           // last /health (providers, limits)
   polling: null,
   limits: null,
   uploading: false,
+  progressClockOffset: 0,   // поправка часов клиента относительно сервера
+  lastProgressUpdatedAt: 0, // updatedAt последнего учтённого обновления прогресса
 };
 
 const LS_KEY = 'enso-pilot1-session';
+const THEME_KEY = 'enso-pilot1-theme';
+
+/* ---------------- тема оформления ---------------- */
+function applyTheme(mode) {
+  if (mode === 'light' || mode === 'dark') document.documentElement.dataset.theme = mode;
+  else delete document.documentElement.dataset.theme;
+  const seg = $('theme-seg');
+  if (seg) {
+    for (const b of seg.querySelectorAll('button[data-theme]')) {
+      b.setAttribute('aria-checked', String(b.dataset.theme === mode));
+    }
+  }
+}
+applyTheme(localStorage.getItem(THEME_KEY) || 'auto');
 
 /* ---------------- API ---------------- */
 async function api(path, options = {}) {
@@ -121,6 +138,8 @@ function render() {
   $('btn-process').disabled = !has || !v.files.length || ['queued', 'running'].includes(v.jobStatus);
   $('chat-input').disabled = !has || ['queued', 'running'].includes(v.jobStatus);
   $('btn-send').disabled = $('chat-input').disabled;
+  updateAiBadge();
+  renderProgress();
   if (!has) return;
 
   // files
@@ -143,8 +162,7 @@ function render() {
   $('sel-kb').disabled = busy || !$('sel-kb').options.length;
   updateCompareButton();
   if (v.settings && document.activeElement !== $('sel-model')) {
-    $('sel-model').value = v.settings.aiProvider ? `${v.settings.aiProvider}|${v.settings.aiModel || ''}` : '';
-    if ($('sel-model').selectedIndex === -1) $('sel-model').value = '';
+    setModelSelect(v.settings.aiProvider ? `${v.settings.aiProvider}|${v.settings.aiModel || ''}` : '');
   }
   if (v.settings && document.activeElement !== $('sel-kb')) {
     $('sel-kb').value = v.settings.kbChoice || 'main';
@@ -210,9 +228,150 @@ function render() {
     `<div><dt>${esc(f.key)}</dt><dd>${esc(f.value)}${f.source ? ` <span class="meta">(${esc(f.source)})</span>` : ''}</dd></div>`).join('');
 }
 
+/* ---------------- бейдж действующей нейросети ---------------- */
+const PROVIDER_LABELS = { claude: 'Claude', chatgpt: 'ChatGPT', lmstudio: 'Локальная модель', ollama: 'Ollama', demo: 'ДЕМО-РЕЖИМ' };
+
+function updateAiBadge() {
+  const ai = state.view && state.view.ai;
+  let text, mode;
+  if (ai && ai.provider) {
+    text = ai.provider === 'demo' ? 'ДЕМО-РЕЖИМ'
+      : `${PROVIDER_LABELS[ai.provider] || ai.provider}: ${ai.model || '…'}`;
+    mode = ai.provider === 'demo' ? 'mock'
+      : (ai.provider === 'claude' || ai.provider === 'chatgpt') ? 'live' : 'local';
+  } else if (state.health) {
+    const h = state.health;
+    text = h.aiMode === 'live' ? `AI: ${h.model}`
+      : h.aiMode === 'local' ? `Локальная модель: ${h.model}` : 'ДЕМО-РЕЖИМ';
+    mode = h.aiMode;
+  } else return;
+  $('ai-badge-text').textContent = text;
+  $('ai-badge').dataset.mode = mode;
+  $('ai-badge').title = `Действующая нейросеть: ${text}`;
+}
+
+/* ---------------- живой индикатор выполнения ---------------- */
+const PROGRESS_STEPS = [
+  { phase: 'preparing', label: 'Подготовка контекста' },
+  { phase: 'retrieving', label: 'Поиск в базе знаний' },
+  { phase: 'loading_model', label: 'Загрузка модели' },
+  { phase: 'waiting_model', label: 'Обработка запроса моделью' },
+  { phase: 'generating', label: 'Генерация ответа' },
+  { phase: 'validating', label: 'Проверка структуры ответа' },
+  { phase: 'saving', label: 'Сохранение результатов' },
+];
+const PHASE_PERCENT = { preparing: 8, retrieving: 18, loading_model: 30, waiting_model: 45, generating: 50, validating: 92, saving: 97 };
+const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+let progressTimer = null;
+function renderProgress() {
+  const v = state.view;
+  const card = $('progress-card');
+  const active = v && ['queued', 'running'].includes(v.jobStatus);
+  if (!active) {
+    card.hidden = true;
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    return;
+  }
+  const p = v.jobProgress || null;
+  card.hidden = false;
+  $('progress-title').textContent = v.jobStatus === 'queued' ? 'Задача в очереди' : 'Выполняется анализ';
+  $('progress-model').textContent = p && p.model
+    ? `${PROVIDER_LABELS[p.provider] || p.provider || 'Модель'} · ${p.model}` : '';
+  $('progress-label').textContent = (p && p.label) || 'Ожидание начала обработки…';
+
+  const bar = $('progress-bar');
+  const phase = p && p.phase;
+  if (phase && PHASE_PERCENT[phase] !== undefined) {
+    let pct = PHASE_PERCENT[phase];
+    // на генерации полоса растёт с числом токенов, асимптотически к 90%
+    if (phase === 'generating') pct = 50 + Math.round(40 * (1 - Math.exp(-(p.tokensOut || 0) / 3000)));
+    bar.classList.remove('indeterminate');
+    bar.style.width = `${pct}%`;
+  } else {
+    bar.classList.add('indeterminate');
+    bar.style.width = '';
+  }
+
+  const tok = $('progress-tokens');
+  if (p && p.tokensOut > 0) {
+    tok.hidden = false;
+    tok.textContent = `Сгенерировано токенов: ~${p.tokensOut.toLocaleString('ru-RU')}`;
+  } else tok.hidden = true;
+
+  const stepIdx = PROGRESS_STEPS.findIndex((s) => s.phase === phase);
+  $('progress-steps').innerHTML = PROGRESS_STEPS.map((s, i) => {
+    const cls = stepIdx < 0 ? '' : i < stepIdx ? 'done' : i === stepIdx ? 'current' : '';
+    const ico = cls === 'done' ? CHECK_SVG : cls === 'current' ? '<span class="step-spinner"></span>' : '';
+    return `<li class="${cls}"><span class="step-ico">${ico}</span>${s.label}</li>`;
+  }).join('');
+
+  // поправка часов — только при реальном обновлении прогресса, иначе таймер замирает
+  if (p && p.updatedAt && p.updatedAt !== state.lastProgressUpdatedAt) {
+    state.progressClockOffset = Date.now() - p.updatedAt;
+    state.lastProgressUpdatedAt = p.updatedAt;
+  }
+  if (!progressTimer) progressTimer = setInterval(updateElapsed, 500);
+  updateElapsed();
+}
+
+function updateElapsed() {
+  const p = state.view && state.view.jobProgress;
+  if (!p || !p.startedAt) { $('progress-elapsed').textContent = ''; return; }
+  const s = Math.max(0, Math.floor((Date.now() - state.progressClockOffset - p.startedAt) / 1000));
+  $('progress-elapsed').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
 /* ---------------- настройки анализа (нейросеть + база) ---------------- */
+/** Ставит значение select модели; недоступную сохранённую модель показывает честно, не сбрасывая. */
+function setModelSelect(value) {
+  const sel = $('sel-model');
+  const stale = sel.querySelector('option[data-missing]');
+  if (stale) stale.remove();
+  sel.value = value;
+  if (sel.selectedIndex === -1 && value) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = `${value.split('|')[1] || value} (недоступна сейчас)`;
+    opt.dataset.missing = '1';
+    sel.appendChild(opt);
+    sel.value = value;
+  }
+  updateModelNote();
+}
+
+/** Подсказка под select: параметры выбранной локальной модели или предупреждение. */
+function updateModelNote() {
+  const note = $('model-note');
+  const sel = $('sel-model');
+  const opt = sel.selectedOptions[0];
+  if (opt && opt.dataset.missing) {
+    note.hidden = false;
+    note.textContent = 'Сохранённая модель сейчас недоступна — проверьте, запущен ли её сервер (LM Studio/Ollama). Запросы будут завершаться ошибкой, пока модель не появится.';
+    return;
+  }
+  const [provider, model] = (sel.value || '|').split('|');
+  const info = provider === 'lmstudio' && state.health
+    ? (state.health.providers || []).find((p) => p.id === 'lmstudio')?.modelsInfo?.find((m) => m.id === model)
+    : null;
+  if (info) {
+    const parts = [`контекст ${(info.context || 0).toLocaleString('ru-RU')} токенов`];
+    if (info.sizeGb) parts.push(`${info.sizeGb} ГБ`);
+    parts.push(info.loaded ? 'сейчас загружена в память' : 'загрузится при первом запросе (1–2 мин)');
+    if (info.note) parts.push(info.note);
+    note.hidden = false;
+    note.textContent = parts.join(' · ');
+  } else {
+    note.hidden = true;
+    note.textContent = '';
+  }
+}
+
 function renderSettingsOptions(health) {
   const sel = $('sel-model');
+  const kbSelPrev = $('sel-kb').value;
+  const modelPrev = sel.value;
+  const comparePrev = new Set(selectedCompareModels().map((m) => `${m.provider}|${m.model}`));
   sel.innerHTML = '<option value="">По умолчанию (как настроен сервер)</option>';
   for (const p of health.providers || []) {
     const group = document.createElement('optgroup');
@@ -246,11 +405,19 @@ function renderSettingsOptions(health) {
       const label = document.createElement('label');
       label.innerHTML = `<input type="checkbox" data-provider="${esc(p.id)}" data-model="${esc(m)}">` +
         `<span>${esc(m)}</span><span class="cl-provider">${esc(p.label)}</span>`;
+      label.querySelector('input').checked = comparePrev.has(`${p.id}|${m}`);
       list.appendChild(label);
     }
   }
-  list.addEventListener('change', updateCompareButton);
+
+  // после перестройки innerHTML браузер сбрасывает значения — восстанавливаем сами,
+  // не полагаясь на render() (он пропускает восстановление, пока select в фокусе)
+  const s = state.view && state.view.settings;
+  setModelSelect(s ? (s.aiProvider ? `${s.aiProvider}|${s.aiModel || ''}` : '') : modelPrev);
+  $('sel-kb').value = s ? (s.kbChoice || 'main') : kbSelPrev;
+
   updateCompareButton();
+  updateModelNote();
 }
 
 function selectedCompareModels() {
@@ -272,7 +439,8 @@ async function saveSettings(patch) {
   } catch (err) {
     toast(err.message, 'error');
   }
-  await refresh().catch(() => {});
+  await refresh().catch((err) => console.warn('refresh after settings:', err));
+  loadHealth().catch((err) => console.warn('health after settings:', err));
 }
 
 /* ---------------- data flow ---------------- */
@@ -288,7 +456,7 @@ function managePolling() {
   if (active && !state.polling) {
     state.polling = setInterval(async () => {
       try { await refresh(); } catch (err) { console.warn(err); }
-    }, 1800);
+    }, 1200);
   } else if (!active && state.polling) {
     clearInterval(state.polling);
     state.polling = null;
@@ -326,7 +494,11 @@ async function download(resultId, filename) {
   const res = await fetch(`/api/sessions/${state.session.id}/results/${resultId}/download`, {
     headers: { Authorization: `Bearer ${state.session.token}` },
   });
-  if (!res.ok) { toast('Не удалось скачать файл', 'error'); return; }
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    toast((data && data.error) || `Не удалось скачать файл (${res.status})`, 'error');
+    return;
+  }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -347,22 +519,51 @@ function toast(text, type = 'info') {
 }
 
 /* ---------------- wiring ---------------- */
+/** Загружает /health: список провайдеров и моделей, лимиты; обновляет настройки и бейдж. */
+async function loadHealth() {
+  const health = await api('/health');
+  state.health = health;
+  state.limits = health.limits;
+  $('mock-banner').hidden = health.aiMode !== 'mock';
+  $('ttl-hours').textContent = health.limits.sessionTtlHours;
+  $('ttl-hours-2').textContent = health.limits.sessionTtlHours;
+  $('limits-line').textContent =
+    `Форматы: ${health.limits.allowedExtensions.join(', ')} · до ${health.limits.maxFileSizeMb} МБ/файл · ` +
+    `до ${health.limits.maxFiles} файлов · всего до ${health.limits.maxTotalUploadMb} МБ`;
+  renderSettingsOptions(health);
+  if (state.view) render(); // восстановить значения select'ов после перестройки опций
+  updateAiBadge();
+}
+
 async function init() {
-  try {
-    const health = await api('/health');
-    state.limits = health.limits;
-    $('ai-badge').textContent = health.aiMode === 'live' ? `AI: ${health.model}`
-      : health.aiMode === 'local' ? `Локальная модель: ${health.model}` : 'ДЕМО-РЕЖИМ';
-    $('ai-badge').dataset.mode = health.aiMode;
-    $('mock-banner').hidden = health.aiMode !== 'mock';
-    $('ttl-hours').textContent = health.limits.sessionTtlHours;
-    $('limits-line').textContent =
-      `Форматы: ${health.limits.allowedExtensions.join(', ')} · до ${health.limits.maxFileSizeMb} МБ/файл · ` +
-      `до ${health.limits.maxFiles} файлов · всего до ${health.limits.maxTotalUploadMb} МБ`;
-    renderSettingsOptions(health);
-  } catch (err) {
-    toast('Сервер недоступен: ' + err.message, 'error');
-    return;
+  // чисто клиентские обработчики — работают даже при недоступном сервере
+  // навигация по экранам (Анализ / Нормоконтроль / Настройки)
+  for (const btn of document.querySelectorAll('.nav-item[data-screen]')) {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.id === `screen-${btn.dataset.screen}`));
+    });
+  }
+
+  // переключатель темы
+  $('theme-seg').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-theme]');
+    if (!btn) return;
+    localStorage.setItem(THEME_KEY, btn.dataset.theme);
+    applyTheme(btn.dataset.theme);
+  });
+
+  $('compare-list').addEventListener('change', updateCompareButton);
+
+  // /health с повторами: без него интерфейс не наполнить
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await loadHealth();
+      break;
+    } catch (err) {
+      toast(`Сервер недоступен: ${err.message} — повтор через ${Math.min(15, 3 * attempt)} с`, 'error');
+      await new Promise((r) => setTimeout(r, Math.min(15000, 3000 * attempt)));
+    }
   }
   await restoreOrCreate().catch((err) => toast(err.message, 'error'));
 
@@ -384,6 +585,7 @@ async function init() {
 
   $('sel-model').addEventListener('change', () => {
     const [aiProvider, aiModel] = ($('sel-model').value || '|').split('|');
+    updateModelNote();
     saveSettings({ aiProvider, aiModel });
   });
   $('sel-kb').addEventListener('change', () => saveSettings({ kbChoice: $('sel-kb').value }));
@@ -393,7 +595,6 @@ async function init() {
     try {
       await api(`/sessions/${state.session.id}/compare`, { method: 'POST', json: { models } });
       toast(`Сравнение ${models.length} моделей запущено — это займёт несколько минут`);
-      $('compare-details').open = false;
       await refresh();
     } catch (err) { toast(err.message, 'error'); }
   });
