@@ -17,6 +17,17 @@ const LS_KEY = 'enso-pilot1-session';
 const THEME_KEY = 'enso-pilot1-theme';
 
 /* ---------------- тема оформления ---------------- */
+const THEME_META_COLORS = { light: '#f3efe6', dark: '#201c17' };
+
+function syncThemeColor() {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) return;
+  const stored = localStorage.getItem(THEME_KEY) || 'auto';
+  const dark = stored === 'dark' ||
+    (stored === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  meta.content = dark ? THEME_META_COLORS.dark : THEME_META_COLORS.light;
+}
+
 function applyTheme(mode) {
   if (mode === 'light' || mode === 'dark') document.documentElement.dataset.theme = mode;
   else delete document.documentElement.dataset.theme;
@@ -26,8 +37,10 @@ function applyTheme(mode) {
       b.setAttribute('aria-checked', String(b.dataset.theme === mode));
     }
   }
+  syncThemeColor();
 }
 applyTheme(localStorage.getItem(THEME_KEY) || 'auto');
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncThemeColor);
 
 /* ---------------- API ---------------- */
 async function api(path, options = {}) {

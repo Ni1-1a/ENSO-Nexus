@@ -57,12 +57,15 @@ async function buildDocumentBlocks(sessionId, provider = 'anthropic') {
     try {
       if (f.ext === 'pdf' && provider === 'local') {
         const text = await extractPdfText(f.stored_path, config.localAiDocCharLimit);
-        const vision = text && text.trim().length >= 200 ? '' : visionText(f);
+        const goodText = text && text.trim().length >= 200;
+        const vision = goodText ? '' : visionText(f);
+        // приоритет: полноценный текстовый слой → vision-распознавание → короткий текст → заглушка
         blocks.push({
           type: 'text',
           text: `<uploaded_document name="${f.original_name}" untrusted="true"${vision ? ' источник="распознано vision-моделью"' : ''}>\n` +
-            (text && text.trim().length >= 200 ? text
-              : vision || '(PDF без текстового слоя — вероятно скан; содержимое не извлечено, учитывай только метаданные)') +
+            (goodText ? text
+              : vision || text ||
+                '(PDF без текстового слоя — вероятно скан; содержимое не извлечено, учитывай только метаданные)') +
             '\n</uploaded_document>',
         });
       } else if (['png', 'jpg', 'jpeg'].includes(f.ext) && provider === 'local') {

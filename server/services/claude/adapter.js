@@ -245,12 +245,14 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   if (isLmStudio) {
     try {
       await modelManager.ensureLoaded(modelId, {
+        signal,
         onProgress: (text) => {
           console.log('[model-manager]', text);
           progress.set(sessionId, { phase: 'loading_model', label: text, model: modelId, provider: 'lmstudio' });
         },
       });
     } catch (err) {
+      if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
       console.warn('[model-manager]', err.message); // не фатально: сервер может догрузить JIT
     }
   }
@@ -315,6 +317,10 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     label: `Запрос отправлен — модель ${modelId} обрабатывает контекст…`, tokensOut: 0,
   });
 
+  // пока запрос выполняется, модель числится занятой — её нельзя вытеснять из памяти
+  if (isLmStudio) modelManager.acquireUse(modelId);
+  try {
+
   let res;
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
@@ -345,12 +351,17 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     // модель выгружена/не найдена — загружаем через менеджер и повторяем
     if (/unload|not loaded|no models? loaded|model.*not found|failed to load/i.test(detail) && attempt <= 2) {
       console.warn(`[local-ai] модель недоступна, повтор ${attempt}/2 после явной загрузки`);
+      if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
       if (isLmStudio) {
         try {
           await modelManager.ensureLoaded(modelId, {
+            signal,
             onProgress: (text) => progress.set(sessionId, { phase: 'loading_model', label: text, model: modelId }),
           });
-        } catch (err) { console.warn('[model-manager]', err.message); }
+        } catch (err) {
+          if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
+          console.warn('[model-manager]', err.message);
+        }
       } else {
         await new Promise((r) => setTimeout(r, attempt * 15000));
       }
@@ -403,6 +414,10 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     console.log(`[local-ai] калибровка: ${(sentChars / usage.prompt_tokens).toFixed(2)} симв/токен (промпт ${usage.prompt_tokens} ток., ${Math.round(sentChars / 1000)} тыс. симв.)`);
   }
   return { text, truncated };
+
+  } finally {
+    if (isLmStudio) modelManager.releaseUse(modelId);
+  }
 }
 
 /**

@@ -10,11 +10,14 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const config = require('../config');
-const { db } = require('../db');
+const { db, now } = require('../db');
 const modelManager = require('./model-manager');
 const { extractPdfText } = require('./claude/memory');
+
+const execFileP = promisify(execFile);
 
 const POPPLER_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', ''];
 function popplerBin(name) {
@@ -38,20 +41,20 @@ function abortError() {
   return Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
 }
 
-function pdfPageCount(pdfPath) {
+async function pdfPageCount(pdfPath, signal) {
   try {
-    const out = execFileSync(popplerBin('pdfinfo'), [pdfPath], { timeout: 20000 }).toString();
-    const m = out.match(/^Pages:\s+(\d+)/m);
+    const { stdout } = await execFileP(popplerBin('pdfinfo'), [pdfPath], { timeout: 20000, signal });
+    const m = String(stdout).match(/^Pages:\s+(\d+)/m);
     return m ? parseInt(m[1], 10) : 1;
   } catch { return 1; }
 }
 
-function renderPdfPage(pdfPath, page, dpi = 150) {
+async function renderPdfPage(pdfPath, page, signal, dpi = 150) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'docvision-'));
   try {
-    execFileSync(popplerBin('pdftoppm'),
+    await execFileP(popplerBin('pdftoppm'),
       ['-f', String(page), '-l', String(page), '-r', String(dpi), '-png', pdfPath, path.join(tmp, 'p')],
-      { timeout: 60000 });
+      { timeout: 60000, signal });
     const file = fs.readdirSync(tmp).find((f) => f.endsWith('.png'));
     return file ? fs.readFileSync(path.join(tmp, file)) : null;
   } finally {
@@ -61,36 +64,48 @@ function renderPdfPage(pdfPath, page, dpi = 150) {
 
 async function visionOnce(imageBuf, mime, { signal, onProgress }, attempt = 1) {
   const timeout = AbortSignal.timeout(config.localAiTimeoutMs);
-  const res = await fetch(`${config.localAiBaseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: config.localAiOcrModel,
-      max_tokens: 4000,
-      temperature: 0,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: VISION_PROMPT },
-          { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBuf.toString('base64')}` } },
-        ],
-      }],
-    }),
-    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
-  }).catch((err) => {
-    if (signal && signal.aborted) throw abortError();
-    throw err;
-  });
-  if (!res.ok) {
-    const detail = (await res.text().catch(() => '')).slice(0, 300);
-    if (/unload|not loaded|no models? loaded|failed to load/i.test(detail) && attempt <= 2) {
-      await modelManager.ensureLoaded(config.localAiOcrModel, { onProgress }).catch(() => {});
-      return visionOnce(imageBuf, mime, { signal, onProgress }, attempt + 1);
+  modelManager.acquireUse(config.localAiOcrModel);
+  let res;
+  try {
+    res = await fetch(`${config.localAiBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.localAiOcrModel,
+        max_tokens: 4000,
+        temperature: 0,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: VISION_PROMPT },
+            { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBuf.toString('base64')}` } },
+          ],
+        }],
+      }),
+      signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
+    }).catch((err) => {
+      if (signal && signal.aborted) throw abortError();
+      throw err;
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 300);
+      if (/unload|not loaded|no models? loaded|failed to load/i.test(detail) && attempt <= 2) {
+        if (signal && signal.aborted) throw abortError();
+        await modelManager.ensureLoaded(config.localAiOcrModel, { onProgress, signal }).catch(() => {});
+        return visionOnce(imageBuf, mime, { signal, onProgress }, attempt + 1);
+      }
+      throw new Error(`vision-модель вернула ошибку ${res.status}: ${detail}`);
     }
-    throw new Error(`vision-модель вернула ошибку ${res.status}: ${detail}`);
+    const data = await res.json();
+    const choice = data.choices?.[0];
+    let text = choice?.message?.content || '';
+    if (choice?.finish_reason === 'length') {
+      text += '\n\n(расшифровка обрезана по лимиту токенов — нижняя часть страницы могла не распознаться)';
+    }
+    return text;
+  } finally {
+    modelManager.releaseUse(config.localAiOcrModel);
   }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || '';
 }
 
 /**
@@ -116,34 +131,52 @@ async function extractGraphics(sessionId, { signal = null, onProgress = () => {}
   if (!targets.length) return { files: 0, pages: 0 };
 
   onProgress(`Изучение документации: графических файлов — ${targets.length}`);
-  await modelManager.ensureLoaded(config.localAiOcrModel, { onProgress });
+  if (signal && signal.aborted) throw abortError();
+  await modelManager.ensureLoaded(config.localAiOcrModel, { onProgress, signal });
 
   let pagesDone = 0;
+  const failed = [];
   for (const { f, kind } of targets) {
     if (signal && signal.aborted) throw abortError();
-    const parts = [];
-    if (kind === 'image') {
-      onProgress(`Изучение документации: ${f.original_name}`);
-      const mime = f.ext === 'png' ? 'image/png' : 'image/jpeg';
-      parts.push(await visionOnce(fs.readFileSync(f.stored_path), mime, { signal, onProgress }));
-      pagesDone++;
-    } else {
-      const total = pdfPageCount(f.stored_path);
-      const cap = Math.min(total, config.visionMaxPages);
-      for (let p = 1; p <= cap; p++) {
-        if (signal && signal.aborted) throw abortError();
-        onProgress(`Изучение документации: ${f.original_name} — стр. ${p}/${cap}`);
-        const png = renderPdfPage(f.stored_path, p);
-        if (!png) continue;
-        parts.push(`\n\n<!-- страница ${p} -->\n` + await visionOnce(png, 'image/png', { signal, onProgress }));
+    // ошибки одного файла не должны лишать модель остальных документов
+    try {
+      const parts = [];
+      if (kind === 'image') {
+        onProgress(`Изучение документации: ${f.original_name}`);
+        const mime = f.ext === 'png' ? 'image/png' : 'image/jpeg';
+        parts.push(await visionOnce(fs.readFileSync(f.stored_path), mime, { signal, onProgress }));
         pagesDone++;
+      } else {
+        const total = await pdfPageCount(f.stored_path, signal);
+        const cap = Math.min(total, config.visionMaxPages);
+        for (let p = 1; p <= cap; p++) {
+          if (signal && signal.aborted) throw abortError();
+          onProgress(`Изучение документации: ${f.original_name} — стр. ${p}/${cap}`);
+          try {
+            const png = await renderPdfPage(f.stored_path, p, signal);
+            if (!png) continue;
+            parts.push(`\n\n<!-- страница ${p} -->\n` + await visionOnce(png, 'image/png', { signal, onProgress }));
+            pagesDone++;
+          } catch (err) {
+            if (err.name === 'AbortError' || (signal && signal.aborted)) throw err;
+            parts.push(`\n\n(страница ${p} не распозналась: ${String(err.message || '').slice(0, 120)})`);
+          }
+        }
+        if (total > cap) parts.push(`\n\n(распознаны первые ${cap} из ${total} страниц скана)`);
       }
-      if (total > cap) parts.push(`\n\n(распознаны первые ${cap} из ${total} страниц скана)`);
+      const content = parts.join('').trim();
+      if (content) fs.writeFileSync(f.stored_path + '.vision.md', content);
+    } catch (err) {
+      if (err.name === 'AbortError' || (signal && signal.aborted)) throw err;
+      failed.push(f.original_name);
+      console.warn('[doc-vision]', f.original_name, err.message);
+      try {
+        db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+          .run(sessionId, 'Не удалось распознать файл', `${f.original_name}: ${String(err.message || '').slice(0, 150)}`, 'warn', now());
+      } catch { /* журнал не критичен */ }
     }
-    const content = parts.join('').trim();
-    if (content) fs.writeFileSync(f.stored_path + '.vision.md', content);
   }
-  return { files: targets.length, pages: pagesDone };
+  return { files: targets.length, pages: pagesDone, failed };
 }
 
 module.exports = { extractGraphics };

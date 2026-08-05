@@ -56,15 +56,30 @@ function findLms() {
   return lmsPath;
 }
 
-function lms(args, timeoutMs = 30000) {
+function lms(args, timeoutMs = 30000, signal) {
   const bin = findLms();
   if (!bin) return Promise.reject(new Error('CLI `lms` не найден — управление моделями недоступно'));
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`lms ${args[0]}: ${(stderr || err.message).slice(0, 300)}`));
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, signal }, (err, stdout, stderr) => {
+      if (err) reject(err.name === 'AbortError' ? err : new Error(`lms ${args[0]}: ${(stderr || err.message).slice(0, 300)}`));
       else resolve(stdout);
     });
   });
+}
+
+/* ---------- учёт активных запросов: занятые модели нельзя вытеснять ---------- */
+const activeUse = new Map(); // modelKey → счётчик выполняющихся запросов
+
+function acquireUse(modelId) {
+  activeUse.set(modelId, (activeUse.get(modelId) || 0) + 1);
+}
+function releaseUse(modelId) {
+  const n = (activeUse.get(modelId) || 1) - 1;
+  if (n <= 0) activeUse.delete(modelId); else activeUse.set(modelId, n);
+}
+function isBusy(m) {
+  // наш счётчик + live-статус LM Studio (стриминг чужих клиентов тоже виден)
+  return (activeUse.get(m.modelKey) || 0) > 0 || m.status !== 'idle' || m.queued > 0;
 }
 
 /** Загруженные сейчас модели: [{identifier, modelKey, sizeBytes, contextLength, type}] */
@@ -77,6 +92,8 @@ async function listLoaded() {
     sizeBytes: r.sizeBytes || 0,
     contextLength: r.contextLength || 0,
     type: r.type || 'llm',
+    status: r.status || 'idle',
+    queued: r.queued || 0,
   }));
 }
 
@@ -121,8 +138,9 @@ let ensureChain = Promise.resolve();
  * осознанно выгружает другие LLM (embedding-модели не трогает).
  * onProgress(text) — человеко-читаемые статусы для журнала/индикатора.
  */
-function ensureLoaded(modelId, { onProgress = () => {} } = {}) {
+function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
   const run = async () => {
+    if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
     if (!findLms()) return { ok: true, managed: false }; // нет CLI — надеемся на JIT
     const wantCtx = desiredContext(modelId);
     let loaded;
@@ -145,22 +163,33 @@ function ensureLoaded(modelId, { onProgress = () => {} } = {}) {
     let size = 0;
     try { size = (await listDownloaded()).get(modelId) || 0; } catch {}
     const need = size + kvBytes(modelId, wantCtx);
-    const residentCost = (m) => m.sizeBytes + kvBytes(m.modelKey, m.contextLength || 4096);
+    // embedding-модели KV-кэш почти не тратят — не завышаем их вес при вытеснении
+    const residentCost = (m) => m.sizeBytes + (m.type === 'embedding' ? 0 : kvBytes(m.modelKey, m.contextLength || 4096));
 
-    // освобождаем память: выгружаем самые крупные LLM, пока не поместимся
-    const evictable = loaded.filter((m) => m.type !== 'embedding').sort((a, b) => residentCost(b) - residentCost(a));
+    // освобождаем память: выгружаем самые крупные ПРОСТАИВАЮЩИЕ LLM, пока не поместимся.
+    // Модель, которая прямо сейчас обслуживает запрос (наш счётчик или live-статус
+    // LM Studio), вытеснять нельзя — иначе чужая задача получит «Model unloaded».
+    const evictable = loaded
+      .filter((m) => m.type !== 'embedding' && !isBusy(m))
+      .sort((a, b) => residentCost(b) - residentCost(a));
     let residentTotal = loaded.reduce((s, m) => s + residentCost(m), 0);
     for (const m of evictable) {
       if (residentTotal + need <= MEMORY_BUDGET_BYTES) break;
+      if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
       onProgress(`Выгружается модель ${m.modelKey} — освобождаю память`);
       try { await lms(['unload', m.identifier], 60000); residentTotal -= residentCost(m); } catch (err) {
         console.warn('[model-manager] unload failed:', err.message);
       }
     }
+    if (residentTotal + need > MEMORY_BUDGET_BYTES) {
+      console.warn(`[model-manager] память занята активными моделями (~${((residentTotal + need) / 1024 ** 3).toFixed(1)} ГиБ) — загрузка ${modelId} может не удаться`);
+      onProgress('Память занята активными моделями — жду завершения их запросов…');
+    }
 
+    if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
     onProgress(`Загружается модель ${modelId} (контекст ${wantCtx.toLocaleString('ru-RU')} токенов)…`);
     const t0 = Date.now();
-    await lms(['load', modelId, '--context-length', String(wantCtx), '--ttl', '7200', '-y'], 240000);
+    await lms(['load', modelId, '--context-length', String(wantCtx), '--ttl', '7200', '-y'], 240000, signal || undefined);
     onProgress(`Модель ${modelId} загружена за ${Math.round((Date.now() - t0) / 1000)} с`);
     return { ok: true, managed: true, loadedNow: true };
   };
@@ -170,4 +199,4 @@ function ensureLoaded(modelId, { onProgress = () => {} } = {}) {
   return result;
 }
 
-module.exports = { ensureLoaded, feasibility, desiredContext, listLoaded, MEMORY_BUDGET_BYTES };
+module.exports = { ensureLoaded, feasibility, desiredContext, listLoaded, acquireUse, releaseUse, MEMORY_BUDGET_BYTES };

@@ -175,6 +175,7 @@ async function runComparison(sessionId, routes, instruction, signal) {
     'Проанализируй загруженные материалы по методике 12 шагов: извлеки факты, определи ограничения, ' +
     'сформируй краткий отчёт. Если данных не хватает — перечисли вопросы, но всё равно верни status=completed с тем, что удалось установить.';
   const runs = [];
+  let aborted = false;
   try {
     setJobStatus(sessionId, 'running');
     for (let i = 0; i < routes.length; i++) {
@@ -189,12 +190,25 @@ async function runComparison(sessionId, routes, instruction, signal) {
         logEvent(sessionId, `Сравнение: ${fmtRoute(route)} — готово`, `${runs[i].seconds} с`);
       } catch (err) {
         if (isAbort(err, signal)) {
+          aborted = true;
           logEvent(sessionId, 'Сравнение прервано', 'по команде пользователя', 'warn');
           break;
         }
         runs.push({ route, ok: false, error: err.message, seconds: Math.round((Date.now() - t0) / 1000), tokens: 0 });
         logEvent(sessionId, `Сравнение: ${fmtRoute(route)} — ошибка`, err.message, 'warn');
       }
+    }
+
+    if (aborted) {
+      if (runs.length) {
+        saveResult(sessionId, 'СРАВНЕНИЕ-МОДЕЛЕЙ.md', 'Сравнительный прогон моделей (прерван)', 'md',
+          buildComparisonMd(runs, task) + '\n\n---\n\n**Сравнение прервано пользователем** — выполнено ' +
+          `${runs.length} из ${routes.length} моделей.`);
+      }
+      addMessage(sessionId, 'assistant', 'error',
+        `Сравнение прервано по вашей команде. Успело выполниться: ${runs.length} из ${routes.length} моделей.`);
+      setJobStatus(sessionId, 'failed');
+      return;
     }
 
     const md = buildComparisonMd(runs, task);
@@ -209,7 +223,7 @@ async function runComparison(sessionId, routes, instruction, signal) {
       '', okRuns.length ? 'Полные ответы каждой модели — в файле **СРАВНЕНИЕ-МОДЕЛЕЙ.md** (блок «Результаты»).' : 'Ни одна модель не ответила успешно.',
     ].join('\n');
     addMessage(sessionId, 'assistant', 'result', summary);
-    logEvent(sessionId, 'Сравнение завершено', `успешно: ${okRuns.length}/${runs.length}`);
+    logEvent(sessionId, 'Сравнение завершено', `успешно: ${okRuns.length}/${routes.length}`);
     setJobStatus(sessionId, okRuns.length ? 'completed' : 'failed');
   } catch (err) {
     logEvent(sessionId, 'Произошла ошибка сравнения', err.message, 'error');
