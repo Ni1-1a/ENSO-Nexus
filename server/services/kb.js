@@ -111,6 +111,45 @@ function loadSourceChunks(kbDir) {
   return chunks;
 }
 
+/* ---------------- коллекция НТД для базы Гриши ---------------- */
+/** Нормализация имени документа: у вики-ссылок «/» заменён пробелом и т.п. */
+function normDoc(s) {
+  return String(s).toLowerCase().replace(/[/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+let collCache = null;
+let collMtime = 0;
+/**
+ * Документы коллекции из заметки Obsidian (config.kbGrishaCollection):
+ * все цели вики-ссылок [[Документ]] / [[Документ|подпись]]. null — коллекции нет.
+ */
+function collectionDocs() {
+  const file = config.kbGrishaCollection;
+  try {
+    if (!file || !fs.existsSync(file)) return null;
+    const mtime = fs.statSync(file).mtimeMs;
+    if (collCache && mtime === collMtime) return collCache;
+    const text = fs.readFileSync(file, 'utf8');
+    const docs = new Set();
+    for (const m of text.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)) docs.add(normDoc(m[1]));
+    collCache = docs.size ? docs : null;
+    collMtime = mtime;
+    return collCache;
+  } catch { return null; }
+}
+
+/**
+ * Принадлежит ли чанк базе. База Гриши = его собственные отметки (kb='grisha')
+ * ПЛЮС документы основной базы, перечисленные в коллекции «НТД_Гриша».
+ */
+function rowInBase(r, kbId) {
+  const kb = r.kb || 'main';
+  if (kbId !== 'grisha') return kb === kbId;
+  if (kb === 'grisha') return true;
+  const coll = collectionDocs();
+  return !!(coll && kb === 'main' && coll.has(normDoc(r.doc)));
+}
+
 /* ---------------- эмбеддинги через LM Studio ---------------- */
 async function embed(texts) {
   const res = await fetch(`${config.localAiBaseUrl}/embeddings`, {
@@ -180,10 +219,18 @@ function status() {
   const docs = db.prepare('SELECT COUNT(DISTINCT doc) c FROM kb_chunks').get().c;
   const withVectors = db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE embedding IS NOT NULL').get().c;
   const indexedAt = db.prepare("SELECT value FROM kb_meta WHERE key = 'indexed_at'").get()?.value || null;
-  const bases = config.kbBases.map((b) => ({
-    id: b.id, label: b.label,
-    chunks: db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE kb = ?').get(b.id).c,
-  }));
+  const bases = config.kbBases.map((b) => {
+    let count = db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE kb = ?').get(b.id).c;
+    if (b.id === 'grisha') {
+      const coll = collectionDocs();
+      if (coll) {
+        for (const row of db.prepare("SELECT doc, COUNT(*) c FROM kb_chunks WHERE kb = 'main' GROUP BY doc").all()) {
+          if (coll.has(normDoc(row.doc))) count += row.c;
+        }
+      }
+    }
+    return { id: b.id, label: b.label, chunks: count };
+  });
   return { enabled: !!config.kbBases.length, chunks, docs, withVectors, indexedAt, bases };
 }
 
@@ -217,7 +264,7 @@ function keywordScore(queryWords, text) {
 /** Топ-K релевантных чанков для запроса (в выбранной базе). Никогда не бросает — при сбое вернёт []. */
 async function search(query, k = config.kbTopK, kbId = 'main') {
   try {
-    const rows = loadCache().filter((r) => (r.kb || 'main') === kbId);
+    const rows = loadCache().filter((r) => rowInBase(r, kbId));
     if (!rows.length || !query.trim()) return [];
     const withVec = rows.filter((r) => r.vec);
     let scored;

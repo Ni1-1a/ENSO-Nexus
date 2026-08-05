@@ -61,6 +61,9 @@ const config = {
   // Knowledge bases (RAG) — несколько баз, выбор в интерфейсе per session
   kbDir: process.env.KB_DIR || '',
   kbGrishaDir: process.env.KB_GRISHA_DIR || '',
+  // Заметка-коллекция Obsidian: перечисленные в ней документы основной базы
+  // образуют базу Гриши (вместе с его локальными отметками)
+  kbGrishaCollection: process.env.KB_GRISHA_COLLECTION || '',
   kbEmbeddingModel: process.env.KB_EMBEDDING_MODEL || 'text-embedding-qwen3-embedding-0.6b',
   kbTopK: int('KB_TOP_K', 6),
 
@@ -79,7 +82,10 @@ config.kbBases = [];
 if (config.kbDir) config.kbBases.push({ id: 'main', label: 'Общая база', dir: config.kbDir });
 const grishaDir = config.kbGrishaDir ||
   (config.kbDir ? path2.join(path2.dirname(config.kbDir), 'Knowledge-Base-Гриша') : '');
-if (grishaDir) config.kbBases.push({ id: 'grisha', label: 'База с отметками Гриши', dir: grishaDir });
+if (grishaDir) config.kbBases.push({ id: 'grisha', label: 'База Гриши (коллекция НТД + отметки)', dir: grishaDir });
+if (!config.kbGrishaCollection && config.kbDir) {
+  config.kbGrishaCollection = path2.join(config.kbDir, '07_Заметки', 'Коллекции', 'НТД_Гриша.md');
+}
 
 // Static resolution; 'auto' may be upgraded mock → local by the startup probe in index.js.
 config.aiMode =
