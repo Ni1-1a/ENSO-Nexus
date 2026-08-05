@@ -6,6 +6,41 @@ const { db, now } = require('../../db');
 const { RESPONSE_SCHEMA, validateResponse } = require('./schema');
 const { buildContext } = require('./memory');
 const mock = require('./mock');
+const modelManager = require('../model-manager');
+const progress = require('../progress');
+
+const AI_ERROR_LOG = path.join(__dirname, '..', '..', '..', 'logs', 'ai-errors.log');
+
+/** Каждая ошибка AI-сервера пишется с полной причиной: в консоль и в logs/ai-errors.log. */
+function logAiError(info) {
+  console.error('[local-ai]', info.status || '', String(info.detail || info.message || '').slice(0, 500));
+  try {
+    fs.appendFileSync(AI_ERROR_LOG, JSON.stringify({ at: new Date().toISOString(), ...info }) + '\n');
+  } catch { /* журнал не должен ронять обработку */ }
+}
+
+/** Человеческое объяснение ошибки локального AI-сервера по телу ответа. */
+function humanizeLocalError(status, detail) {
+  let msg = '';
+  try { const j = JSON.parse(detail); msg = j.error?.message || (typeof j.error === 'string' ? j.error : ''); } catch {}
+  msg = String(msg || detail || '');
+  if (/unload/i.test(msg)) {
+    return 'Локальная модель была выгружена из памяти (нехватка RAM или конкурирующая задача). Повторите попытку — модель будет загружена заново.';
+  }
+  if (/failed to load|startup was aborted|insufficient|out of memory/i.test(msg)) {
+    return 'Не удалось загрузить выбранную модель — вероятно, ей не хватает памяти. Выберите модель поменьше или повторите позже.';
+  }
+  return `Локальный AI-сервер вернул ошибку ${status}${msg ? `: ${msg.slice(0, 200)}` : ''}. Повторите попытку.`;
+}
+
+/** Модель, которая фактически будет использована для маршрута (для шапки и журнала). */
+function resolveModel(route) {
+  if (route.provider === 'claude') return config.anthropicModel;
+  if (route.provider === 'chatgpt') return route.model || config.openaiModel;
+  if (route.provider === 'lmstudio') return route.model || config.localAiModel;
+  if (route.provider === 'ollama') return route.model || '';
+  return 'demo';
+}
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'prompts', 'system-prompt.md'), 'utf8');
 
@@ -62,6 +97,10 @@ async function callModel({ system, messages, sessionId, route }) {
     return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel });
   }
   if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
+  progress.set(sessionId, {
+    phase: 'generating', model: config.anthropicModel, provider: 'claude',
+    label: `Claude (${config.anthropicModel}) анализирует материалы…`,
+  });
   const response = await client().messages.create({
     model: config.anthropicModel,
     max_tokens: config.anthropicMaxTokens,
@@ -78,8 +117,8 @@ async function callModel({ system, messages, sessionId, route }) {
 }
 
 const LOCAL_COMPACT_RULE =
-  '\n\nЖёсткий бюджет ответа — 8000 токенов, обрезанный JSON недопустим. Пиши компактно: ' +
-  'report_markdown — не длиннее ~1000 слов (только существенное по шагам), message — 3–6 предложений, ' +
+  `\n\nЖёсткий бюджет ответа — ${Math.max(1000, config.localAiMaxTokens - 2000)} токенов, обрезанный JSON недопустим. Пиши компактно: ` +
+  'report_markdown — не длиннее ~1200 слов (только существенное по шагам), message — 3–6 предложений, ' +
   'facts — не более 20, без повторов.';
 
 /** OpenAI-compatible local server (LM Studio). Content blocks are flattened to text. */
@@ -93,9 +132,55 @@ function flattenForLocal(content) {
   }).join('\n\n');
 }
 
-async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, jsonSchema = true, maxTokens, attempt = 1 }) {
+/** Чтение SSE-потока /chat/completions; onToken(count) — для живого прогресса. */
+async function readSseStream(res, onToken) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '', text = '', usage = null, finish = null, tokens = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let obj;
+      try { obj = JSON.parse(payload); } catch { continue; }
+      const choice = obj.choices && obj.choices[0];
+      const delta = choice?.delta?.content || '';
+      if (delta) { text += delta; tokens++; onToken(tokens); }
+      if (choice?.finish_reason) finish = choice.finish_reason;
+      if (obj.usage) usage = obj.usage;
+    }
+  }
+  return { text, usage, truncated: finish === 'length' };
+}
+
+async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, jsonSchema = true, maxTokens, stream = true, attempt = 1 }) {
+  const modelId = model || config.localAiModel;
+  const isLmStudio = baseUrl === config.localAiBaseUrl;
+
+  // Явная загрузка модели с нужным контекстом (вместо непредсказуемого JIT):
+  // при нехватке памяти менеджер осознанно выгружает другие модели.
+  if (isLmStudio) {
+    try {
+      await modelManager.ensureLoaded(modelId, {
+        onProgress: (text) => {
+          console.log('[model-manager]', text);
+          progress.set(sessionId, { phase: 'loading_model', label: text, model: modelId, provider: 'lmstudio' });
+        },
+      });
+    } catch (err) {
+      console.warn('[model-manager]', err.message); // не фатально: сервер может догрузить JIT
+    }
+  }
+
   const body = {
-    model: model || config.localAiModel,
+    model: modelId,
     max_tokens: maxTokens || config.localAiMaxTokens,
     temperature: 0.2,
     messages: [
@@ -103,12 +188,22 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       ...messages.map((m) => ({ role: m.role, content: flattenForLocal(m.content) })),
     ],
   };
+  if (stream) {
+    body.stream = true;
+    body.stream_options = { include_usage: true };
+  }
   if (jsonSchema) {
     body.response_format = {
       type: 'json_schema',
       json_schema: { name: 'genplan_analysis', strict: true, schema: RESPONSE_SCHEMA },
     };
   }
+
+  progress.set(sessionId, {
+    phase: 'waiting_model', model: modelId, provider: isLmStudio ? 'lmstudio' : 'openai-compat',
+    label: `Запрос отправлен — модель ${modelId} обрабатывает контекст…`, tokensOut: 0,
+  });
+
   let res;
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
@@ -126,31 +221,63 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     }
     throw new AiUnavailableError(`AI-сервер (${host}) недоступен. Убедитесь, что он запущен, и повторите.`);
   }
+
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    // LM Studio мог выгрузить модель (память/очередь) — она подгружается сама, ждём и повторяем
-    if (/unload|not loaded|no models? loaded|model.*not found/i.test(detail) && attempt <= 3) {
-      console.warn(`[local-ai] модель выгружена, повтор ${attempt}/3 через ${attempt * 20} c`);
-      await new Promise((r) => setTimeout(r, attempt * 20000));
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, jsonSchema, maxTokens, attempt: attempt + 1 });
+    logAiError({ where: 'chat/completions', status: res.status, model: modelId, baseUrl, attempt, detail: detail.slice(0, 2000) });
+    // модель выгружена/не найдена — загружаем через менеджер и повторяем
+    if (/unload|not loaded|no models? loaded|model.*not found|failed to load/i.test(detail) && attempt <= 2) {
+      console.warn(`[local-ai] модель недоступна, повтор ${attempt}/2 после явной загрузки`);
+      if (isLmStudio) {
+        try {
+          await modelManager.ensureLoaded(modelId, {
+            onProgress: (text) => progress.set(sessionId, { phase: 'loading_model', label: text, model: modelId }),
+          });
+        } catch (err) { console.warn('[model-manager]', err.message); }
+      } else {
+        await new Promise((r) => setTimeout(r, attempt * 15000));
+      }
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, jsonSchema, maxTokens, stream, attempt: attempt + 1 });
     }
-    // some local models reject json_schema — one retry in plain-JSON mode
+    // сервер не понял параметры стриминга — повтор без стриминга
+    if (stream && /stream/i.test(detail)) {
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, jsonSchema, maxTokens, stream: false, attempt });
+    }
+    // некоторые модели не принимают json_schema — один повтор в режиме «просто JSON»
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callOpenAiCompat({
         system: system + '\n\nОтвечай ТОЛЬКО валидным JSON строго по описанной схеме, без пояснений вокруг.',
-        messages, sessionId, baseUrl, apiKey, model, jsonSchema: false, maxTokens,
+        messages, sessionId, baseUrl, apiKey, model, jsonSchema: false, maxTokens, stream,
       });
     }
-    console.error('[local-ai]', res.status, detail.slice(0, 500));
-    throw new AiUnavailableError(`Локальный AI-сервер вернул ошибку (${res.status}). Повторите попытку.`);
+    throw new AiUnavailableError(humanizeLocalError(res.status, detail));
   }
-  const data = await res.json();
+
+  let text, usage, truncated;
+  if (stream) {
+    ({ text, usage, truncated } = await readSseStream(res, (tokens) => {
+      progress.set(sessionId, {
+        phase: 'generating', model: modelId,
+        label: `Модель ${modelId} генерирует ответ…`, tokensOut: tokens,
+      });
+    }).catch((err) => {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new AiUnavailableError(`Модель не успела завершить ответ за ${Math.round(config.localAiTimeoutMs / 60000)} мин. Повторите или упростите задачу.`);
+      }
+      throw err;
+    }));
+  } else {
+    const data = await res.json();
+    const choice = data.choices && data.choices[0];
+    text = choice?.message?.content || '';
+    truncated = choice?.finish_reason === 'length';
+    usage = data.usage;
+  }
   recordUsage(sessionId, {
-    input_tokens: data.usage?.prompt_tokens || 0,
-    output_tokens: data.usage?.completion_tokens || 0,
+    input_tokens: usage?.prompt_tokens || 0,
+    output_tokens: usage?.completion_tokens || 0,
   });
-  const choice = data.choices?.[0];
-  return { text: choice?.message?.content || '', truncated: choice?.finish_reason === 'length' };
+  return { text, truncated };
 }
 
 /**
@@ -166,10 +293,15 @@ async function runAnalysis(sessionId, { instruction }) {
 async function analyzeOnce(sessionId, { instruction, route }) {
   const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   const docProvider = route.provider === 'claude' ? 'anthropic' : 'local';
+  progress.set(sessionId, {
+    phase: 'preparing', provider: route.provider, model: resolveModel(route),
+    label: 'Подготовка контекста: документы, факты, история диалога', tokensOut: 0,
+  });
   const ctx = await buildContext(sessionId, docProvider);
   checkBudget(ctx.session);
 
   if (route.provider === 'demo') {
+    progress.set(sessionId, { phase: 'generating', label: 'Демо-режим: формирование тестового ответа' });
     return mock.runAnalysis(sessionId, ctx, instruction);
   }
 
@@ -178,6 +310,7 @@ async function analyzeOnce(sessionId, { instruction, route }) {
 
   // RAG: релевантные пункты нормативной базы (если KB_DIR настроен и проиндексирован)
   try {
+    progress.set(sessionId, { phase: 'retrieving', label: 'Поиск релевантных пунктов в базе знаний…' });
     const kb = require('../kb');
     const facts = db.prepare('SELECT key, value FROM facts WHERE session_id = ? LIMIT 20').all(sessionId);
     const kbQuery = [
@@ -202,10 +335,12 @@ async function analyzeOnce(sessionId, { instruction, route }) {
     throw wrapApiError(err);
   }
 
+  progress.set(sessionId, { phase: 'validating', label: 'Проверка структуры ответа модели…' });
   let parsed = tryParse(out.text);
   let check = validateResponse(parsed);
   if (!check.ok) {
     // limited retry: truncation gets a "be compact" correction, everything else — a schema correction
+    progress.set(sessionId, { phase: 'validating', label: 'Ответ не прошёл проверку схемы — уточняющий повторный запрос…' });
     const session2 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     checkBudget(session2);
     const correction = out.truncated
@@ -295,4 +430,4 @@ function wrapApiError(err) {
   return err;
 }
 
-module.exports = { runAnalysis, analyzeOnce, effectiveProvider, maybeCompact, BudgetExceededError, AiUnavailableError, tryParse };
+module.exports = { runAnalysis, analyzeOnce, effectiveProvider, resolveModel, maybeCompact, BudgetExceededError, AiUnavailableError, tryParse };

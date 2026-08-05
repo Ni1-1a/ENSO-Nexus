@@ -57,6 +57,9 @@ router.post('/sessions', expensiveLimit, (req, res) => {
 });
 
 function sessionView(session) {
+  const adapter = require('../services/claude/adapter');
+  const progress = require('../services/progress');
+  const route = adapter.effectiveProvider(session);
   const files = db.prepare('SELECT id, original_name AS name, size, ext, created_at FROM files WHERE session_id = ? ORDER BY created_at').all(session.id);
   const messages = db.prepare('SELECT id, role, kind, content, created_at FROM messages WHERE session_id = ? ORDER BY created_at').all(session.id);
   const questions = db.prepare('SELECT id, text, why, status, answer, created_at FROM questions WHERE session_id = ? ORDER BY created_at').all(session.id);
@@ -73,6 +76,9 @@ function sessionView(session) {
       kbChoice: session.kb_choice || 'main',
     },
     aiRequests: session.ai_requests,
+    // действующий маршрут AI этой сессии — для бейджа в шапке
+    ai: { provider: route.provider, model: adapter.resolveModel(route) },
+    jobProgress: progress.get(session.id),
     createdAt: session.created_at,
     updatedAt: session.updated_at,
     files, messages, questions, events, results, facts,

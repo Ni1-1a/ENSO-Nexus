@@ -3,142 +3,247 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ENSO Nexus — Pilot 1 · Генплан по ГОСТ 21.508</title>
+  <title>ENSO Nexus · Pilot 1 — Генплан по ГОСТ 21.508</title>
   <meta name="description" content="AI-сервис анализа исходных данных для посадки здания на земельный участок и подготовки генплана по ГОСТ 21.508">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=3">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231e1b4b'/><path d='M25 70 L25 40 L50 25 L75 40 L75 70 Z' fill='none' stroke='%23818cf8' stroke-width='6'/></svg>">
+  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230A84FF'/><path d='M28 70 L28 42 L50 28 L72 42 L72 70 Z' fill='none' stroke='white' stroke-width='6' stroke-linejoin='round'/></svg>">
 </head>
 <body>
   <div id="mock-banner" class="mock-banner" hidden>
-    Демонстрационный режим: AI-ключ не настроен на сервере. Ответы формируются тестовой заглушкой и не являются реальным анализом.
+    Демонстрационный режим: AI не настроен на сервере. Ответы формируются тестовой заглушкой.
   </div>
 
-  <header class="app-header">
-    <div class="header-inner">
+  <div class="shell">
+    <!-- ══════════ Сайдбар ══════════ -->
+    <aside class="sidebar" aria-label="Основная навигация">
       <div class="brand">
-        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-          <path d="M4 20V9.5L12 4l8 5.5V20H4z"/><path d="M4 20h16M9 20v-6h6v6"/>
-        </svg>
-        <div>
-          <h1>ENSO Nexus · Pilot 1</h1>
-          <p class="tagline">Посадка здания на участок и генплан по ГОСТ 21.508 — анализ исходных данных с AI-помощником</p>
-        </div>
-      </div>
-      <div class="header-actions">
-        <span id="ai-badge" class="badge" title="Режим AI-обработки">…</span>
-        <button id="btn-new-session" class="btn btn-secondary" type="button">Новая сессия</button>
-        <button id="btn-delete-session" class="btn btn-danger" type="button" disabled>Удалить сессию</button>
-      </div>
-    </div>
-  </header>
-
-  <main class="layout">
-    <!-- ЛЕВАЯ КОЛОНКА: исходные данные -->
-    <section class="panel" aria-labelledby="h-input">
-      <h2 id="h-input">1 · Исходные данные</h2>
-
-      <div id="dropzone" class="dropzone" tabindex="0" role="button"
-           aria-label="Загрузить файлы: перетащите сюда или нажмите для выбора">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" class="dz-icon">
-          <path d="M12 16V4m0 0L7 9m5-5l5 5"/><path d="M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2"/>
-        </svg>
-        <p><strong>Перетащите файлы</strong> или нажмите для выбора</p>
-        <p id="limits-line" class="hint">…</p>
-        <input id="file-input" type="file" multiple hidden
-               accept=".pdf,.dwg,.dxf,.docx,.txt,.md,.json,.csv,.png,.jpg,.jpeg">
-      </div>
-
-      <ul id="file-list" class="file-list" aria-live="polite"></ul>
-
-      <div class="field">
-        <label for="comment">Комментарий к исходным данным</label>
-        <textarea id="comment" rows="3" maxlength="4000"
-          placeholder="Например: ТХ отсутствует, пожарные требования взять из базы знаний, этажность до 3."></textarea>
-        <button id="btn-save-comment" class="btn btn-secondary btn-sm" type="button">Сохранить комментарий</button>
-      </div>
-
-      <div class="settings-card">
-        <h3>Настройки анализа</h3>
-        <div class="field">
-          <label for="sel-model">Нейросеть</label>
-          <select id="sel-model" disabled>
-            <option value="">Загрузка…</option>
-          </select>
-          <p id="model-note" class="hint" hidden></p>
-        </div>
-        <div class="field">
-          <label for="sel-kb">База знаний</label>
-          <select id="sel-kb" disabled></select>
-        </div>
-        <details id="compare-details">
-          <summary>Сравнение моделей</summary>
-          <p class="hint">Один и тот же анализ выполняется каждой выбранной моделью (по очереди), результат — сводная таблица и файл сравнения.</p>
-          <div id="compare-list" class="compare-list"></div>
-          <button id="btn-compare" class="btn btn-secondary btn-sm btn-block" type="button" disabled>
-            Запустить сравнение
-          </button>
-        </details>
-      </div>
-
-      <button id="btn-process" class="btn btn-primary btn-block" type="button" disabled>
-        Запустить обработку
-      </button>
-
-      <div class="status-card">
-        <h3>Статус обработки</h3>
-        <p id="job-status" class="job-status" data-status="idle" aria-live="polite">Сессия не создана</p>
-        <details id="events-details">
-          <summary>Журнал этапов</summary>
-          <ol id="events-log" class="events-log"></ol>
-        </details>
-      </div>
-    </section>
-
-    <!-- ЦЕНТР: диалог -->
-    <section class="panel panel-dialog" aria-labelledby="h-dialog">
-      <h2 id="h-dialog">2 · Диалог с помощником</h2>
-      <div id="chat" class="chat" aria-live="polite"></div>
-
-      <div id="questions-block" class="questions-block" hidden>
-        <h3>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" class="q-icon">
-            <circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 114 2c-.8.6-1.5 1-1.5 2"/><circle cx="12" cy="17" r=".5"/>
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+            <path d="M5 19V10l7-5 7 5v9H5z"/><path d="M9 19v-5h6v5"/>
           </svg>
-          Уточняющие вопросы
-        </h3>
-        <div id="questions-list"></div>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">ENSO Nexus</span>
+          <span class="brand-sub">Pilot 1 · Генплан</span>
+        </div>
       </div>
 
-      <form id="chat-form" class="chat-form">
-        <label for="chat-input" class="visually-hidden">Сообщение помощнику</label>
-        <textarea id="chat-input" rows="2" maxlength="4000" placeholder="Сообщение помощнику… (запускает обработку)" disabled></textarea>
-        <button id="btn-send" class="btn btn-primary" type="submit" disabled>Отправить</button>
-      </form>
-    </section>
+      <nav class="nav">
+        <button class="nav-item active" data-screen="analysis" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M4 5h16v12H4z" stroke-linejoin="round"/><path d="M8 21h8M12 17v4"/><path d="M8 9l3 3 2-2 3 3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Анализ
+        </button>
+        <button class="nav-item" data-screen="normo" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M6 3h9l4 4v14H6z" stroke-linejoin="round"/><path d="M15 3v4h4"/><path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Нормоконтроль
+        </button>
+        <button class="nav-item" data-screen="settings" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8" stroke-linecap="round"/>
+          </svg>
+          Настройки
+        </button>
+      </nav>
 
-    <!-- ПРАВАЯ КОЛОНКА: результаты -->
-    <section class="panel" aria-labelledby="h-results">
-      <h2 id="h-results">3 · Результаты</h2>
-      <div id="results-empty" class="empty-state">
-        <p>Здесь появятся итоговый отчёт и сформированные файлы после завершения обработки.</p>
+      <div class="sidebar-foot">
+        <div id="ai-badge" class="ai-chip" title="Действующая нейросеть">
+          <span class="ai-dot" aria-hidden="true"></span>
+          <span id="ai-badge-text">Подключение…</span>
+        </div>
+        <p class="sidebar-note">Сессия хранится <span id="ttl-hours">72</span> ч</p>
       </div>
-      <ul id="results-list" class="results-list"></ul>
+    </aside>
 
-      <div id="facts-card" class="facts-card" hidden>
-        <h3>Извлечённые факты</h3>
-        <dl id="facts-list" class="facts-list"></dl>
-      </div>
-    </section>
-  </main>
+    <!-- ══════════ Экран: Анализ ══════════ -->
+    <main class="content">
+      <section id="screen-analysis" class="screen active" aria-label="Анализ исходных данных">
+        <header class="toolbar">
+          <h1>Анализ</h1>
+          <p class="toolbar-sub">Посадка здания на участок · исходные данные → отчёт по 12 шагам</p>
+        </header>
+
+        <div class="columns">
+          <!-- Колонка 1: данные -->
+          <div class="col">
+            <div class="card">
+              <h2>Исходные данные</h2>
+              <div id="dropzone" class="dropzone" tabindex="0" role="button"
+                   aria-label="Загрузить файлы: перетащите сюда или нажмите для выбора">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" class="dz-icon">
+                  <path d="M12 15V5m0 0L8 9m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v1.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V17" stroke-linecap="round"/>
+                </svg>
+                <p><strong>Перетащите файлы</strong> или нажмите для выбора</p>
+                <p id="limits-line" class="hint">…</p>
+                <input id="file-input" type="file" multiple hidden
+                       accept=".pdf,.dwg,.dxf,.docx,.txt,.md,.json,.csv,.png,.jpg,.jpeg">
+              </div>
+              <ul id="file-list" class="file-list" aria-live="polite"></ul>
+
+              <div class="field">
+                <label for="comment">Комментарий к данным</label>
+                <textarea id="comment" rows="3" maxlength="4000"
+                  placeholder="Например: ТХ отсутствует, пожарные требования взять из базы знаний, этажность до 3."></textarea>
+                <button id="btn-save-comment" class="btn btn-quiet btn-sm" type="button">Сохранить комментарий</button>
+              </div>
+
+              <button id="btn-process" class="btn btn-primary btn-block" type="button" disabled>
+                Запустить анализ
+              </button>
+            </div>
+
+            <!-- Живой индикатор выполнения -->
+            <div id="progress-card" class="card progress-card" hidden>
+              <div class="progress-head">
+                <span class="live-dot" aria-hidden="true"></span>
+                <span id="progress-title">Выполняется анализ</span>
+                <span id="progress-elapsed" class="progress-elapsed">0:00</span>
+              </div>
+              <p id="progress-model" class="progress-model"></p>
+              <p id="progress-label" class="progress-label" aria-live="polite">Подготовка…</p>
+              <div class="progress-track" role="progressbar" aria-label="Ход выполнения">
+                <div id="progress-bar" class="progress-bar indeterminate"></div>
+              </div>
+              <p id="progress-tokens" class="progress-tokens" hidden></p>
+              <ol id="progress-steps" class="progress-steps"></ol>
+            </div>
+
+            <div class="card status-card">
+              <div class="status-row">
+                <h2>Статус</h2>
+                <p id="job-status" class="job-status" data-status="idle" aria-live="polite">Ожидает данных</p>
+              </div>
+              <details id="events-details">
+                <summary>Журнал этапов</summary>
+                <ol id="events-log" class="events-log"></ol>
+              </details>
+            </div>
+          </div>
+
+          <!-- Колонка 2: диалог -->
+          <div class="col col-dialog">
+            <div class="card card-dialog">
+              <h2>Диалог с помощником</h2>
+              <div id="chat" class="chat" aria-live="polite"></div>
+
+              <div id="questions-block" class="questions-block" hidden>
+                <h3>Уточняющие вопросы</h3>
+                <div id="questions-list"></div>
+              </div>
+
+              <form id="chat-form" class="chat-form">
+                <label for="chat-input" class="visually-hidden">Сообщение помощнику</label>
+                <textarea id="chat-input" rows="2" maxlength="4000" placeholder="Сообщение помощнику… (запускает анализ)" disabled></textarea>
+                <button id="btn-send" class="btn btn-primary" type="submit" disabled aria-label="Отправить">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Колонка 3: результаты -->
+          <div class="col">
+            <div class="card">
+              <h2>Результаты</h2>
+              <div id="results-empty" class="empty-state">
+                <p>Здесь появятся итоговый отчёт и сформированные файлы после завершения анализа.</p>
+              </div>
+              <ul id="results-list" class="results-list"></ul>
+            </div>
+            <div id="facts-card" class="card" hidden>
+              <h2>Извлечённые факты</h2>
+              <dl id="facts-list" class="facts-list"></dl>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════ Экран: Нормоконтроль ══════════ -->
+      <section id="screen-normo" class="screen" aria-label="Нормоконтроль">
+        <header class="toolbar">
+          <h1>Нормоконтроль</h1>
+          <p class="toolbar-sub">Проверка комплекта документации на соответствие нормативным требованиям</p>
+        </header>
+        <div class="normo-hero card">
+          <div class="normo-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+              <path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h2>Раздел в разработке</h2>
+          <p>Здесь появится автоматическая проверка чертежей и текстовых документов
+             по ГОСТ 21.508, СП 42.13330 и требованиям пожарной безопасности:
+             комплектность, оформление, ссылки на нормативы, контроль ТЭП.</p>
+          <button class="btn btn-quiet" type="button" disabled>Загрузить комплект — скоро</button>
+        </div>
+      </section>
+
+      <!-- ══════════ Экран: Настройки ══════════ -->
+      <section id="screen-settings" class="screen" aria-label="Настройки">
+        <header class="toolbar">
+          <h1>Настройки</h1>
+          <p class="toolbar-sub">Нейросеть, база знаний и управление сессией</p>
+        </header>
+
+        <div class="settings-grid">
+          <div class="card">
+            <h2>Нейросеть</h2>
+            <div class="field">
+              <label for="sel-model">Модель для анализа</label>
+              <select id="sel-model" disabled>
+                <option value="">Загрузка…</option>
+              </select>
+              <p id="model-note" class="hint" hidden></p>
+            </div>
+            <div class="field">
+              <label for="sel-kb">База знаний</label>
+              <select id="sel-kb" disabled></select>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Сравнение моделей</h2>
+            <p class="hint">Один и тот же анализ выполняется каждой выбранной моделью по очереди;
+               результат — сводная таблица и файл сравнения.</p>
+            <div id="compare-list" class="compare-list"></div>
+            <button id="btn-compare" class="btn btn-quiet btn-block" type="button" disabled>
+              Запустить сравнение
+            </button>
+          </div>
+
+          <div class="card">
+            <h2>Оформление</h2>
+            <div class="field">
+              <span class="field-label" id="theme-label">Тема</span>
+              <div class="segmented" role="radiogroup" aria-labelledby="theme-label" id="theme-seg">
+                <button type="button" role="radio" data-theme="auto" aria-checked="true">Авто</button>
+                <button type="button" role="radio" data-theme="light" aria-checked="false">Светлая</button>
+                <button type="button" role="radio" data-theme="dark" aria-checked="false">Тёмная</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Сессия</h2>
+            <p class="hint">Файлы и результаты изолированы по сессиям и удаляются автоматически
+               через <span id="ttl-hours-2">72</span> ч после последней активности.</p>
+            <div class="btn-row">
+              <button id="btn-new-session" class="btn btn-quiet" type="button">Новая сессия</button>
+              <button id="btn-delete-session" class="btn btn-danger" type="button" disabled>Удалить сессию</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <footer class="app-footer">
-    <p>ENSO Nexus Pilot 1 · Данные сессии хранятся <span id="ttl-hours">72</span> ч и удаляются автоматически. Файлы изолированы по сессиям.</p>
-  </footer>
-
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

@@ -45,6 +45,29 @@ function renderPage(pdf, page, dpi) {
   return buf;
 }
 
+/**
+ * Автопауза: пока сервер выполняет интерактивный анализ (logs/interactive.lock
+ * свежее 2 минут), очередь не трогает LM Studio — иначе модели вытесняют друг
+ * друга из памяти и пользователь получает ошибки 400 «Model unloaded».
+ */
+const INTERACTIVE_LOCK = path.join('logs', 'interactive.lock');
+async function waitWhileInteractive() {
+  let announced = false;
+  for (;;) {
+    let fresh = false;
+    try {
+      const age = Date.now() - fs.statSync(INTERACTIVE_LOCK).mtimeMs;
+      fresh = age < 120000;
+    } catch { /* флага нет */ }
+    if (!fresh) {
+      if (announced) console.log('  автопауза снята — пользовательский анализ завершён, продолжаю');
+      return;
+    }
+    if (!announced) { console.log('  автопауза: идёт пользовательский анализ — очередь ждёт…'); announced = true; }
+    await new Promise((r) => setTimeout(r, 10000));
+  }
+}
+
 const OCR_PROMPT =
   'Расшифруй эту страницу российского нормативного документа в Markdown максимально дословно. Требования: ' +
   '1) ВСЕ таблицы — строго в формате Markdown-таблиц с шапкой и разделителем, сохраняя объединённые смыслы ячеек словами; ' +
@@ -73,8 +96,13 @@ async function ocrPage(png, attempt = 1) {
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 200);
     if (/unload|not loaded|no models? loaded/i.test(detail) && attempt <= 4) {
-      console.log(`  модель выгружена — повтор ${attempt}/4 через ${attempt * 20} с`);
-      await new Promise((r) => setTimeout(r, attempt * 20000));
+      console.log(`  модель выгружена — повтор ${attempt}/4 (явная загрузка)`);
+      await waitWhileInteractive();
+      try {
+        await require('../server/services/model-manager').ensureLoaded(config.localAiOcrModel, {
+          onProgress: (t) => console.log(`  ${t}`),
+        });
+      } catch { await new Promise((r) => setTimeout(r, attempt * 20000)); }
       return ocrPage(png, attempt + 1);
     }
     throw new Error(`VLM HTTP ${res.status}: ${detail}`);
@@ -113,6 +141,12 @@ function chunkPage(doc, page, md) {
 (async () => {
   const { doc, pdf, pages, dpi } = parseArgs();
   if (!config.kbDir) { console.error('KB_DIR не задан'); process.exit(2); }
+  // vision-модель загружается явно, с умеренным контекстом (странице OCR больше не нужно)
+  try {
+    await require('../server/services/model-manager').ensureLoaded(config.localAiOcrModel, {
+      onProgress: (t) => console.log(`  ${t}`),
+    });
+  } catch (err) { console.log(`  (модель загрузится по запросу: ${err.message})`); }
   const outDir = path.join(config.kbDir, '12_VLM-OCR', doc);
   fs.mkdirSync(outDir, { recursive: true });
   const allChunks = [];
@@ -123,6 +157,7 @@ function chunkPage(doc, page, md) {
       console.log(`стр. ${page}: уже распознана — пропуск`);
       continue;
     }
+    await waitWhileInteractive();
     const t0 = Date.now();
     const png = renderPage(pdf, page, dpi);
     let { text, truncated } = await ocrPage(png);

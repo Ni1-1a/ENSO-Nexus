@@ -23,9 +23,13 @@ const config = {
   localAiBaseUrl: process.env.LOCAL_AI_BASE_URL || 'http://localhost:1234/v1',
   localAiModel: process.env.LOCAL_AI_MODEL || 'qwen/qwen3-coder-30b', // чат/анализ (структурный JSON)
   localAiOcrModel: process.env.LOCAL_AI_OCR_MODEL || 'qwen/qwen3-vl-30b', // vision-модель для VLM-OCR
-  localAiMaxTokens: int('LOCAL_AI_MAX_TOKENS', 8192),
+  localAiMaxTokens: int('LOCAL_AI_MAX_TOKENS', 12288),
   localAiTimeoutMs: int('LOCAL_AI_TIMEOUT', 480000), // очередь LM Studio может быть занята (OCR и др.)
-  localAiDocCharLimit: int('LOCAL_AI_DOC_CHAR_LIMIT', 24000),
+  localAiDocCharLimit: int('LOCAL_AI_DOC_CHAR_LIMIT', 45000),
+  // Размер контекста при явной загрузке моделей (см. services/model-manager.js).
+  // Значения подобраны под 48 ГБ RAM: модель + KV-кэш помещаются в лимит Metal.
+  localAiContext: int('LOCAL_AI_CONTEXT', 32768),
+  localAiOcrContext: int('LOCAL_AI_OCR_CONTEXT', 16384),
 
   // Upload limits (documented in UI via /api/health)
   maxFileSizeBytes: int('MAX_FILE_SIZE_MB', 25) * 1024 * 1024,

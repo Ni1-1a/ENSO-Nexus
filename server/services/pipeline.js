@@ -4,6 +4,8 @@ const config = require('../config');
 const { db, now } = require('../db');
 const adapter = require('./claude/adapter');
 const { materializeOutputs } = require('./outputs');
+const busyFlag = require('./busy-flag');
+const progress = require('./progress');
 
 const runningJobs = new Set();
 
@@ -66,6 +68,7 @@ async function startProcessing(sessionId, { instruction }) {
 }
 
 async function runJob(sessionId, instruction) {
+  busyFlag.acquire(); // OCR-очередь базы знаний приостанавливается, пока идёт анализ
   try {
     setJobStatus(sessionId, 'running');
     logEvent(sessionId, 'Проверка исходных данных');
@@ -84,6 +87,7 @@ async function runJob(sessionId, instruction) {
       setJobStatus(sessionId, 'needs_clarification');
     } else if (result.status === 'completed') {
       logEvent(sessionId, 'Формируются выходные документы');
+      progress.set(sessionId, { phase: 'saving', label: 'Формирование выходных документов…' });
       const files = await materializeOutputs(sessionId, result);
       logEvent(sessionId, 'Задача завершена', `Сформировано файлов: ${files.length}`);
       setJobStatus(sessionId, 'completed');
@@ -105,6 +109,8 @@ async function runJob(sessionId, instruction) {
     }
   } finally {
     runningJobs.delete(sessionId);
+    progress.clear(sessionId);
+    busyFlag.release();
   }
 }
 
@@ -134,6 +140,7 @@ async function startComparison(sessionId, routes, instruction) {
 }
 
 async function runComparison(sessionId, routes, instruction) {
+  busyFlag.acquire();
   const adapter2 = require('./claude/adapter');
   const { saveResult } = require('./outputs');
   const task = instruction ||
@@ -177,6 +184,8 @@ async function runComparison(sessionId, routes, instruction) {
     setJobStatus(sessionId, 'failed');
   } finally {
     runningJobs.delete(sessionId);
+    progress.clear(sessionId);
+    busyFlag.release();
   }
 }
 

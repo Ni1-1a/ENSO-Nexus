@@ -18,11 +18,31 @@ async function probeOpenAiCompat(baseUrl) {
 }
 
 async function listProviders() {
-  if (cache && Date.now() - cacheAt < 60000) return cache;
+  if (cache && Date.now() - cacheAt < 15000) return cache;
   const [lmModels, ollamaModels] = await Promise.all([
     probeOpenAiCompat(config.localAiBaseUrl),
     probeOpenAiCompat(config.ollamaBaseUrl),
   ]);
+
+  // Для локальных моделей — оценка: помещается ли модель в память машины
+  let lmModelsInfo = [];
+  if (lmModels && lmModels.length) {
+    const mm = require('./model-manager');
+    let loadedKeys = new Set();
+    try { loadedKeys = new Set((await mm.listLoaded()).map((m) => m.modelKey)); } catch {}
+    lmModelsInfo = await Promise.all(lmModels.map(async (id) => {
+      const f = await mm.feasibility(id).catch(() => ({ feasible: true, note: '' }));
+      return {
+        id,
+        feasible: f.feasible,
+        note: f.note,
+        loaded: loadedKeys.has(id),
+        context: mm.desiredContext(id),
+        sizeGb: f.sizeBytes ? +(f.sizeBytes / 1024 ** 3).toFixed(1) : null,
+      };
+    }));
+  }
+
   const providers = [
     {
       id: 'claude', label: 'Claude (Anthropic)',
@@ -40,6 +60,7 @@ async function listProviders() {
       id: 'lmstudio', label: 'Локальные модели (LM Studio)',
       available: !!(lmModels && lmModels.length),
       models: lmModels || [],
+      modelsInfo: lmModelsInfo,
       note: lmModels ? '' : 'LM Studio не запущен',
     },
     {
@@ -63,6 +84,12 @@ async function validateChoice(providerId, model) {
   if (!p.available) return { ok: false, error: `«${p.label}» недоступен: ${p.note}` };
   if (model && p.models.length && !p.models.includes(model)) {
     return { ok: false, error: `Модель «${model}» недоступна у провайдера «${p.label}»` };
+  }
+  if (model && p.modelsInfo) {
+    const info = p.modelsInfo.find((m) => m.id === model);
+    if (info && !info.feasible) {
+      return { ok: false, error: `Модель «${model}» ${info.note} — выберите модель поменьше` };
+    }
   }
   return { ok: true, provider: p };
 }
