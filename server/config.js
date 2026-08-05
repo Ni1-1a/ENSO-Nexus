@@ -73,7 +73,7 @@ const config = {
   openaiBaseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
   ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
 
-  promptVersion: '1.2.0', // 1.2.0: DWG/DXF приходят выжимкой из CAD-чертежа
+  promptVersion: '1.2.1', // 1.2.x: DWG/DXF приходят выжимкой из CAD-чертежа (+контуры зданий/границ)
 };
 
 // Базы знаний: главная всегда 'main'; база Гриши подключается при наличии каталога.

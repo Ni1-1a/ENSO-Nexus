@@ -19,7 +19,11 @@ const pairs = [
   '0', 'TEXT', '8', '03_Здания и строения', '1', 'бет. плиты',
   '0', 'TEXT', '8', '03_Здания и строения', '1', 'бет. плиты',
   '0', 'MTEXT', '8', '11_Гидрография', '1', '{\\fArial;отметка \\P132.45}',
-  '0', 'LWPOLYLINE', '8', '0',
+  // замкнутый квадрат 10×10 на слое зданий
+  '0', 'LWPOLYLINE', '8', '03_Здания и строения', '90', '4', '70', '1',
+  '10', '100', '20', '200', '10', '110', '20', '200', '10', '110', '20', '210', '10', '100', '20', '210',
+  // разомкнутая линия на постороннем слое — в контуры не попадает
+  '0', 'LWPOLYLINE', '8', '12_Рельеф', '90', '2', '70', '0', '10', '0', '20', '0', '10', '5', '20', '5',
   '0', 'INSERT', '2', 'дерево', '8', '0',
   '0', 'INSERT', '2', 'дерево', '8', '0',
   '0', 'ENDSEC',
@@ -34,8 +38,13 @@ test('parseDxf: слои, сущности, надписи, блоки, габа
   const r = parseDxf(DXF);
   assert.deepStrictEqual(r.layers, ['03_Здания и строения', '11_Гидрография']);
   assert.strictEqual(r.entities.get('TEXT'), 2);
-  assert.strictEqual(r.entities.get('LWPOLYLINE'), 1);
+  assert.strictEqual(r.entities.get('LWPOLYLINE'), 2);
   assert.strictEqual(r.entities.get('INSERT'), 2);
+  // геометрия: замкнутый квадрат со слоя зданий с координатами вершин
+  assert.strictEqual(r.polylines.length, 2);
+  const sq = r.polylines.find((p) => p.layer === '03_Здания и строения');
+  assert.ok(sq && sq.closed);
+  assert.deepStrictEqual(sq.points, [[100, 200], [110, 200], [110, 210], [100, 210]]);
   // OBJECTS-секция не считается сущностями чертежа
   assert.strictEqual(r.entities.has('DICTIONARY'), false);
   assert.strictEqual(r.inserts.get('дерево'), 2);
@@ -54,7 +63,14 @@ test('summarizeDxf: выжимка содержит ключевые сведе�
   assert.ok(md.includes('03_Здания и строения'));
   assert.ok(md.includes('«бет. плиты» ×2'));
   assert.ok(md.includes('дерево ×2'));
-  assert.ok(md.length <= 20000);
+  // контуры: квадрат зданий с площадью 100 и периметром 40, координаты вершин на месте
+  assert.ok(md.includes('Контуры и границы'));
+  assert.ok(md.includes('площадь ≈ 100'));
+  assert.ok(md.includes('периметр ≈ 40'));
+  assert.ok(md.includes('(100, 200)'));
+  // разомкнутая линия рельефа в контуры не попала
+  assert.ok(!md.includes('12_Рельеф]'));
+  assert.ok(md.length <= 32000);
 });
 
 test('summarizeDxf: пустой/битый DXF даёт честную пометку', () => {
