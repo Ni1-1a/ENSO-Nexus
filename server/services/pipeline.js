@@ -8,6 +8,21 @@ const busyFlag = require('./busy-flag');
 const progress = require('./progress');
 
 const runningJobs = new Set();
+/** sessionId → AbortController выполняющейся задачи (для «Прервать обработку»). */
+const jobAborts = new Map();
+
+/** Прерывает выполняющуюся задачу сессии. Возвращает false, если прерывать нечего. */
+function cancelJob(sessionId) {
+  const controller = jobAborts.get(sessionId);
+  if (!controller) return false;
+  logEvent(sessionId, 'Получена команда «Прервать обработку»', '', 'warn');
+  controller.abort();
+  return true;
+}
+
+function isAbort(err, signal) {
+  return (signal && signal.aborted) || (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'));
+}
 
 function logEvent(sessionId, stage, detail = '', level = 'info') {
   db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
@@ -59,15 +74,17 @@ async function startProcessing(sessionId, { instruction }) {
   }
 
   runningJobs.add(sessionId);
+  const controller = new AbortController();
+  jobAborts.set(sessionId, controller);
   setJobStatus(sessionId, 'queued');
   logEvent(sessionId, 'Задача поставлена в очередь');
 
-  runJob(sessionId, instruction).catch((err) => {
+  runJob(sessionId, instruction, controller.signal).catch((err) => {
     console.error('[pipeline] unexpected error:', err);
   });
 }
 
-async function runJob(sessionId, instruction) {
+async function runJob(sessionId, instruction, signal) {
   busyFlag.acquire(); // OCR-очередь базы знаний приостанавливается, пока идёт анализ
   try {
     setJobStatus(sessionId, 'running');
@@ -78,6 +95,7 @@ async function runJob(sessionId, instruction) {
       instruction: instruction ||
         'Проанализируй загруженные материалы по методике 12 шагов. Извлеки факты, определи ограничения, ' +
         'при нехватке данных задай уточняющие вопросы, при достаточности данных сформируй итоговый отчёт.',
+      signal,
     });
 
     applyModelResult(sessionId, result);
@@ -98,17 +116,25 @@ async function runJob(sessionId, instruction) {
 
     await adapter.maybeCompact(sessionId);
   } catch (err) {
-    const userMessage = (err instanceof adapter.BudgetExceededError || err instanceof adapter.AiUnavailableError)
-      ? err.message
-      : 'Внутренняя ошибка обработки. Данные сессии сохранены — повторите попытку.';
-    logEvent(sessionId, 'Произошла ошибка', userMessage, 'error');
-    addMessage(sessionId, 'assistant', 'error', userMessage);
-    setJobStatus(sessionId, 'failed');
-    if (!(err instanceof adapter.BudgetExceededError || err instanceof adapter.AiUnavailableError)) {
-      console.error('[pipeline]', err); // full stack goes to server logs only
+    if (isAbort(err, signal)) {
+      logEvent(sessionId, 'Обработка прервана', 'по команде пользователя', 'warn');
+      addMessage(sessionId, 'assistant', 'error',
+        'Обработка прервана по вашей команде. Данные сессии сохранены — можно запустить анализ заново.');
+      setJobStatus(sessionId, 'failed');
+    } else {
+      const userMessage = (err instanceof adapter.BudgetExceededError || err instanceof adapter.AiUnavailableError)
+        ? err.message
+        : 'Внутренняя ошибка обработки. Данные сессии сохранены — повторите попытку.';
+      logEvent(sessionId, 'Произошла ошибка', userMessage, 'error');
+      addMessage(sessionId, 'assistant', 'error', userMessage);
+      setJobStatus(sessionId, 'failed');
+      if (!(err instanceof adapter.BudgetExceededError || err instanceof adapter.AiUnavailableError)) {
+        console.error('[pipeline]', err); // full stack goes to server logs only
+      }
     }
   } finally {
     runningJobs.delete(sessionId);
+    jobAborts.delete(sessionId);
     progress.clear(sessionId);
     busyFlag.release();
   }
@@ -134,12 +160,14 @@ async function startComparison(sessionId, routes, instruction) {
   if (filesCount === 0) throw Object.assign(new Error('Сначала загрузите хотя бы один файл исходных данных'), { status: 400 });
 
   runningJobs.add(sessionId);
+  const controller = new AbortController();
+  jobAborts.set(sessionId, controller);
   setJobStatus(sessionId, 'queued');
   logEvent(sessionId, 'Сравнение моделей поставлено в очередь', routes.map(fmtRoute).join(' · '));
-  runComparison(sessionId, routes, instruction).catch((err) => console.error('[compare]', err));
+  runComparison(sessionId, routes, instruction, controller.signal).catch((err) => console.error('[compare]', err));
 }
 
-async function runComparison(sessionId, routes, instruction) {
+async function runComparison(sessionId, routes, instruction, signal) {
   busyFlag.acquire();
   const adapter2 = require('./claude/adapter');
   const { saveResult } = require('./outputs');
@@ -155,11 +183,15 @@ async function runComparison(sessionId, routes, instruction) {
       const before = db.prepare('SELECT input_tokens + output_tokens AS t FROM sessions WHERE id = ?').get(sessionId).t;
       const t0 = Date.now();
       try {
-        const result = await adapter2.analyzeOnce(sessionId, { instruction: task, route });
+        const result = await adapter2.analyzeOnce(sessionId, { instruction: task, route, signal });
         const tokens = db.prepare('SELECT input_tokens + output_tokens AS t FROM sessions WHERE id = ?').get(sessionId).t - before;
         runs.push({ route, ok: true, result, seconds: Math.round((Date.now() - t0) / 1000), tokens });
         logEvent(sessionId, `Сравнение: ${fmtRoute(route)} — готово`, `${runs[i].seconds} с`);
       } catch (err) {
+        if (isAbort(err, signal)) {
+          logEvent(sessionId, 'Сравнение прервано', 'по команде пользователя', 'warn');
+          break;
+        }
         runs.push({ route, ok: false, error: err.message, seconds: Math.round((Date.now() - t0) / 1000), tokens: 0 });
         logEvent(sessionId, `Сравнение: ${fmtRoute(route)} — ошибка`, err.message, 'warn');
       }
@@ -184,6 +216,7 @@ async function runComparison(sessionId, routes, instruction) {
     setJobStatus(sessionId, 'failed');
   } finally {
     runningJobs.delete(sessionId);
+    jobAborts.delete(sessionId);
     progress.clear(sessionId);
     busyFlag.release();
   }
@@ -207,4 +240,4 @@ function buildComparisonMd(runs, task) {
   return parts.join('\n');
 }
 
-module.exports = { startProcessing, startComparison, logEvent, addMessage, runningJobs };
+module.exports = { startProcessing, startComparison, cancelJob, logEvent, addMessage, runningJobs };

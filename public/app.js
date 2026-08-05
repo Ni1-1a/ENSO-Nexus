@@ -85,6 +85,24 @@ async function deleteSession() {
   toast('Сессия удалена, создана новая');
 }
 
+function startNewSession() {
+  localStorage.removeItem(LS_KEY);
+  state.session = null;
+  newSession().catch((err) => toast(err.message, 'error'));
+}
+
+async function cancelJob() {
+  const btns = [$('btn-cancel-job')];
+  btns.forEach((b) => { b.disabled = true; });
+  try {
+    await api(`/sessions/${state.session.id}/cancel`, { method: 'POST', json: {} });
+    toast('Обработка прерывается…');
+  } catch (err) {
+    toast(err.message, 'error');
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
 /* ---------------- rendering ---------------- */
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -135,6 +153,7 @@ function render() {
   const v = state.view;
   const has = !!v;
   $('btn-delete-session').disabled = !has;
+  $('btn-delete-session-side').disabled = !has;
   $('btn-process').disabled = !has || !v.files.length || ['queued', 'running'].includes(v.jobStatus);
   $('chat-input').disabled = !has || ['queued', 'running'].includes(v.jobStatus);
   $('btn-send').disabled = $('chat-input').disabled;
@@ -253,6 +272,7 @@ function updateAiBadge() {
 /* ---------------- живой индикатор выполнения ---------------- */
 const PROGRESS_STEPS = [
   { phase: 'preparing', label: 'Подготовка контекста' },
+  { phase: 'reading_docs', label: 'Изучение документации (графика и сканы)' },
   { phase: 'retrieving', label: 'Поиск в базе знаний' },
   { phase: 'loading_model', label: 'Загрузка модели' },
   { phase: 'waiting_model', label: 'Обработка запроса моделью' },
@@ -260,7 +280,7 @@ const PROGRESS_STEPS = [
   { phase: 'validating', label: 'Проверка структуры ответа' },
   { phase: 'saving', label: 'Сохранение результатов' },
 ];
-const PHASE_PERCENT = { preparing: 8, retrieving: 18, loading_model: 30, waiting_model: 45, generating: 50, validating: 92, saving: 97 };
+const PHASE_PERCENT = { preparing: 6, reading_docs: 15, retrieving: 24, loading_model: 32, waiting_model: 44, generating: 50, validating: 92, saving: 97 };
 const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 let progressTimer = null;
@@ -274,6 +294,7 @@ function renderProgress() {
     return;
   }
   const p = v.jobProgress || null;
+  if (card.hidden) $('btn-cancel-job').disabled = false; // новая задача — кнопка снова активна
   card.hidden = false;
   $('progress-title').textContent = v.jobStatus === 'queued' ? 'Задача в очереди' : 'Выполняется анализ';
   $('progress-model').textContent = p && p.model
@@ -350,6 +371,12 @@ function updateModelNote() {
     note.textContent = 'Сохранённая модель сейчас недоступна — проверьте, запущен ли её сервер (LM Studio/Ollama). Запросы будут завершаться ошибкой, пока модель не появится.';
     return;
   }
+  const b = state.health && state.health.localBundle;
+  if (!sel.value && state.health && state.health.aiMode === 'local' && b) {
+    note.hidden = false;
+    note.textContent = `Текст и анализ: ${b.text} · Графика и сканы: ${b.vision} · документы изучаются последовательно перед анализом`;
+    return;
+  }
   const [provider, model] = (sel.value || '|').split('|');
   const info = provider === 'lmstudio' && state.health
     ? (state.health.providers || []).find((p) => p.id === 'lmstudio')?.modelsInfo?.find((m) => m.id === model)
@@ -367,22 +394,43 @@ function updateModelNote() {
   }
 }
 
+const PROVIDER_SHORT = { claude: 'Anthropic', chatgpt: 'OpenAI', lmstudio: 'LM Studio', ollama: 'Ollama' };
+
 function renderSettingsOptions(health) {
   const sel = $('sel-model');
   const kbSelPrev = $('sel-kb').value;
   const modelPrev = sel.value;
   const comparePrev = new Set(selectedCompareModels().map((m) => `${m.provider}|${m.model}`));
-  sel.innerHTML = '<option value="">По умолчанию (как настроен сервер)</option>';
-  for (const p of health.providers || []) {
+  const providers = health.providers || [];
+
+  sel.innerHTML = '';
+  const defOpt = document.createElement('option');
+  defOpt.value = '';
+  defOpt.textContent = health.aiMode === 'local' && health.localBundle
+    ? 'Локальная связка: текст + графика (рекомендуется)'
+    : 'По умолчанию (как настроен сервер)';
+  sel.appendChild(defOpt);
+
+  const GROUPS = [
+    { label: 'Облачные модели', ids: ['claude', 'chatgpt'] },
+    { label: 'Локальные модели', ids: ['lmstudio', 'ollama'] },
+    { label: 'Прочее', ids: ['demo'] },
+  ];
+  for (const g of GROUPS) {
+    const members = providers.filter((p) => g.ids.includes(p.id));
+    if (!members.length) continue;
     const group = document.createElement('optgroup');
-    group.label = p.label + (p.available ? '' : ` — ${p.note}`);
-    const models = p.models.length ? p.models : ['(модели не найдены)'];
-    for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = `${p.id}|${p.models.length ? m : ''}`;
-      opt.textContent = m;
-      opt.disabled = !p.available;
-      group.appendChild(opt);
+    group.label = g.label;
+    for (const p of members) {
+      const models = p.models.length ? p.models : ['(модели не найдены)'];
+      for (const m of models) {
+        const opt = document.createElement('option');
+        opt.value = `${p.id}|${p.models.length ? m : ''}`;
+        const suffix = p.available ? (PROVIDER_SHORT[p.id] || p.label) : p.note;
+        opt.textContent = p.id === 'demo' ? p.label : `${m} — ${suffix}`;
+        opt.disabled = !p.available;
+        group.appendChild(opt);
+      }
     }
     sel.appendChild(group);
   }
@@ -567,12 +615,11 @@ async function init() {
   }
   await restoreOrCreate().catch((err) => toast(err.message, 'error'));
 
-  $('btn-new-session').addEventListener('click', () => {
-    localStorage.removeItem(LS_KEY);
-    state.session = null;
-    newSession().catch((err) => toast(err.message, 'error'));
-  });
+  $('btn-new-session').addEventListener('click', startNewSession);
+  $('btn-new-session-side').addEventListener('click', startNewSession);
   $('btn-delete-session').addEventListener('click', () => deleteSession().catch((err) => toast(err.message, 'error')));
+  $('btn-delete-session-side').addEventListener('click', () => deleteSession().catch((err) => toast(err.message, 'error')));
+  $('btn-cancel-job').addEventListener('click', cancelJob);
 
   const dz = $('dropzone');
   const fi = $('file-input');

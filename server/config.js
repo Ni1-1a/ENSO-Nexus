@@ -30,6 +30,8 @@ const config = {
   // Значения подобраны под 48 ГБ RAM: модель + KV-кэш помещаются в лимит Metal.
   localAiContext: int('LOCAL_AI_CONTEXT', 32768),
   localAiOcrContext: int('LOCAL_AI_OCR_CONTEXT', 16384),
+  // «Изучение документации»: сколько страниц PDF-скана распознаёт vision-модель на файл
+  visionMaxPages: int('VISION_MAX_PAGES', 12),
 
   // Upload limits (documented in UI via /api/health)
   maxFileSizeBytes: int('MAX_FILE_SIZE_MB', 25) * 1024 * 1024,

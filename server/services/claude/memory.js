@@ -45,17 +45,35 @@ async function buildDocumentBlocks(sessionId, provider = 'anthropic') {
   const files = db.prepare('SELECT * FROM files WHERE session_id = ? ORDER BY created_at').all(sessionId);
   const blocks = [];
   const manifest = [];
+  // кэш «изучения документации»: распознанный vision-моделью текст (см. services/doc-vision.js)
+  const visionText = (f) => {
+    try {
+      const t = fs.readFileSync(f.stored_path + '.vision.md', 'utf8').trim();
+      return t ? t.slice(0, config.localAiDocCharLimit) : '';
+    } catch { return ''; }
+  };
   for (const f of files) {
     manifest.push(`- ${f.original_name} (${f.ext}, ${Math.round(f.size / 1024)} КБ)`);
     try {
       if (f.ext === 'pdf' && provider === 'local') {
         const text = await extractPdfText(f.stored_path, config.localAiDocCharLimit);
+        const vision = text && text.trim().length >= 200 ? '' : visionText(f);
         blocks.push({
           type: 'text',
-          text: `<uploaded_document name="${f.original_name}" untrusted="true">\n` +
-            (text || '(PDF без текстового слоя — вероятно скан; содержимое не извлечено, учитывай только метаданные)') +
+          text: `<uploaded_document name="${f.original_name}" untrusted="true"${vision ? ' источник="распознано vision-моделью"' : ''}>\n` +
+            (text && text.trim().length >= 200 ? text
+              : vision || '(PDF без текстового слоя — вероятно скан; содержимое не извлечено, учитывай только метаданные)') +
             '\n</uploaded_document>',
         });
+      } else if (['png', 'jpg', 'jpeg'].includes(f.ext) && provider === 'local') {
+        const vision = visionText(f);
+        if (vision) {
+          blocks.push({
+            type: 'text',
+            text: `<uploaded_document name="${f.original_name}" untrusted="true" источник="изображение, распознано vision-моделью">\n${vision}\n</uploaded_document>`,
+          });
+        }
+        // без распознавания изображение в локальном режиме остаётся только в манифесте
       } else if (f.ext === 'pdf' && f.size <= MAX_PDF_BYTES) {
         const data = fs.readFileSync(f.stored_path).toString('base64');
         blocks.push({

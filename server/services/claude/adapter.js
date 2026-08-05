@@ -85,16 +85,16 @@ function effectiveProvider(session) {
 }
 
 /** Returns { text, truncated } — truncated means the output hit the token cap (JSON likely incomplete). */
-async function callModel({ system, messages, sessionId, route }) {
+async function callModel({ system, messages, sessionId, route, signal }) {
   if (route.provider === 'lmstudio') {
-    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.localAiBaseUrl, model: route.model || config.localAiModel, provider: 'lmstudio' });
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.localAiBaseUrl, model: route.model || config.localAiModel, provider: 'lmstudio', signal });
   }
   if (route.provider === 'ollama') {
-    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.ollamaBaseUrl, model: route.model, provider: 'ollama' });
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.ollamaBaseUrl, model: route.model, provider: 'ollama', signal });
   }
   if (route.provider === 'chatgpt') {
     if (!config.openaiApiKey) throw new AiUnavailableError('ChatGPT не настроен: нужен OPENAI_API_KEY на сервере.');
-    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel, provider: 'chatgpt' });
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel, provider: 'chatgpt', signal });
   }
   if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
   progress.set(sessionId, {
@@ -107,7 +107,7 @@ async function callModel({ system, messages, sessionId, route }) {
     system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
     output_config: { format: { type: 'json_schema', schema: RESPONSE_SCHEMA } },
     messages,
-  });
+  }, signal ? { signal } : undefined);
   recordUsage(sessionId, response.usage);
   if (response.stop_reason === 'refusal') {
     throw new AiUnavailableError('Модель отклонила запрос по соображениям безопасности.');
@@ -235,7 +235,7 @@ async function readSseStream(res, onToken) {
   return { text, usage, truncated: finish === 'length' };
 }
 
-async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true }) {
+async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true, signal = null }) {
   const modelId = model || config.localAiModel;
   const isLmStudio = baseUrl === config.localAiBaseUrl;
   const providerId = provider || (isLmStudio ? 'lmstudio' : 'openai-compat');
@@ -318,14 +318,20 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   let res;
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const fetchSignal = signal
+    ? AbortSignal.any([AbortSignal.timeout(config.localAiTimeoutMs), signal])
+    : AbortSignal.timeout(config.localAiTimeoutMs);
   try {
     res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(config.localAiTimeoutMs),
+      signal: fetchSignal,
     });
   } catch (err) {
+    if (signal && signal.aborted) {
+      throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
+    }
     const host = baseUrl.replace(/https?:\/\//, '').split('/')[0];
     if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       throw new AiUnavailableError(`AI-сервер (${host}) не ответил за ${Math.round(config.localAiTimeoutMs / 60000)} мин — вероятно, занят другой задачей. Повторите позже.`);
@@ -348,17 +354,17 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       } else {
         await new Promise((r) => setTimeout(r, attempt * 15000));
       }
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false, signal });
     }
     // сервер не понял параметры стриминга — повтор без стриминга
     if (stream && /stream/i.test(detail)) {
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false, signal });
     }
     // некоторые модели не принимают json_schema — один повтор в режиме «просто JSON»
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callOpenAiCompat({
         system: system + '\n\nОтвечай ТОЛЬКО валидным JSON строго по описанной схеме, без пояснений вокруг.',
-        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false,
+        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false, signal,
       });
     }
     throw new AiUnavailableError(humanizeLocalError(res.status, detail));
@@ -372,6 +378,9 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
         label: `Модель ${modelId} генерирует ответ…`, tokensOut: tokens,
       });
     }).catch((err) => {
+      if (signal && signal.aborted) {
+        throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
+      }
       if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
         throw new AiUnavailableError(`Модель не успела завершить ответ за ${Math.round(config.localAiTimeoutMs / 60000)} мин. Повторите или упростите задачу.`);
       }
@@ -400,19 +409,46 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
  * One analysis step. Builds the working context, calls Claude (or the mock),
  * validates the structured answer, retries once on invalid structure.
  */
-async function runAnalysis(sessionId, { instruction }) {
+async function runAnalysis(sessionId, { instruction, signal }) {
   const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
-  return analyzeOnce(sessionId, { instruction, route: effectiveProvider(session0) });
+  return analyzeOnce(sessionId, { instruction, route: effectiveProvider(session0), signal });
 }
 
 /** Один прогон анализа с явным маршрутом (используется и обычной обработкой, и сравнением моделей). */
-async function analyzeOnce(sessionId, { instruction, route }) {
+async function analyzeOnce(sessionId, { instruction, route, signal }) {
   const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   const docProvider = route.provider === 'claude' ? 'anthropic' : 'local';
   progress.set(sessionId, {
     phase: 'preparing', provider: route.provider, model: resolveModel(route),
     label: 'Подготовка контекста: документы, факты, история диалога', tokensOut: 0,
   });
+
+  // «Изучение документации»: графика и сканы распознаются vision-моделью до анализа
+  if (docProvider === 'local' && route.provider !== 'demo') {
+    try {
+      const done = await require('../doc-vision').extractGraphics(sessionId, {
+        signal,
+        onProgress: (label) => progress.set(sessionId, {
+          phase: 'reading_docs', label, model: config.localAiOcrModel, provider: route.provider,
+        }),
+      });
+      if (done.pages) {
+        try {
+          db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+            .run(sessionId, 'Документация изучена vision-моделью',
+              `файлов: ${done.files}, страниц: ${done.pages}`, 'info', now());
+        } catch { /* журнал не критичен */ }
+      }
+    } catch (err) {
+      if (signal && signal.aborted) throw err;
+      console.warn('[doc-vision]', err.message);
+      try {
+        db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+          .run(sessionId, 'Изучение графики не удалось', String(err.message || '').slice(0, 200), 'warn', now());
+      } catch { /* журнал не критичен */ }
+    }
+  }
+
   const ctx = await buildContext(sessionId, docProvider);
   checkBudget(ctx.session);
 
@@ -446,7 +482,7 @@ async function analyzeOnce(sessionId, { instruction, route }) {
 
   let out;
   try {
-    out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId, route });
+    out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId, route, signal });
   } catch (err) {
     throw wrapApiError(err);
   }
@@ -465,7 +501,7 @@ async function analyzeOnce(sessionId, { instruction, route }) {
     messages.push({ role: 'assistant', content: out.text.slice(0, 6000) || '(пустой ответ)' });
     messages.push({ role: 'user', content: correction });
     try {
-      out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId, route });
+      out = await callModel({ system: SYSTEM_PROMPT, messages, sessionId, route, signal });
     } catch (err) {
       throw wrapApiError(err);
     }

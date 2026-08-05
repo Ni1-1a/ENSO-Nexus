@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ENSO Nexus · Pilot 1 — Генплан по ГОСТ 21.508</title>
   <meta name="description" content="AI-сервис анализа исходных данных для посадки здания на земельный участок и подготовки генплана по ГОСТ 21.508">
-  <link rel="stylesheet" href="styles.css?v=5">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230A84FF'/><path d='M28 70 L28 42 L50 28 L72 42 L72 70 Z' fill='none' stroke='white' stroke-width='6' stroke-linejoin='round'/></svg>">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M28 70 L28 42 L50 28 L72 42 L72 70 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/></svg>">
 </head>
 <body>
   <div id="mock-banner" class="mock-banner" hidden>
@@ -50,6 +51,10 @@
       </nav>
 
       <div class="sidebar-foot">
+        <div class="session-actions">
+          <button id="btn-new-session-side" class="btn btn-quiet btn-sm" type="button">Новая сессия</button>
+          <button id="btn-delete-session-side" class="btn btn-quiet btn-sm" type="button" disabled>Удалить сессию</button>
+        </div>
         <div id="ai-badge" class="ai-chip" title="Действующая нейросеть">
           <span class="ai-dot" aria-hidden="true"></span>
           <span id="ai-badge-text">Подключение…</span>
@@ -101,6 +106,8 @@
                 <span class="live-dot" aria-hidden="true"></span>
                 <span id="progress-title">Выполняется анализ</span>
                 <span id="progress-elapsed" class="progress-elapsed">0:00</span>
+                <button id="btn-cancel-job" class="btn btn-quiet btn-sm btn-cancel" type="button"
+                        title="Остановить текущую обработку">Прервать</button>
               </div>
               <p id="progress-model" class="progress-model"></p>
               <p id="progress-label" class="progress-label" aria-live="polite">Подготовка…</p>
@@ -244,6 +251,6 @@
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

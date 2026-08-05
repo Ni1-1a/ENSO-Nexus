@@ -34,6 +34,8 @@ router.get('/health', async (req, res) => {
     aiMode: config.aiMode,
     model: config.aiMode === 'live' ? config.anthropicModel
       : config.aiMode === 'local' ? config.localAiModel : null,
+    // локальная связка: текстовая модель анализа + vision-модель для графики/сканов
+    localBundle: { text: config.localAiModel, vision: config.localAiOcrModel },
     promptVersion: config.promptVersion,
     limits: {
       maxFileSizeMb: Math.round(config.maxFileSizeBytes / 1048576),
@@ -153,6 +155,7 @@ router.delete('/sessions/:id/files/:fileId', sessionAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM files WHERE id = ? AND session_id = ?').get(req.params.fileId, req.session.id);
   if (!row) return res.status(404).json({ error: 'Файл не найден' });
   try { fs.unlinkSync(row.stored_path); } catch {}
+  try { fs.unlinkSync(row.stored_path + '.vision.md'); } catch {}
   db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
   pipeline.logEvent(req.session.id, 'Файл удалён', row.original_name);
   res.json({ ok: true });
@@ -209,6 +212,13 @@ router.post('/sessions/:id/messages', sessionAuth, expensiveLimit, express.json(
     () => res.status(202).json({ ok: true, jobStatus: 'queued' }),
     (err) => next(err),
   );
+});
+
+/* ---------- отмена выполняющейся обработки ---------- */
+router.post('/sessions/:id/cancel', sessionAuth, express.json(), (req, res) => {
+  const ok = pipeline.cancelJob(req.session.id);
+  if (!ok) return res.status(400).json({ error: 'Сейчас нет выполняющейся обработки' });
+  res.json({ ok: true });
 });
 
 /* ---------- processing ---------- */
