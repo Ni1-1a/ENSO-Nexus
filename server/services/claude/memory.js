@@ -84,7 +84,22 @@ async function buildDocumentBlocks(sessionId, provider = 'anthropic') {
           source: { type: 'base64', media_type: 'application/pdf', data },
           title: f.original_name,
         });
-      } else if (['txt', 'md', 'json', 'csv', 'dxf'].includes(f.ext)) {
+      } else if (f.ext === 'dwg' || f.ext === 'dxf') {
+        // CAD-чертёж: компактная выжимка (слои, надписи, блоки, габариты) вместо
+        // сырого дампа; DWG предварительно конвертируется в DXF (dwg2dxf)
+        let summary = '';
+        try {
+          summary = await require('../cad').extractCad(f.stored_path, f.ext, f.original_name);
+        } catch (err) {
+          summary = f.ext === 'dxf'
+            ? fs.readFileSync(f.stored_path, 'utf8').slice(0, MAX_TEXT_DOC_CHARS)
+            : `(разобрать DWG не удалось: ${String(err.message || '').slice(0, 150)})`;
+        }
+        blocks.push({
+          type: 'text',
+          text: `<uploaded_document name="${f.original_name}" untrusted="true" источник="выжимка из CAD-чертежа">\n${summary}\n</uploaded_document>`,
+        });
+      } else if (['txt', 'md', 'json', 'csv'].includes(f.ext)) {
         const text = fs.readFileSync(f.stored_path, 'utf8').slice(0, MAX_TEXT_DOC_CHARS);
         blocks.push({
           type: 'text',
@@ -103,7 +118,7 @@ async function buildDocumentBlocks(sessionId, provider = 'anthropic') {
           source: { type: 'base64', media_type: media, data: fs.readFileSync(f.stored_path).toString('base64') },
         });
       }
-      // dwg and oversized files: metadata only (already in manifest)
+      // oversized files: metadata only (already in manifest)
     } catch { /* file unreadable — stays metadata-only */ }
   }
   return { blocks, manifest };
