@@ -4,20 +4,51 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ENSO Nexus · Pilot 1 — переход к приложению</title>
-  <meta http-equiv="refresh" content="0; url=https://app.enso-nexus.ru">
   <style>
-    body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 90vh; background: #f6f7fb; color: #1e1b4b; }
-    .card { text-align: center; padding: 2rem; }
-    a { color: #4f46e5; font-weight: 600; }
+    body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 90vh; background: #f3efe6; color: #33302a; }
+    .card { text-align: center; padding: 2rem; max-width: 440px; }
+    a { color: #b95740; font-weight: 600; }
+    .muted { color: #8a8474; font-size: .85rem; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #d8d0c0; border-top-color: #b95740; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -2px; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #offline { display: none; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>ENSO Nexus · Pilot 1</h1>
-    <p>Переходим к приложению…</p>
+    <p id="checking"><span class="spinner"></span>Проверяем доступность сервера…</p>
+    <div id="offline">
+      <p><strong>Сервер сейчас недоступен.</strong></p>
+      <p class="muted">Скорее всего, компьютер с приложением выключен или нет связи.
+         Страница проверяет доступность каждые 15 секунд и откроет приложение автоматически,
+         как только сервер появится. Можно просто оставить вкладку открытой.</p>
+      <p class="muted" id="tries"></p>
+    </div>
     <p><a href="https://app.enso-nexus.ru">https://app.enso-nexus.ru</a></p>
-    <p style="color:#64748b;font-size:.85rem">Если переход не сработал, сервер сейчас выключен — попробуйте позже.</p>
   </div>
-  <script>location.replace('https://app.enso-nexus.ru');</script>
+  <script>
+    var URL_APP = 'https://app.enso-nexus.ru';
+    var tries = 0;
+    function check() {
+      tries++;
+      var ctrl = new AbortController();
+      var t = setTimeout(function () { ctrl.abort(); }, 7000);
+      fetch(URL_APP + '/api/health', { cache: 'no-store', signal: ctrl.signal })
+        .then(function (r) {
+          clearTimeout(t);
+          if (r.ok) { location.replace(URL_APP); return; }
+          offline();
+        })
+        .catch(function () { clearTimeout(t); offline(); });
+    }
+    function offline() {
+      document.getElementById('checking').style.display = 'none';
+      document.getElementById('offline').style.display = 'block';
+      document.getElementById('tries').textContent = 'Проверок выполнено: ' + tries;
+      setTimeout(check, 15000);
+    }
+    check();
+  </script>
 </body>
 </html>
