@@ -3,11 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Enso-nexus — переход к платформе</title>
+<title>Enso-nexus — платформа недоступна</title>
 <!--
-  Приёмная на GitHub Pages: работает, даже когда сервер выключен.
-  Оформление то же, что у платформы. Токенов Cloudflare здесь нет — это
-  обычная страница, а не подмена страницы ошибки.
+  Страница класса «500 class errors» для Cloudflare Custom Errors.
+  Показывается, когда туннель жив, но сервер на localhost:3000 не отвечает
+  (Bad gateway, 502). Обязателен токен ::CLOUDFLARE_ERROR_500S_BOX:: — без
+  него Cloudflare отказывается сохранять страницу. Явные <head></head> тоже
+  обязательны. Все стили инлайновые: внешние файлы Cloudflare встраивает при
+  загрузке, и любой недоступный ресурс ломает сохранение.
 -->
 <style>
   :root {
@@ -78,16 +81,16 @@
     <h1>Enso-nexus</h1>
     <p class="sub">Платформа автоматического проектирования</p>
 
-    <h2>Проверяем доступность платформы</h2>
-    <p>Эта страница живёт отдельно от сервера и работает всегда. Как только платформа
-       поднимется, она откроется здесь автоматически.</p>
+    <h2>Платформа сейчас не отвечает</h2>
+    <p>Связь до сервера есть, но само приложение не поднято.
+       Обычно это значит, что его перезапускают — это занимает меньше минуты.</p>
 
     <div class="status"><span class="dot"></span><span id="state">Проверяем связь каждые 10 секунд…</span></div>
     <p style="margin-top:12px;font-size:12px">Страницу можно оставить открытой: она сама откроет платформу, как только та поднимется.</p>
 
     <div class="cf">
-      <p class="cf-box">Постоянный адрес платформы:
-        <a href="https://app.enso-nexus.ru">app.enso-nexus.ru</a></p>
+      <div class="cf-box">::CLOUDFLARE_ERROR_500S_BOX::</div>
+      <p class="ray">Ray ID: ::RAY_ID::</p>
     </div>
   </main>
 <script>
@@ -107,7 +110,7 @@
       el.textContent = 'Платформа ещё не поднялась · попыток: ' + tries + ' · следующая через ' + wait + ' с';
       setTimeout(check, wait * 1000);
     }
-    check();
+    setTimeout(check, 10000);
   }());
 </script>
 </body>
