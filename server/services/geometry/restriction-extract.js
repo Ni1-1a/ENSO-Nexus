@@ -80,6 +80,92 @@ const HINT_PATTERNS = [
   { re: /зоуит|сервитут|обременени\w*/gi, label: 'ЗОУИТ или обременение' },
 ];
 
+/**
+ * Правила, которые выводятся из фактов БЕЗ модели.
+ *
+ * Минимальный отступ от границ участка есть в любом ГПЗУ, и на боевом прогоне
+ * он честно лежал в фактах — `plot.setback_m = 3 м`. А зон при этом строилось
+ * ноль: локальная 30B-модель на комплекте из трёх документов возвращала то
+ * пустой список, то мусор, и допустимой территорией оказывался весь участок.
+ *
+ * Здесь нет никакой интерпретации: отступ — это число из документа и буфер
+ * внутрь от границы, то есть ровно та работа, которую и должен делать код.
+ * Такие правила складываются с извлечёнными моделью, а не заменяют их.
+ *
+ * Расширять этот список надо осторожно: сюда попадает только то, что выражено
+ * ОДНОЗНАЧНО. Охранные зоны сюда не годятся — в фактах у них площадь, а правилу
+ * нужно расстояние, и вывести одно из другого нельзя.
+ */
+const DERIVABLE = [
+  {
+    match: (key) => /setback|отступ/.test(key) && !/застро|building/.test(key),
+    build: (value, fact) => ({
+      kind: 'setback',
+      operation: 'bufferInward',
+      targetSelector: 'parcelBoundary',
+      targetHint: '',
+      value,
+      unit: 'м',
+      basis: 'ГПЗУ: минимальный отступ от границ земельного участка',
+      sourceDocument: fact.source || 'ГПЗУ',
+      sourceClause: `факт ${fact.key}`,
+      quote: `${fact.key} = ${fact.value}`,
+      confidence: 0.9,
+      note: 'правило выведено приложением из факта, а не сформулировано моделью',
+    }),
+  },
+];
+
+/** Число из значения факта: «3 м» → 3. Неправдоподобное отбрасывается движком правил. */
+function factNumber(raw) {
+  const m = String(raw).replace(/ /g, ' ').match(/(\d[\d\s]*(?:[.,]\d+)?)/);
+  if (!m) return null;
+  const n = Number(m[1].replace(/\s/g, '').replace(',', '.'));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Сырые правила из фактов сессии — до нормализации. */
+function rawRulesFromFacts(facts) {
+  const out = [];
+  for (const f of facts) {
+    const key = String(f.key).toLowerCase();
+    for (const d of DERIVABLE) {
+      if (!d.match(key)) continue;
+      const n = factNumber(f.value);
+      if (n === null) continue;
+      out.push(d.build(n, f));
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Готовые правила из фактов проекта — БЕЗ обращения к модели.
+ *
+ * Вызывается ОТДЕЛЬНО от `extract`, и это принципиально: модель на большом
+ * комплекте может вернуть мусор и уронить извлечение целиком, а отступ по ГПЗУ
+ * от этого никуда не девается. Пока вывод из фактов жил внутри `extract`, он
+ * терялся вместе с неудачным вызовом — и зон снова строилось ноль.
+ */
+function rulesFromFacts(sessionId) {
+  const facts = db.prepare('SELECT key, value, source FROM facts WHERE session_id = ?').all(sessionId);
+  const raw = rawRulesFromFacts(facts);
+  if (!raw.length) return [];
+  return raw.map((r, i) => rules.normalizeRule(r, i)).map((x) => x.rule).filter(Boolean);
+}
+
+/**
+ * Сложить правила модели с выведенными из фактов, не задваивая одинаковые.
+ * Ключ — тип, объект отсчёта и величина: два разных источника одного и того же
+ * отступа дают одну зону, а не две одинаковых поверх друг друга.
+ */
+function mergeRules(fromModel = [], derived = []) {
+  const key = (r) => `${r.kind}|${r.target && r.target.selector}|${r.valueM ?? r.value}`;
+  const seen = new Set(fromModel.map(key));
+  return [...fromModel, ...derived.filter((r) => !seen.has(key(r)))];
+}
+
 /** Какие признаки ограничений встречаются в переданных документах. */
 function hintsInDocuments(text) {
   const found = [];
@@ -199,9 +285,9 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
     label: 'Модель извлекает ограничения из документов…',
   });
 
-  const out = await adapter.structuredCall({
+  const call = (msgs) => adapter.structuredCall({
     system: SYSTEM,
-    messages,
+    messages: msgs,
     sessionId,
     route,
     signal,
@@ -209,12 +295,49 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
     schemaName: 'restriction_rules',
   });
 
+  let out = await call(messages);
   let parsed = adapter.tryParse(out.text || '');
+
+  /*
+   * Не разобралось — повторяем БЕЗ полных текстов документов.
+   *
+   * Живой прогон на Горбунках: комплект из ГПЗУ, ТЗ и топосъёмки вместе с описью
+   * участка (46 зданий, 54 сети, 98 прочих объектов), фактами и выдержками базы
+   * знаний не помещается в 32 тыс. токенов локальной модели. Промпт усекался,
+   * модель отвечала мусором, и наружу шло «Ограничения не извлечены» — зон ноль,
+   * допустимая территория 100 % участка, посадка на неограниченной площадке.
+   *
+   * Для формулировки правил полные тексты и не нужны: нужны опись объектов,
+   * факты (в них названы все семь охранных зон) и нормативы из базы знаний.
+   * Документы — это подтверждение, и ради него терять ограничения нельзя.
+   */
+  if (!parsed) {
+    const lean = messages.filter((m) => typeof m.content === 'string');
+    if (lean.length && lean.length < messages.length) {
+      progress.set(sessionId, {
+        phase: 'generating',
+        label: 'Ответ не разобран — повторяю без полных текстов документов…',
+      });
+      out = await call([
+        ...lean,
+        {
+          role: 'user',
+          content: 'Полные тексты документов в этот запрос не вошли — они не помещаются в твой контекст. '
+            + 'Опирайся на опись объектов участка, извлечённые факты и выдержки нормативной базы выше. '
+            + 'Верни строго JSON по схеме, без пояснений вокруг него.',
+        },
+      ]);
+      parsed = adapter.tryParse(out.text || '');
+    }
+  }
+
   if (!parsed) {
     throw new adapter.AiUnavailableError(
       out.truncated
-        ? 'Ответ модели с ограничениями обрезан по лимиту токенов. Повторите или уменьшите объём документов.'
-        : 'Модель вернула неразбираемый ответ при извлечении ограничений.',
+        ? 'Ответ модели с ограничениями обрезан по лимиту токенов даже после повтора без текстов документов. '
+          + 'Возьмите модель с бо́льшим окном контекста.'
+        : 'Модель вернула неразбираемый ответ при извлечении ограничений — ни с документами, ни без них. '
+          + 'Чаще всего это признак того, что модель мала для такого комплекта.',
     );
   }
 
@@ -265,4 +388,4 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   return result;
 }
 
-module.exports = { extract, inventory, hintsInDocuments, SYSTEM };
+module.exports = { extract, inventory, hintsInDocuments, rawRulesFromFacts, rulesFromFacts, mergeRules, factNumber, SYSTEM };

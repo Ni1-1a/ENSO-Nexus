@@ -320,6 +320,22 @@ function applyTo(sessionId, site) {
   const record = get(sessionId);
   if (!record || !record.points || !record.points.length) return { applied: false };
 
+  /*
+   * Повторное наложение НИЧЕГО не делает.
+   *
+   * `ensurePlan` вызывается на каждом шаге, а этап зон ещё и сохраняет
+   * получившийся план обратно в таблицу. Без этой проверки следующий вызов
+   * подставлял границу поверх уже подставленной: настоящий участок уезжал в
+   * «прочие объекты» с пометкой demotedFromParcel, рядом появлялся его двойник,
+   * и в карточке согласования дважды стояло «границы взяты из документа», причём
+   * второй раз — «прежний контур (3700.18 м², слой «null»)». Каждый проход
+   * добавлял в план лишний полигон на 3700 м².
+   */
+  if (site.parcel && site.parcel.properties && site.parcel.properties.fromDocument
+      && site.parcel.provenance && site.parcel.provenance.extractionMethod === 'document-stated') {
+    return { applied: true, alreadyApplied: true };
+  }
+
   const built = build(record, site);
   site.warnings = site.warnings || [];
   if (!built.ok) {

@@ -356,8 +356,25 @@ async function startZonesStage(sessionId) {
         logEvent(sessionId, 'Ограничения не извлечены', extractionNotes[0], 'warn');
       }
 
+      /*
+       * Правила, выведенные из фактов приложением, складываются с найденными
+       * моделью — и делается это ПОСЛЕ catch, а не внутри извлечения.
+       *
+       * На боевом прогоне модель на комплекте из трёх документов возвращала
+       * мусор, извлечение падало целиком, и вместе с ним пропадал отступ 3 м
+       * по ГПЗУ — хотя он лежал в фактах отдельной строкой и никакой модели
+       * для своего построения не требует. Зон выходило ноль, допустимой
+       * территорией — весь участок, и здание садилось куда угодно.
+       */
+      const derivedRules = extract.rulesFromFacts(sessionId);
+      const allRules = extract.mergeRules(extracted.rules, derivedRules);
+      if (allRules.length > extracted.rules.length) {
+        logEvent(sessionId, 'Правила выведены из фактов без модели',
+          `добавлено ${allRules.length - extracted.rules.length}: ${derivedRules.map((r) => `${r.kind} ${r.valueM} м`).join(', ')}`);
+      }
+
       progress.set(sessionId, { phase: 'zones', label: 'Построение зон и допустимой территории…' });
-      const built = await queue.run('restrictions', { site, rules: extracted.rules });
+      const built = await queue.run('restrictions', { site, rules: allRules });
       site.restrictions = built.restrictions;
       site.buildable = built.buildable;
       db.prepare('UPDATE plans SET geometry = ? WHERE id = ?').run(JSON.stringify(site), planId);

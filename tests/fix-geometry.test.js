@@ -1231,3 +1231,107 @@ test('ограничения: зона на весь участок не обн�
   assert.ok(built.warnings.some((w) => w.code === 'zone-covers-parcel'),
     'решение проговаривается вслух — молча вычесть или молча не вычесть одинаково недопустимо');
 });
+
+test('ограничения: пустой список зон не выглядит успешным расчётом', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.9,
+    },
+  });
+
+  // модель не отдала ни одного правила — на боевом прогоне так и было
+  const built = RE.build(site, []);
+  assert.strictEqual(built.restrictions.length, 0);
+  assert.strictEqual(built.buildable.areaM2, 10000, 'территория считается, но она равна всему участку');
+  assert.ok(built.warnings.some((w) => w.code === 'no-restrictions'),
+    'пустой список ограничений обязан выглядеть подозрительно: иначе здание сядет на участок, '
+    + 'где по документам семь охранных зон');
+});
+
+test('ограничения: отступ по ГПЗУ выводится из факта без модели', () => {
+  const RE = require('../server/services/geometry/restriction-extract');
+  const RR = require('../server/services/geometry/restriction-rules');
+  const G = require('../server/services/geometry/site-geometry');
+  const ENG = require('../server/services/geometry/restriction-engine');
+
+  // факты ровно из боевого прогона на Горбунках
+  const facts = [
+    { key: 'plot.setback_m', value: '3 м', source: 'ГПЗУ.pdf' },
+    { key: 'plot.max_height_m', value: '20 м', source: 'ГПЗУ.pdf' },
+    { key: 'plot.max_occupancy_percent', value: '80%', source: 'ГПЗУ.pdf' },
+    { key: 'object.area_m2', value: 'не более 3580 м²', source: 'ТЗ' },
+  ];
+  const raw = RE.rawRulesFromFacts(facts);
+  assert.strictEqual(raw.length, 1, 'выводится только однозначное: отступ, а не высота и не процент');
+  // выведенное складывается с найденным моделью, не задваивая одинаковое
+  const asRule = RR.normalizeRule(raw[0], 0).rule;
+  assert.strictEqual(RE.mergeRules([], [asRule]).length, 1);
+  assert.strictEqual(RE.mergeRules([asRule], [asRule]).length, 1,
+    'тот же отступ из двух источников — одна зона, а не две поверх друг друга');
+  assert.strictEqual(raw[0].kind, 'setback');
+  assert.strictEqual(raw[0].value, 3);
+  assert.strictEqual(raw[0].operation, 'bufferInward');
+
+  // правило проходит те же проверки, что и извлечённое моделью, и строит зону
+  const rule = RR.normalizeRule(raw[0], 0).rule;
+  assert.ok(rule, 'выведенное правило обязано проходить нормализацию');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.9,
+    },
+  });
+  const built = ENG.build(site, [rule]);
+  assert.strictEqual(built.restrictions.length, 1);
+  // отступ 3 м по периметру квадрата 100×100 срезает 100² − 94² = 1164 м²
+  assert.ok(Math.abs(built.buildable.areaM2 - 8836) < 1,
+    `допустимая территория обязана быть 8836 м², получено ${built.buildable.areaM2}`);
+  assert.ok(!built.warnings.some((w) => w.code === 'no-restrictions'),
+    'список ограничений больше не пуст — и предупреждения о пустоте быть не должно');
+});
+
+test('границы ЗУ из документа: повторное наложение не плодит двойников участка', () => {
+  const PS = require('../server/services/geometry/parcel-source');
+  const G = require('../server/services/geometry/site-geometry');
+  const { db, now } = require('../server/db');
+  const SID = `parcel-twice-${Math.random().toString(36).slice(2)}`;
+  db.prepare('INSERT INTO sessions (id, token, status, created_at, updated_at, title) VALUES (?,?,?,?,?,?)')
+    .run(SID, 'tok', 'idle', now(), now(), 'Горбунки');
+
+  const site = G.createSiteGeometry();
+  site.drawingBounds = { ...TOPO_BOUNDS };
+  site.parcel = G.makeObject({
+    type: 'parcel', closed: true,
+    points: [[2195900, 422300], [2195908, 422300], [2195908, 422309], [2195900, 422309]],
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'МСК-47_Горбунки.dwg', sourceFileId: 'f1',
+      sourceLayer: '10_Границы покрытий и угодий', sourceEntity: 'замкнутая полилиния', confidence: 0.6,
+    },
+  });
+  PS.save(SID, { points: GPZU_POINTS, meta: GPZU_META });
+
+  const first = PS.applyTo(SID, site);
+  assert.strictEqual(first.applied, true);
+  const afterFirst = site.existingObjects.length;
+  const parcelId = site.parcel.id;
+
+  // ensurePlan зовётся на каждом шаге, а этап зон ещё и сохраняет план обратно
+  const second = PS.applyTo(SID, site);
+  assert.strictEqual(second.alreadyApplied, true, 'повтор обязан быть пустышкой');
+  assert.strictEqual(site.parcel.id, parcelId, 'участок остался тем же объектом');
+  assert.strictEqual(site.existingObjects.length, afterFirst,
+    'двойник участка на 3700 м² не должен добавляться в «прочие объекты» на каждом проходе');
+  assert.strictEqual(site.warnings.filter((w) => w.code === 'parcel-from-document').length, 1,
+    'в карточке согласования сообщение о границах из документа должно быть одно');
+
+  PS.remove(SID);
+});
