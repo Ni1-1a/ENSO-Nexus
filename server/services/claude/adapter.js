@@ -175,13 +175,22 @@ function assertCloudAllowed(providerId, sessionId) {
 
 /**
  * Потолок обращений к модели на ОДИН анализ (основной вызов + дозапросы
- * продолжения + повтор по схеме). Каждое обращение платное и списывается из
- * config.maxAiRequestsPerSession, поэтому один неудачный анализ не имеет права
- * съесть четверть бюджета сессии.
+ * продолжения + повторы по схеме).
+ *
+ * Прежние четыре выбирались за один прогон и превращались в тупик: локальная
+ * 8B-модель на семнадцатистраничном ГПЗУ упирается в лимит выходных токенов,
+ * два дозапроса продолжения и один повтор по схеме съедают потолок — и человек
+ * читает «Потрачено обращений к модели: 4 из 4», не получив ничего. Так закончились
+ * пять прогонов из десяти в проверке «Интерфейс. Вариант 2».
+ *
+ * Теперь потолок настраивается и по умолчанию заметно выше, а склейка обрезанного
+ * ответа больше не считается «попыткой»: продолжение — это дочитывание одного
+ * ответа, а не новая попытка его получить. Деньги держат два настоящих
+ * предохранителя — лимит токенов проекта и лимит запросов человека.
  */
-const MAX_ANALYSIS_CALLS = 4;
+const MAX_ANALYSIS_CALLS = config.maxAnalysisCalls;
 /** Сколько раз дозапрашивать продолжение обрезанного ответа. */
-const MAX_CONTINUATIONS = 2;
+const MAX_CONTINUATIONS = config.maxContinuations;
 
 /**
  * Предохранитель проекта. Считаются ЗАПРОСЫ ЧЕЛОВЕКА (анализ, реплика в чате,
@@ -269,7 +278,7 @@ async function callModel({ system, messages, sessionId, route, signal }) {
   if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
   const claudeModel = route.model || config.anthropicModel; // выбранная в сессии модель Anthropic
   progress.set(sessionId, {
-    phase: 'generating', model: claudeModel, provider: 'claude',
+    phase: 'generating', model: claudeModel, provider: 'claude', role: 'analysis',
     label: `Claude (${claudeModel}) анализирует материалы…`,
   });
   // Стриминг: обязателен для больших max_tokens (иначе HTTP-таймаут) и даёт живой прогресс
@@ -302,7 +311,7 @@ async function callGemini({ system, messages, sessionId, route, signal, jsonSche
   const modelId = route.model || config.geminiModel || '';
   assertCloudAllowed('gemini', sessionId);
   progress.set(sessionId, {
-    phase: 'generating', model: resolveModel(route), provider: 'gemini',
+    phase: 'generating', model: resolveModel(route), provider: 'gemini', role: 'analysis',
     label: `Gemini (${resolveModel(route)}) анализирует материалы…`, tokensOut: 0,
   });
   try {
@@ -708,6 +717,12 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   progress.set(sessionId, {
     phase: progressStep ? progressStep.phase : 'waiting_model',
     model: modelId, provider: providerId,
+    // Чем СЕЙЧАС занята показанная модель. Без этого распознавание сканов
+    // выглядело как подмена: в журнале «анализ ведёт meta-llama-3.1-8b», а в
+    // шапке прогресса — qwen3-vl-8b, потому что слепая модель не читает картинки
+    // и страницы уходят локальной vision-модели. Модель не менялась — менялась
+    // работа, и теперь это написано.
+    role: progressStep ? (progressStep.role || 'ocr') : 'analysis',
     label: progressStep ? progressStep.label : `Запрос отправлен — модель ${modelId} обрабатывает контекст…`,
     tokensOut: 0,
   });
@@ -847,6 +862,73 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
 }
 
 /**
+ * «Изучение документации»: сканы и графика распознаются vision-моделью ДО того,
+ * как документы уйдут текстом.
+ *
+ * Вынесено из runAnalysis отдельной функцией потому, что распознавание нужно не
+ * одному анализу. Извлечение координат границы участка (geometry/parcel-source)
+ * и извлечение ограничений работают с теми же документами — а на живом прогоне
+ * выяснилось, что без этого вызова модель получает ПУСТОЙ текстовый слой скана
+ * и честно отвечает «таблицы координат в документе нет», хотя таблица есть на
+ * первой же странице. Раньше это скрывал порядок этапов: анализ шёл первым и
+ * прогревал кэш распознавания. Прямой вызов маршрута такой гарантии не даёт.
+ *
+ * Повторный вызов ничего не стоит: doc-vision держит кэш распознанных страниц.
+ */
+async function ensureDocumentsStudied(sessionId, { route, signal = null, docMode = null } = {}) {
+  const mode = docMode || registry.documentMode(route);
+  if (mode !== 'extracted' || !route || route.provider === 'demo') return { pages: 0, skipped: true };
+  try {
+    const done = await require('../doc-vision').extractGraphics(sessionId, {
+      signal, route,
+      // распознаёт выбранная модель; локальная — только если распознавания нет.
+      // Подпись показывает того, кто ведёт ИМЕННО ЭТУ страницу, а не провайдера сессии
+      onProgress: (label, by) => progress.set(sessionId, {
+        phase: 'reading_docs', label, role: 'ocr',
+        model: (by && by.model) || config.localAiOcrModel,
+        provider: (by && by.provider) || 'lmstudio',
+      }),
+    });
+    if (done.pages) {
+      logRow(sessionId, 'Документация изучена vision-моделью',
+        `файлов: ${done.files}, страниц: ${done.pages}; распознавали: ${(done.by || []).join(', ') || '—'}`);
+    }
+    // переход на локальную модель — отдельная строка журнала: иначе расхождение
+    // «в проекте выбран ChatGPT, а скан читал qwen3-vl-8b» видно только по подписи в кэше
+    if (done.fellBack) {
+      logRow(sessionId, 'Распознавание передано локальной модели',
+        `выбранная модель ${done.primary} не справилась со страницами — часть скана прочитала ${config.localAiOcrModel}`,
+        'warn');
+    }
+    // Неудачное распознавание больше не выглядит успехом: раньше событие писалось
+    // только при pages>0, поэтому полный провал OCR не оставлял в журнале следа
+    // вообще — а его результат («страница не распозналась: fetch failed») уходил
+    // модели под шапкой «распознано vision-моделью».
+    if (done.failed && done.failed.length) {
+      logRow(sessionId, 'Часть документации не распозналась',
+        `не удалось: ${done.failed.join(', ')} — эти файлы уйдут модели без распознанного содержимого`,
+        'warn');
+    }
+    return done;
+  } catch (err) {
+    // исчерпанный бюджет обязан дойти до человека своим текстом, а не превратиться
+    // в «изучение графики не удалось»: теперь распознавание тратит деньги проекта
+    if ((signal && signal.aborted) || err instanceof BudgetExceededError) throw err;
+    console.warn('[doc-vision]', err.message);
+    logRow(sessionId, 'Изучение графики не удалось', String(err.message || '').slice(0, 200), 'warn');
+    return { pages: 0, error: err.message };
+  }
+}
+
+/** Строка журнала проекта. Журнал не критичен: его отказ не роняет работу. */
+function logRow(sessionId, stage, detail = '', level = 'info') {
+  try {
+    db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+      .run(sessionId, stage, detail, level, now());
+  } catch { /* журнал не критичен */ }
+}
+
+/**
  * One analysis step. Builds the working context, calls Claude (or the mock),
  * validates the structured answer, retries once on invalid structure.
  */
@@ -868,59 +950,7 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
   });
 
   // «Изучение документации»: графика и сканы распознаются vision-моделью до анализа
-  if (docMode === 'extracted' && route.provider !== 'demo') {
-    try {
-      const done = await require('../doc-vision').extractGraphics(sessionId, {
-        signal, route,
-        // распознаёт выбранная модель; локальная — только если распознавания нет.
-        // Подпись показывает того, кто ведёт ИМЕННО ЭТУ страницу, а не провайдера сессии
-        onProgress: (label, by) => progress.set(sessionId, {
-          phase: 'reading_docs', label,
-          model: (by && by.model) || config.localAiOcrModel,
-          provider: (by && by.provider) || 'lmstudio',
-        }),
-      });
-      if (done.pages) {
-        try {
-          db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
-            .run(sessionId, 'Документация изучена vision-моделью',
-              `файлов: ${done.files}, страниц: ${done.pages}; распознавали: ${(done.by || []).join(', ') || '—'}`,
-              'info', now());
-        } catch { /* журнал не критичен */ }
-      }
-      // переход на локальную модель — отдельная строка журнала: иначе расхождение
-      // «в проекте выбран ChatGPT, а скан читал qwen3-vl-8b» видно только по подписи в кэше
-      if (done.fellBack) {
-        try {
-          db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
-            .run(sessionId, 'Распознавание передано локальной модели',
-              `выбранная модель ${done.primary} не справилась со страницами — часть скана прочитала ${config.localAiOcrModel}`,
-              'warn', now());
-        } catch { /* журнал не критичен */ }
-      }
-      // Неудачное распознавание больше не выглядит успехом: раньше событие писалось
-      // только при pages>0, поэтому полный провал OCR не оставлял в журнале следа
-      // вообще — а его результат («страница не распозналась: fetch failed») уходил
-      // модели под шапкой «распознано vision-моделью».
-      if (done.failed && done.failed.length) {
-        try {
-          db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
-            .run(sessionId, 'Часть документации не распозналась',
-              `не удалось: ${done.failed.join(', ')} — эти файлы уйдут модели без распознанного содержимого`,
-              'warn', now());
-        } catch { /* журнал не критичен */ }
-      }
-    } catch (err) {
-      // исчерпанный бюджет обязан дойти до человека своим текстом, а не превратиться
-      // в «изучение графики не удалось»: теперь распознавание тратит деньги проекта
-      if ((signal && signal.aborted) || err instanceof BudgetExceededError) throw err;
-      console.warn('[doc-vision]', err.message);
-      try {
-        db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
-          .run(sessionId, 'Изучение графики не удалось', String(err.message || '').slice(0, 200), 'warn', now());
-      } catch { /* журнал не критичен */ }
-    }
-  }
+  await ensureDocumentsStudied(sessionId, { route, signal, docMode });
 
   // По-документный анализ: каждый объёмный документ конспектируется ОТДЕЛЬНЫМ
   // запросом (кэш <файл>.digest.md); итоговый запрос получает конспекты вместо
@@ -973,22 +1003,40 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
     console.warn('[kb] excerpts skipped:', err.message);
   }
 
-  // Пользовательский пайплайн (Excel) — заменяет стандартную методику «12 шагов»
+  /*
+   * Порядок работы уходит модели ВСЕГДА — и стандартный, и загруженный человеком.
+   *
+   * Прежде блок посылался только для своего файла, а стандартный порядок жил
+   * отдельным списком в системном промпте. Списки разъехались: в настройках
+   * показывалось «стандартные (14)», в промпте стояли двенадцать пунктов, и
+   * сообщение в ленте обещало «методику 12 шагов». По какому из трёх списков
+   * идёт разбор, было не установить. Источник теперь один — services/workplan.js.
+   */
   try {
     const workplan = require('../workplan');
     const wp = workplan.forSession(ctx.session);
-    if (!wp.isDefault) {
-      messages.push({ role: 'user', content: `<workplan>\n${workplan.promptText(wp)}\n</workplan>` });
-    }
+    messages.push({ role: 'user', content: `<workplan>\n${workplan.promptText(wp)}\n</workplan>` });
   } catch (err) { console.warn('[workplan]', err.message); }
 
   if (ctx.docBlocks.length) messages.push({ role: 'user', content: ctx.docBlocks });
   for (const m of ctx.history) messages.push(m);
   messages.push({ role: 'user', content: instruction });
 
-  // Общий потолок обращений к модели на ОДИН анализ. Раньше неудачный прогон
-  // съедал 6 платных вызовов из 25 разрешённых на сессию (1 + 2 продолжения +
-  // повтор + ещё 2 продолжения), и четыре неудачи подряд выжигали весь бюджет.
+  /*
+   * Бюджет обращений на один анализ.
+   *
+   * Раньше он был один на всё — и склейка обрезанного ответа тратила его
+   * наравне с повторными попытками. Локальная 8B-модель упирается в лимит
+   * выходных токенов штатно: 1 вызов + 2 продолжения + 1 повтор = 4 из 4, и
+   * прогон заканчивался надписью «Потрачено обращений к модели: 4 из 4» вместо
+   * отчёта. Так завершились пять прогонов из десяти в проверке «Вариант 2».
+   *
+   * Касса осталась общей — она обязана быть предсказуемо конечной, иначе
+   * безнадёжный прогон уходит в десятки вызовов. Изменились две вещи: потолок
+   * задаётся в .env и по умолчанию втрое выше, а каждый следующий повтор требует
+   * ответа резко компактнее предыдущего (COMPACT ниже). Одного повтора «сделай
+   * короче» модели обычно не хватает, трёх — хватает почти всегда.
+   */
   const calls = { left: MAX_ANALYSIS_CALLS, used: 0 };
   const callWithBudget = async (msgs) => {
     if (calls.left <= 0) return null;
@@ -1001,29 +1049,46 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
   };
 
   let out = await callWithBudget(messages);
-  // обрезанный ответ дописывается продолжениями — в пределах того же потолка
   out = await continueIfTruncated(out, { system: SYSTEM_PROMPT, messages, sessionId, route, signal, calls });
 
   progress.set(sessionId, { phase: 'validating', label: 'Проверка структуры ответа модели…' });
   let parsed = tryParse(out.text);
   let check = validateResponse(parsed);
-  if (!check.ok && calls.left > 0) {
-    // limited retry: truncation gets a "be compact" correction, everything else — a schema correction
-    progress.set(sessionId, { phase: 'validating', label: 'Ответ не прошёл проверку схемы — уточняющий повторный запрос…' });
+
+  /*
+   * Повторы после неудачной проверки. Один повтор — это ставка на удачу: если
+   * модель обрезала ответ, ей нужно сказать «короче», и часто со второго раза
+   * длина уже укладывается. Поэтому повторов несколько, и каждый следующий
+   * требует ответа компактнее предыдущего.
+   */
+  const COMPACT = [
+    'Твой предыдущий ответ был обрезан по лимиту токенов и JSON не завершился. Сформируй ответ заново, значительно компактнее: report_markdown — не длиннее ~800 слов, message — 3–5 предложений, facts — только ключевые. Верни полный валидный JSON.',
+    'Ответ снова не поместился. Сократи РЕЗКО: report_markdown — не длиннее ~300 слов и только по существу, message — 2 предложения, facts — не больше 15 самых важных, questions — не больше 3. Верни полный валидный JSON.',
+    'Ответ по-прежнему не помещается. Выдай МИНИМАЛЬНЫЙ допустимый ответ: report_markdown — 5–7 строк, message — одно предложение, facts — не больше 8, остальные массивы пустые. Полный валидный JSON и ничего больше.',
+  ];
+  let retry = 0;
+  while (!check.ok && calls.left > 0) {
+    progress.set(sessionId, {
+      phase: 'validating',
+      label: `Ответ не прошёл проверку схемы — повторный запрос (${retry + 1} из ${MAX_ANALYSIS_CALLS - 1})…`,
+    });
     const session2 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     checkBudget(session2);
     const correction = out.truncated
-      ? 'Твой предыдущий ответ был обрезан по лимиту токенов и JSON не завершился. Сформируй ответ заново, значительно компактнее: report_markdown — не длиннее ~800 слов, message — 3–5 предложений, facts — только ключевые. Верни полный валидный JSON.'
-      : `Твой предыдущий ответ не прошёл валидацию схемы (${check.error}). Верни корректный JSON строго по схеме.`;
+      ? COMPACT[Math.min(retry, COMPACT.length - 1)]
+      : `Твой предыдущий ответ не прошёл валидацию схемы (${check.error}). Верни корректный JSON строго по схеме, без пояснений и без текста вокруг него.`;
     messages.push({ role: 'assistant', content: out.text.slice(0, 6000) || '(пустой ответ)' });
     messages.push({ role: 'user', content: correction });
     out = await callWithBudget(messages);
+    if (!out) break; // касса кончилась ровно на этом повторе
     out = await continueIfTruncated(out, { system: SYSTEM_PROMPT, messages, sessionId, route, signal, calls });
     parsed = tryParse(out.text);
     check = validateResponse(parsed);
+    retry++;
   }
+
   if (!check.ok) {
-    const spent = `Потрачено обращений к модели: ${calls.used} из ${MAX_ANALYSIS_CALLS} разрешённых на один анализ.`;
+    const spent = `Сделано попыток: ${calls.used} из ${MAX_ANALYSIS_CALLS} (потолок задаётся MAX_ANALYSIS_CALLS в .env).`;
     if (!out.text.trim() && (out.reasoning || '').trim()) {
       const env = maxTokensEnv(route.provider);
       throw new AiUnavailableError(
@@ -1032,8 +1097,10 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
       );
     }
     throw new AiUnavailableError(out.truncated
-      ? `Ответ модели снова превысил лимит токенов. Попробуйте ещё раз или разбейте задачу: попросите краткий отчёт. ${spent}`
-      : `Модель вернула некорректный ответ. Попробуйте повторить обработку. ${spent}`);
+      ? `Ответ модели не помещается в лимит выходных токенов даже в самом кратком виде. `
+        + `Увеличьте ${maxTokensEnv(route.provider) || 'лимит выходных токенов'} в .env или возьмите модель с большим окном. ${spent}`
+      : `Модель вернула ответ, который не удалось разобрать по схеме, ни с первой попытки, ни с повторных. `
+        + `Чаще всего это признак того, что модель слишком мала для такого объёма документов — попробуйте более сильную. ${spent}`);
   }
   return check.value;
 }
@@ -1041,11 +1108,14 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
 /**
  * Обход лимита выходных токенов: если ответ обрезан (stop max_tokens),
  * дозапрашиваем продолжение с места обрыва и склеиваем текст в один.
- * Число дозапросов ограничено и MAX_CONTINUATIONS, и общим потолком обращений
- * на анализ (calls): дозапрос — такой же платный вызов, как основной.
+ *
+ * Число дозапросов ограничено и MAX_CONTINUATIONS, и общей кассой обращений на
+ * анализ (calls): дозапрос — такой же платный вызов, как основной, и безнадёжный
+ * прогон обязан кончаться, а не уходить в десятки запросов.
  */
 async function continueIfTruncated(out, { system, messages, sessionId, route, signal, calls = null }) {
   let combined = out;
+  if (!combined) return combined;
   for (let i = 0; combined.truncated && i < MAX_CONTINUATIONS; i++) {
     if (calls && calls.left <= 0) break;
     progress.set(sessionId, {
@@ -1344,4 +1414,4 @@ module.exports = {
   // открыто для тестов: поведение, которое обязано оставаться проверяемым
   humanizeProviderError, toOpenAiContent, redactSecrets, maxTokensEnv, providerLabel, recordUsage,
   unionTypesToAnyOf, isLocalGrammarEngine,
-  ROUTABLE_PROVIDERS, MAX_ANALYSIS_CALLS, MAX_CONTINUATIONS };
+  ROUTABLE_PROVIDERS, MAX_ANALYSIS_CALLS, MAX_CONTINUATIONS, ensureDocumentsStudied };

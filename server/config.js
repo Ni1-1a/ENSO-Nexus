@@ -71,6 +71,15 @@ const config = {
   maxMessageLength: int('MAX_MESSAGE_LENGTH', 4000),
   maxAiRequestsPerSession: int('MAX_AI_REQUESTS_PER_SESSION', 25),
   maxTokensPerSession: int('MAX_TOKENS_PER_SESSION', 2000000),
+  /*
+   * Общая касса обращений к модели на ОДИН анализ и глубина склейки обрезанного
+   * ответа. Прежние 4 и 2 выбирались одним неудачным прогоном насквозь (вызов +
+   * два продолжения + повтор), и вместо отчёта человек получал «Потрачено
+   * обращений к модели: 4 из 4» — на локальной 8B-модели это был штатный исход.
+   * Касса остаётся конечной намеренно: безнадёжный прогон обязан кончаться.
+   */
+  maxAnalysisCalls: int('MAX_ANALYSIS_CALLS', 12),
+  maxContinuations: int('MAX_CONTINUATIONS', 4),
   maxConcurrentJobs: int('MAX_CONCURRENT_JOBS', 2),
   // Потолок кругов уточнений: после стольких отвеченных вопросов анализ обязан
   // выпустить отчёт на допущениях. Без потолка модель спрашивает бесконечно.

@@ -22,7 +22,7 @@ const CAD_EXT = new Set(['dxf', 'dwg']);
  * чертежей — чтобы сохранённый план пересчитался следующей версией, а старая
  * осталась нетронутой вместе со своими аннотациями (ТЗ, п. 74).
  */
-const PARSER_VERSION = 2;
+const PARSER_VERSION = 3;
 
 /** Кэш разбора одного файла: разбирать чертёж на каждый запрос viewer'а незачем. */
 async function siteForFile(file) {
@@ -169,6 +169,16 @@ function sourceHash(sessionId) {
  * экземпляр — поэтому их можно отменить, не переразбирая чертёж.
  */
 function applyUserEdits(sessionId, site) {
+  // Порядок здесь значим. Сначала граница из документа (ГПЗУ, выписка ЕГРН):
+  // в топосъёмке контура участка может не быть вовсе, и тогда границей
+  // становится случайный контур покрытия. Затем правки человека — за ним
+  // последнее слово: назначил участком другой контур, значит им и будет.
+  try {
+    const parcelSource = require('./parcel-source');
+    parcelSource.applyTo(sessionId, site);
+  } catch (err) {
+    console.warn('[plan] граница из документа не применена:', err.message);
+  }
   try {
     const oe = require('./object-edits');
     const edits = oe.list(sessionId);

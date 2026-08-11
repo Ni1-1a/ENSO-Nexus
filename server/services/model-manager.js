@@ -109,25 +109,75 @@ async function listDownloaded() {
 }
 
 /**
- * Помещается ли модель в память в одиночку (веса + KV желаемого контекста).
- * Возвращает {feasible, note, sizeBytes}.
+ * Ниже этого контекста грузить модель бессмысленно: в 4 тыс. токенов не влезет
+ * даже системный промпт с одним документом.
+ */
+const MIN_CONTEXT = 4096;
+
+/**
+ * Наибольший контекст, при котором модель ещё укладывается в бюджет памяти.
+ * Возвращает 0, если не укладывается даже при минимальном.
+ */
+function fittingContext(modelId, sizeBytes) {
+  const want = desiredContext(modelId);
+  const perToken = profileFor(modelId).kvPerTokenKiB * 1024;
+  const free = MEMORY_BUDGET_BYTES - sizeBytes;
+  if (free <= 0) return 0;
+  const max = Math.floor(free / perToken);
+  if (max >= want) return want;
+  if (max < MIN_CONTEXT) return 0;
+  // округляем вниз до 1024 — LM Studio любит круглые размеры
+  return Math.floor(max / 1024) * 1024;
+}
+
+/**
+ * Оценка загрузки модели в память: веса + KV-кэш.
+ *
+ * Здесь НЕ запрещают. Прежняя проверка возвращала feasible:false, и выбор
+ * llama-3.3-70b отклонялся с «выберите модель поменьше» — человек не мог даже
+ * попробовать. Решение, рисковать ли своей памятью, принимает владелец машины;
+ * дело платформы — честно сказать, чем это кончится, и подобрать контекст
+ * поменьше, если модель влезает только так.
+ *
+ * @returns {{feasible: boolean, heavy: boolean, note: string, sizeBytes: number,
+ *            fitContext: number, wantContext: number}}
+ *   feasible — можно ли пытаться (теперь всегда true при известном размере);
+ *   heavy    — не укладывается в бюджет даже с минимальным контекстом.
  */
 async function feasibility(modelId) {
   let size = 0;
   try { size = (await listDownloaded()).get(modelId) || 0; } catch { /* нет lms — не оцениваем */ }
-  if (!size) return { feasible: true, note: '', sizeBytes: 0 };
-  const need = size + kvBytes(modelId, desiredContext(modelId));
+  const want = desiredContext(modelId);
+  if (!size) return { feasible: true, heavy: false, note: '', sizeBytes: 0, fitContext: want, wantContext: want };
+
   const gb = (n) => (n / 1024 ** 3).toFixed(1);
-  if (need > MEMORY_BUDGET_BYTES) {
+  const need = size + kvBytes(modelId, want);
+  const fit = fittingContext(modelId, size);
+
+  if (fit === 0) {
+    // веса сами по себе больше бюджета — контекстом делу не помочь
     return {
-      feasible: false, sizeBytes: size,
-      note: `не помещается в память: нужно ~${gb(need)} ГБ при доступных ~${gb(MEMORY_BUDGET_BYTES)} ГБ`,
+      feasible: true, heavy: true, sizeBytes: size, fitContext: MIN_CONTEXT, wantContext: want,
+      note: `тяжёлая для этой машины: одни веса ~${gb(size)} ГБ при бюджете ~${gb(MEMORY_BUDGET_BYTES)} ГБ. `
+        + 'Загрузка будет долгой, а часть весов уйдёт в подкачку — ответы замедлятся в разы. '
+        + 'Запустить можно, но для работы лучше взять модель поменьше',
+    };
+  }
+  if (fit < want) {
+    return {
+      feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want,
+      note: `контекст будет уменьшен до ${fit.toLocaleString('ru-RU')} токенов вместо ${want.toLocaleString('ru-RU')}: `
+        + `с полным нужно ~${gb(need)} ГБ при доступных ~${gb(MEMORY_BUDGET_BYTES)} ГБ. `
+        + 'Длинные документы придётся резать на части',
     };
   }
   if (need > MEMORY_BUDGET_BYTES * 0.85) {
-    return { feasible: true, sizeBytes: size, note: `займёт почти всю память (~${gb(need)} ГБ) — другие модели будут выгружены` };
+    return {
+      feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want,
+      note: `займёт почти всю память (~${gb(need)} ГБ) — другие модели будут выгружены`,
+    };
   }
-  return { feasible: true, sizeBytes: size, note: '' };
+  return { feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want, note: '' };
 }
 
 /** Сериализация ensureLoaded: параллельные вызовы не должны спорить за память. */
@@ -142,7 +192,20 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
   const run = async () => {
     if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
     if (!findLms()) return { ok: true, managed: false }; // нет CLI — надеемся на JIT
-    const wantCtx = desiredContext(modelId);
+
+    /*
+     * Контекст подбирается под фактическую память, а не берётся из профиля слепо.
+     *
+     * Раньше платформа просто отказывала: «Модель не помещается в память — выберите
+     * модель поменьше», и llama-3.3-70b нельзя было даже попробовать. Теперь модель,
+     * которая не влезает с полным контекстом, грузится с урезанным, а та, что не
+     * влезает вовсе, всё равно запускается — с честным предупреждением в журнале.
+     * Решение о том, рисковать ли своей памятью, принимает владелец машины.
+     */
+    const fit = await feasibility(modelId).catch(() => null);
+    const wantCtx = fit && fit.fitContext ? fit.fitContext : desiredContext(modelId);
+    if (fit && fit.note) onProgress(`Модель ${modelId}: ${fit.note}`);
+
     let loaded;
     try { loaded = await listLoaded(); } catch { return { ok: true, managed: false }; }
 
@@ -189,7 +252,18 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
     if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
     onProgress(`Загружается модель ${modelId} (контекст ${wantCtx.toLocaleString('ru-RU')} токенов)…`);
     const t0 = Date.now();
-    await lms(['load', modelId, '--context-length', String(wantCtx), '--ttl', '7200', '-y'], 240000, signal || undefined);
+    // Тяжёлая модель читается с диска минутами: 70B-веса — это 35 ГБ, и на
+    // фиксированных четырёх минутах загрузка обрывалась по таймауту, а выглядело
+    // это как «модель не запускается». Минута на каждые 8 ГБ, но не меньше четырёх.
+    const loadTimeout = Math.max(240000, Math.ceil(size / (8 * 1024 ** 3)) * 60000);
+    try {
+      await lms(['load', modelId, '--context-length', String(wantCtx), '--ttl', '7200', '-y'], loadTimeout, signal || undefined);
+    } catch (err) {
+      if (err.name === 'AbortError' || wantCtx <= MIN_CONTEXT) throw err;
+      // не влезла даже с подобранным контекстом — пробуем минимальный, прежде чем сдаться
+      onProgress(`Не удалось загрузить с контекстом ${wantCtx.toLocaleString('ru-RU')} — повторяю с минимальным (${MIN_CONTEXT.toLocaleString('ru-RU')})`);
+      await lms(['load', modelId, '--context-length', String(MIN_CONTEXT), '--ttl', '7200', '-y'], loadTimeout, signal || undefined);
+    }
     onProgress(`Модель ${modelId} загружена за ${Math.round((Date.now() - t0) / 1000)} с`);
     return { ok: true, managed: true, loadedNow: true };
   };
@@ -199,4 +273,7 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
   return result;
 }
 
-module.exports = { ensureLoaded, feasibility, desiredContext, listLoaded, acquireUse, releaseUse, MEMORY_BUDGET_BYTES };
+module.exports = {
+  ensureLoaded, feasibility, desiredContext, fittingContext, listLoaded,
+  acquireUse, releaseUse, MEMORY_BUDGET_BYTES, MIN_CONTEXT,
+};

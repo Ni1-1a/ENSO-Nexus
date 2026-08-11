@@ -330,7 +330,7 @@ function noteInChat(sessionId, annotation) {
 function objectEditInChat(sessionId, saved) {
   const layers = require('../services/geometry/layers');
   const nameOf = (id) => (layers.get(id) ? layers.get(id).label : id);
-  const rel = { keep: 'остаётся на месте', move: 'переносится', undecided: 'решение не принято' };
+  const rel = require('../services/geometry/object-edits').RELOCATION_LABELS;
   const p = saved.patch || {};
   const src = saved.parser || {};
   const bits = [];
@@ -363,8 +363,57 @@ router.get('/sessions/:id/plan', sessionAuth, async (req, res, next) => {
       // общий с разбором чертежа и с выгрузкой DXF (services/geometry/layers.js)
       layers: require('../services/geometry/layers').forUi(),
       summary: require('../services/geometry/site-geometry').summary(site),
+      // граница ЗУ из документа: интерфейс обязан показать, что участок взят
+      // не из чертежа, и дать её пересобрать или отменить
+      parcelSource: require('../services/geometry/parcel-source').get(req.session.id),
     });
   } catch (err) { next(err); }
+});
+
+/* ---------- границы участка по координатам из документа ---------- */
+/**
+ * Топосъёмка границ ЗУ может не содержать вовсе — тогда участком становится
+ * случайный контур покрытия, и вся дальнейшая арифметика бесполезна. Координаты
+ * характерных точек есть в ГПЗУ таблицей: этот маршрут просит модель перенести
+ * их оттуда, либо принимает уже готовые точки от человека.
+ *
+ * Полигон, порядок осей и сверку с заявленной площадью считает КОД
+ * (services/geometry/parcel-source.js), а не модель.
+ */
+router.post('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, express.json(), async (req, res, next) => {
+  try {
+    const parcelSource = require('../services/geometry/parcel-source');
+    const body = req.body || {};
+
+    if (Array.isArray(body.points) && body.points.length >= 3) {
+      // точки набраны человеком — модель не нужна
+      const saved = parcelSource.save(req.session.id, {
+        points: body.points,
+        meta: { ...(body.meta || {}), sourceDocument: (body.meta && body.meta.sourceDocument) || 'введено вручную' },
+        author: String(body.author || ''),
+      });
+      pipeline.logEvent(req.session.id, 'Границы участка заданы координатами', `${saved.points.length} точек`);
+      return res.json({ ok: true, source: saved, by: 'user' });
+    }
+
+    const { db } = require('../db');
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.session.id);
+    const route = require('../services/claude/adapter').effectiveProvider(session);
+    const planSvc = require('../services/geometry/plan');
+    const { site } = await planSvc.ensurePlan(req.session.id, { raw: true });
+    const found = await parcelSource.extract(req.session.id, { site, route });
+    if (!found.found) return res.status(404).json({ error: found.note || 'Координат границы участка в документах не найдено' });
+    pipeline.logEvent(req.session.id, 'Границы участка взяты из документа',
+      `${found.points.length} точек, «${found.meta.sourceDocument || 'документ'}»`);
+    res.json({ ok: true, source: parcelSource.get(req.session.id), by: 'model' });
+  } catch (err) { next(err); }
+});
+
+router.delete('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, (req, res) => {
+  const ok = require('../services/geometry/parcel-source').remove(req.session.id);
+  if (!ok) return res.status(404).json({ error: 'Границы из документа для этого проекта не сохранены' });
+  pipeline.logEvent(req.session.id, 'Границы участка из документа отменены — снова берутся из чертежа');
+  res.json({ ok: true });
 });
 
 /* ---------- свойства объекта плана: правка человеком ---------- */
@@ -391,7 +440,7 @@ router.post('/sessions/:id/plan/objects/:objectId', sessionAuth, sessionOwner, e
     const p = saved.patch;
     pipeline.logEvent(req.session.id, 'Свойства объекта плана исправлены',
       `${req.params.objectId}: ${[p.type && `тип → ${p.type}`, p.label && `назначение «${p.label}»`,
-        p.relocation && `перенос: ${p.relocation}`].filter(Boolean).join(', ') || 'комментарий'}`);
+        p.relocation && `решение: ${p.relocation}`].filter(Boolean).join(', ') || 'комментарий'}`);
     objectEditInChat(req.session.id, saved);
     res.json(saved);
   } catch (err) {
@@ -656,6 +705,12 @@ router.post('/sessions/:id/settings', sessionAuth, sessionOwner, express.json(),
         if (!check.ok) return res.status(400).json({ error: check.error });
         updates.ai_provider = String(aiProvider);
         updates.ai_model = aiModel ? String(aiModel) : '';
+        // модель тяжела для этой машины — не запрет, а предупреждение в журнал:
+        // решение принимает владелец машины, платформа только называет цену
+        if (check.warning) {
+          pipeline.logEvent(req.session.id, 'Выбрана тяжёлая для машины модель',
+            `${aiProvider}: ${aiModel} — ${check.warning}`, 'warn');
+        }
       }
     }
     if (kbChoice !== undefined) {
@@ -1045,8 +1100,8 @@ router.post('/sessions/:id/cancel', sessionAuth, sessionOwner, express.json(), (
 
 /* ---------- processing ---------- */
 router.post('/sessions/:id/process', sessionAuth, sessionOwner, expensiveLimit, express.json(), (req, res, next) => {
-  // Задание пользователя ДОПОЛНЯЕТ методику, а не подменяет её: подмена
-  // выкидывала бы все 12 шагов ради одной фразы из поля ввода.
+  // Задание пользователя ДОПОЛНЯЕТ порядок работы, а не подменяет его: подмена
+  // выкидывала бы все шаги из настроек ради одной фразы из поля ввода.
   const extra = String(req.body?.instruction || '').trim().slice(0, config.maxMessageLength);
   Promise.resolve(pipeline.startProcessing(req.session.id, { extraInstruction: extra })).then(
     () => res.status(202).json({ ok: true, jobStatus: 'queued' }),

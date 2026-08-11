@@ -45,17 +45,25 @@ const OBJECT_TYPES = [
   'annotation',       // подписи и пользовательские пометки
 ];
 
-/** Куда складывается объект каждого типа. */
+/**
+ * Куда складывается объект каждого типа.
+ *
+ * Раскладка НЕ пишется руками: она выводится из geometry/layers.js — того же
+ * списка, по которому чертёж разбирается, объект переназначается человеком и
+ * пишется слой DXF. Свой список здесь уже стоил тридцати трёх контуров: слои
+ * «14_Ограждения», «06_Инженерно-технические сооружения» и «45_Номера колодцев»
+ * разбор опознавал как fence, structure и utilityStructure — а таких ключей в
+ * раскладке не было, и addObject падал на `site[undefined].push(...)`. Наружу
+ * это выглядело как «Контур пропущен: Cannot read properties of undefined»:
+ * геометрия терялась молча, и никакой список типов было не свести глазами.
+ *
+ * Расчётные и служебные типы (их в layers.LAYERS нет) дописываются явно.
+ */
+const layerTaxonomy = require('./layers');
+
 const TYPE_COLLECTION = {
-  parcel: 'parcel',
-  building: 'buildings',
-  redLine: 'redLines',
+  ...Object.fromEntries(layerTaxonomy.ASSIGNABLE.map((l) => [l.id, l.bucket])),
   restriction: 'restrictions',
-  existingObject: 'existingObjects',
-  utility: 'utilities',
-  road: 'existingObjects',
-  landscaping: 'existingObjects',
-  relief: 'existingObjects',
   annotation: 'annotations',
 };
 
@@ -352,6 +360,11 @@ function makeFromGeometry({ type, geometry, properties, provenance, id, method }
 
 function addObject(site, object) {
   const key = TYPE_COLLECTION[object.type];
+  // Тип есть в OBJECT_TYPES, а места под него в модели нет — это дефект раскладки,
+  // а не данных. Говорим об этом прямо: молчаливая потеря контура обходится дороже.
+  if (!key || (key !== 'parcel' && !Array.isArray(site[key]))) {
+    throw new Error(`Тип «${object.type}» некуда положить: в раскладке нет массива «${key || 'не задан'}»`);
+  }
   if (key === 'parcel') {
     // участок один; при нескольких кандидатах остаётся крупнейший, остальные — в существующие
     const prev = site.parcel;

@@ -57,9 +57,13 @@ function withDefaultFirst(list, def) {
   return def && !list.includes(def) ? [def, ...list] : [def, ...list.filter((m) => m !== def)];
 }
 
-/** Инфо для облачных моделей: тариф за 1 млн токенов (для пикера в UI). */
-function cloudModelsInfo(models) {
-  return models.map((id) => ({ id, price: pricing.priceFor(id) }));
+/**
+ * Инфо для облачных моделей: тариф за 1 млн токенов и описание — что это за
+ * модель и для какой работы её брать. Без описания список моделей — это набор
+ * идентификаторов, по которому выбрать нельзя.
+ */
+function cloudModelsInfo(providerId, models) {
+  return models.map((id) => ({ id, price: pricing.priceFor(id), about: registry.describe(providerId, id) }));
 }
 
 let cache = null;
@@ -97,10 +101,15 @@ async function listProviders() {
       return {
         id,
         feasible: f.feasible,
+        heavy: !!f.heavy,
         note: f.note,
         loaded: loadedKeys.has(id),
-        context: mm.desiredContext(id),
+        // показываем контекст, с которым модель РЕАЛЬНО загрузится на этой машине,
+        // а не желаемый по профилю: иначе подпись обещает то, чего не будет
+        context: f.fitContext || mm.desiredContext(id),
+        wantContext: f.wantContext || mm.desiredContext(id),
         sizeGb: f.sizeBytes ? +(f.sizeBytes / 1024 ** 3).toFixed(1) : null,
+        about: registry.describe('lmstudio', id),
       };
     }));
   }
@@ -110,28 +119,28 @@ async function listProviders() {
       id: 'claude', label: 'Claude (Anthropic)',
       available: !!config.anthropicApiKey,
       models: withDefaultFirst(ANTHROPIC_MODELS, config.anthropicModel),
-      modelsInfo: cloudModelsInfo(withDefaultFirst(ANTHROPIC_MODELS, config.anthropicModel)),
+      modelsInfo: cloudModelsInfo('claude', withDefaultFirst(ANTHROPIC_MODELS, config.anthropicModel)),
       note: config.anthropicApiKey ? '' : 'нужен ANTHROPIC_API_KEY на сервере',
     },
     {
       id: 'chatgpt', label: 'ChatGPT (OpenAI)',
       available: !!config.openaiApiKey,
       models: withDefaultFirst(openaiModels, config.openaiModel),
-      modelsInfo: cloudModelsInfo(withDefaultFirst(openaiModels, config.openaiModel)),
+      modelsInfo: cloudModelsInfo('chatgpt', withDefaultFirst(openaiModels, config.openaiModel)),
       note: config.openaiApiKey ? '' : 'нужен OPENAI_API_KEY на сервере',
     },
     {
       id: 'kimi', label: 'Kimi (Moonshot AI)',
       available: !!config.kimiApiKey,
       models: withDefaultFirst(kimiModels, config.kimiModel),
-      modelsInfo: cloudModelsInfo(withDefaultFirst(kimiModels, config.kimiModel)),
+      modelsInfo: cloudModelsInfo('kimi', withDefaultFirst(kimiModels, config.kimiModel)),
       note: config.kimiApiKey ? '' : 'нужен KIMI_API_KEY на сервере',
     },
     {
       id: 'gemini', label: 'Gemini (Google)',
       available: !!(config.geminiApiKey && geminiModels.length),
       models: withDefaultFirst(geminiModels, config.geminiModel).filter(Boolean),
-      modelsInfo: cloudModelsInfo(withDefaultFirst(geminiModels, config.geminiModel).filter(Boolean)),
+      modelsInfo: cloudModelsInfo('gemini', withDefaultFirst(geminiModels, config.geminiModel).filter(Boolean)),
       note: !config.geminiApiKey ? 'нужен GEMINI_API_KEY на сервере'
         : (geminiModels.length ? '' : 'ключ задан, но список моделей не получен — проверьте доступ'),
     },
@@ -146,9 +155,14 @@ async function listProviders() {
       id: 'ollama', label: 'Ollama (локально)',
       available: !!(ollamaModels && ollamaModels.length),
       models: ollamaModels || [],
+      modelsInfo: (ollamaModels || []).map((id) => ({ id, about: registry.describe('ollama', id) })),
       note: ollamaModels === null ? 'Ollama не запущен' : (ollamaModels.length ? '' : 'нет чат-моделей: ollama pull <модель>'),
     },
-    { id: 'demo', label: 'Демо-режим (без AI)', available: true, models: ['demo'], note: 'тестовая заглушка' },
+    {
+      id: 'demo', label: 'Демо-режим (без AI)', available: true, models: ['demo'],
+      modelsInfo: [{ id: 'demo', about: registry.describe('demo', 'demo') }],
+      note: 'тестовая заглушка',
+    },
   ];
   // возможности каждого провайдера — интерфейс и пайплайн смотрят на них, а не на бренд
   for (const p of providers) p.capabilities = registry.capabilities(p.id, p.models[0] || '');
@@ -187,14 +201,18 @@ async function validateChoice(providerId, model, user = null) {
   if (model && p.models.length && !p.models.includes(model)) {
     return { ok: false, error: `Модель «${model}» недоступна у провайдера «${p.label}»` };
   }
-  if (model && p.modelsInfo) {
-    const info = p.modelsInfo.find((m) => m.id === model);
-    // feasible есть только у локальных моделей; облачные (с тарифом) не ограничены памятью
-    if (info && info.feasible === false) {
-      return { ok: false, error: `Модель «${model}» ${info.note} — выберите модель поменьше` };
-    }
-  }
-  return { ok: true, provider: p };
+  /*
+   * Нехватка памяти под локальную модель — НЕ повод запретить выбор.
+   *
+   * Раньше здесь стоял отказ: «Модель не помещается в память — выберите модель
+   * поменьше», и llama-3.3-70b нельзя было даже попробовать. Решение, рисковать
+   * ли своей машиной, принимает её владелец; платформа обязана предупредить, а не
+   * решать за него. Контекст под фактическую память подбирает model-manager,
+   * и предупреждение уходит в ответ отдельным полем — интерфейс покажет его
+   * подписью под списком моделей.
+   */
+  const info = model && p.modelsInfo ? p.modelsInfo.find((m) => m.id === model) : null;
+  return { ok: true, provider: p, warning: (info && info.heavy && info.note) ? info.note : '' };
 }
 
 module.exports = { listProviders, listProvidersFor, validateChoice, CLOUD_CLOSED_NOTE };

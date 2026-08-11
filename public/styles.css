@@ -382,7 +382,36 @@ textarea:focus, select:focus, input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 20%, transparent);
 }
+/* ---------- описание выбранной модели ----------
+   Карточка под списком моделей: что это, чем берёт, чем платишь и когда её брать.
+   Списки набраны знаками «+» и «−», а не цветом: цвет в тёмной теме уводит
+   в свечение, а знак читается одинаково в обеих. */
+.model-about {
+  margin-top: 8px; padding: 10px 12px;
+  border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm);
+  background: var(--panel); font-size: 11.5px; line-height: 1.55; color: var(--text-2);
+}
+.model-about .ma-head { margin: 0; color: var(--text); }
+.model-about .ma-tier {
+  display: inline-block; margin-right: 6px; padding: 1px 7px;
+  border: 1px solid var(--stroke); border-radius: 999px;
+  font-size: 10.5px; color: var(--text-2); white-space: nowrap;
+}
+.model-about .ma-list { margin: 6px 0 0; padding: 0; list-style: none; }
+.model-about .ma-list li { position: relative; padding-left: 15px; }
+.model-about .ma-plus li::before { content: '+'; position: absolute; left: 0; color: var(--text-2); }
+.model-about .ma-minus li::before { content: '−'; position: absolute; left: 0; color: var(--text-3); }
+.model-about .ma-minus li { color: var(--text-3); }
+.model-about .ma-best { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--stroke-soft); color: var(--text-2); }
+
 .hint { font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+/* Подсказка-предостережение: выбор разрешён, но у него есть цена.
+   Не «ошибка» — красный здесь означал бы, что действие отклонено. */
+.hint.hint-warn { color: var(--text-2); }
+.hint.hint-warn::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 6px; vertical-align: 1px; background: var(--accent);
+}
 
 /* ---------- сегментированный контрол ---------- */
 .segmented {
@@ -1046,13 +1075,25 @@ body.modal-open { overflow: hidden; }
 .vw-layer-toggle.empty { opacity: .45; cursor: default; }
 .vw-layer-toggle input { accent-color: var(--accent); }
 .vw-swatch { width: 13px; height: 13px; border-radius: 3px; border: 1px solid var(--stroke); flex-shrink: 0; }
+/* Образец зоны — настоящий SVG со штриховкой из ZoneStyle: рамка и радиус
+   у него свои, поэтому рамку контейнера снимаем. */
+.vw-swatch-svg { border: 0; border-radius: 0; overflow: visible; }
+/* Типы ограничений под общим переключателем: у каждого свой цвет и угол,
+   одной строкой на все их не объяснить. */
+.vw-legend-sub {
+  display: flex; flex-direction: column; gap: 5px;
+  margin: -2px 0 2px 22px; padding-left: 8px;
+  border-left: 1px solid var(--stroke-soft);
+}
+.vw-legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); }
 .vw-sw-parcel { border-color: var(--text); background: transparent; }
 .vw-sw-buildings { background: color-mix(in srgb, var(--data) 45%, transparent); border-color: var(--data); }
 .vw-sw-redLines { background: transparent; border-color: var(--red); border-style: dashed; }
 .vw-sw-utilities { background: transparent; border-color: var(--orange); }
 .vw-sw-existingObjects { background: color-mix(in srgb, var(--text-3) 30%, transparent); }
-.vw-sw-restrictions { background: color-mix(in srgb, var(--accent) 35%, transparent); border-color: var(--accent); }
-.vw-sw-buildable { background: rgba(126, 176, 138, .45); border-color: #6f9e78; }
+/* Допустимая территория — единственная сплошная заливка на плане; числа взяты
+   из ZoneStyle.BUILDABLE, чтобы легенда и план не разъезжались. */
+.vw-sw-buildable { background: rgba(126, 176, 138, .30); border-color: #6f9e78; }
 .vw-sw-annotations { background: color-mix(in srgb, var(--accent) 20%, transparent); border-color: var(--accent); border-style: dashed; }
 
 .pm-stage { flex: 1; min-height: 0; margin: 0 18px 18px; border-radius: var(--radius); }
@@ -1099,9 +1140,12 @@ body.modal-open { overflow: hidden; }
 /* объект с правкой человека виден и без наведения: пунктир по контуру */
 .vw-layer .vw-shape.vw-edited { stroke-dasharray: 10 4; }
 
-/* ---------- свойства объекта: панель внутри плана ---------- */
+/* ---------- свойства объекта: панель внутри плана ----------
+   Панель стоит СЛЕВА. Справа сверху раскрывается меню «Слои» (.pm-layers-menu),
+   и панель, стоявшая там же, ложилась поверх него: человек открывал слои,
+   выбирал объект — и список слоёв пропадал под свойствами. */
 .vw-props {
-  position: absolute; right: 12px; top: 12px; z-index: 6;
+  position: absolute; left: 12px; top: 12px; z-index: 6;
   width: min(320px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto;
   background: var(--panel-solid); border: 1px solid var(--stroke);
   border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 12px 14px 14px;
@@ -1117,6 +1161,10 @@ body.modal-open { overflow: hidden; }
 .vw-props-field input, .vw-props-field select, .vw-props-field textarea { font-size: 12.5px; }
 .vw-props-foot { display: flex; gap: 8px; margin-top: 2px; }
 .vw-props .hint:empty { display: none; }
+/* Что означает выбранный пункт списка. Без этой строки «переносится» и
+   «сносится» выглядят одинаково безобидно, хотя меняют и разрывы, и пятно. */
+.vw-props-help { font-size: 11px; line-height: 1.45; color: var(--text-3); }
+.vw-props-help:empty { display: none; }
 
 .vw-shape:hover { filter: brightness(1.12); }
 /* незамкнутые линии не заливаются: правило идёт ПОСЛЕ слоевых, иначе

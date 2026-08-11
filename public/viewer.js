@@ -312,6 +312,41 @@
 
   /* ---------------- слои ---------------- */
 
+  /**
+   * Образец в легенде рисуется ТЕМ ЖЕ, чем рисуется объект на плане.
+   *
+   * Раньше квадратик «Ограничения» был сплошной заливкой цвета акцента, а зоны
+   * на плане — штриховкой своего цвета под своим углом на каждый тип. Легенда
+   * не совпадала с картинкой ни цветом, ни манерой, и разговаривать о «розовой
+   * зоне» было невозможно: розового на плане не было. Теперь образец для зоны —
+   * маленький SVG с настоящим образцом штриховки из ZoneStyle.
+   */
+  function hatchSwatch(kind) {
+    const z = window.ZoneStyle.zone(kind);
+    const id = `lg-${kind}`;
+    const s = document.createElementNS(NS, 'svg');
+    s.setAttribute('class', 'vw-swatch vw-swatch-svg');
+    s.setAttribute('viewBox', '0 0 14 14');
+    s.setAttribute('aria-hidden', 'true');
+    s.innerHTML =
+      `<defs><pattern id="${id}" width="4" height="4" patternUnits="userSpaceOnUse" `
+      + `patternTransform="rotate(${z.angle})">`
+      + `<line x1="0" y1="0" x2="0" y2="4" stroke="${z.color}" stroke-width="1.2"/></pattern></defs>`
+      + `<rect x="0.5" y="0.5" width="13" height="13" rx="2.5" fill="url(#${id})" `
+      + `stroke="${z.color}" stroke-width="1"/>`;
+    return s;
+  }
+
+  /** Какие типы ограничений реально есть на плане — по ним и строится легенда. */
+  function restrictionKinds() {
+    const kinds = new Map();
+    for (const z of (state.plan && state.plan.restrictions) || []) {
+      const k = (z.properties && z.properties.kind) || 'other';
+      kinds.set(k, (kinds.get(k) || 0) + 1);
+    }
+    return kinds;
+  }
+
   function renderLayerToggles() {
     const box = el('vw-layers');
     box.innerHTML = '';
@@ -328,10 +363,30 @@
         const g = state.root && state.root.querySelector(`[data-layer="${layer.id}"]`);
         if (g) g.setAttribute('display', cb.checked ? 'inline' : 'none');
       });
-      const swatch = document.createElement('span');
-      swatch.className = `vw-swatch vw-sw-${layer.id}`;
+      const swatch = layer.id === 'restrictions'
+        ? hatchSwatch(restrictionKinds().keys().next().value || 'other')
+        : Object.assign(document.createElement('span'), { className: `vw-swatch vw-sw-${layer.id}` });
       label.append(cb, swatch, document.createTextNode(`${layer.label} (${count})`));
       box.appendChild(label);
+
+      /*
+       * У ограничений один переключатель, но НЕ один вид: отступ, охранная
+       * зона, противопожарный разрыв и СЗЗ рисуются разными цветами под разными
+       * углами. Одна строка легенды на все четыре не объясняет ничего, поэтому
+       * под переключателем перечисляются те типы, что есть на этом плане.
+       */
+      if (layer.id === 'restrictions' && count) {
+        const kinds = restrictionKinds();
+        const sub = document.createElement('div');
+        sub.className = 'vw-legend-sub';
+        for (const [kind, n] of kinds) {
+          const row = document.createElement('span');
+          row.className = 'vw-legend-item';
+          row.append(hatchSwatch(kind), document.createTextNode(`${window.ZoneStyle.zone(kind).label} (${n})`));
+          sub.appendChild(row);
+        }
+        box.appendChild(sub);
+      }
     }
   }
 
@@ -626,6 +681,11 @@
         const o = document.createElement('option');
         o.value = item.id;
         o.textContent = item.label;
+        // Куда объект уедет в чертеже — последствие выбора, а не деталь
+        // реализации, поэтому имя слоя DXF показывается. Но не внутри пункта
+        // списка: в панели шириной 320 px «Капитальные строения → AI_ЗДАНИЯ_КАП…»
+        // обрезается на середине. Оно уходит в подсказку под списком.
+        o.dataset.dxf = item.dxf;
         o.title = `слой чертежа: ${item.dxf}`;
         og.appendChild(o);
         TYPE_LABELS[item.id] = item.label;
@@ -633,8 +693,40 @@
       sel.appendChild(og);
     }
     sel.dataset.filled = '1';
+    // подсказки под списками живут вместе с самими списками
+    sel.addEventListener('change', updateFieldHelp);
+    el('vw-prop-relocation').addEventListener('change', updateFieldHelp);
   }
-  const RELOCATION_LABELS = { undecided: 'не решено', keep: 'остаётся на месте', move: 'переносится' };
+
+  /** Подписи под выпадающими списками панели свойств: что означает выбор. */
+  function updateFieldHelp() {
+    const typeHelp = el('vw-prop-type-help');
+    const relHelp = el('vw-prop-relocation-help');
+    if (typeHelp) {
+      const v = el('vw-prop-type').value;
+      const opt = el('vw-prop-type').selectedOptions[0];
+      const dxf = opt && opt.dataset ? opt.dataset.dxf : '';
+      typeHelp.textContent = v
+        ? `Объект станет «${TYPE_LABELS[v] || v}» и в плане, и в чертеже${dxf ? ` — слой ${dxf}` : ''}.`
+        : 'Тип оставлен таким, каким его определил разбор чертежа.';
+    }
+    if (relHelp) relHelp.textContent = RELOCATION_HELP[el('vw-prop-relocation').value] || '';
+  }
+  const RELOCATION_LABELS = {
+    undecided: 'не решено', keep: 'сохраняется', move: 'переносится', demolish: 'сносится (демонтаж)',
+  };
+
+  /**
+   * Что означает выбранное решение для расчёта. Подпись меняется прямо под
+   * списком: иначе выбор «переносится» и выбор «сносится» выглядят одинаково
+   * безобидно, хотя от них зависят и противопожарные разрывы, и пятно застройки.
+   */
+  const RELOCATION_HELP = {
+    undecided: 'Пока не решено — объект считается существующим: он даёт противопожарные разрывы и занимает место.',
+    keep: 'Остаётся: даёт противопожарные разрывы до нового здания и вычитается из пятна застройки.',
+    move: 'Переносится: место освобождается, но в проект добавляется мероприятие по переносу.',
+    demolish: 'Сносится: разрывов не даёт, место освобождается. В ТЭП попадёт объём демонтажа.',
+  };
 
   /** Правка этого объекта, если она есть: ищем по id текущей версии плана. */
   function editOf(objectId) {
@@ -682,7 +774,8 @@
     el('vw-prop-comment').value = '';
     el('vw-prop-reset').hidden = true;
     el('vw-props-note').textContent = 'Правка применится ко ВСЕМ выбранным объектам.';
-    el('vw-props').hidden = false;
+    updateFieldHelp();
+    showProps();
     draw();
   }
 
@@ -723,8 +816,24 @@
     el('vw-props-note').textContent = edit
       ? 'Правка сохранена и применена к плану. Она же уходит в выгрузку для дообучения модели.'
       : 'Правка применится к плану и попадёт в выгрузку для дообучения модели.';
-    el('vw-props').hidden = false;
+    updateFieldHelp();
+    showProps();
     draw();
+  }
+
+  /**
+   * Показать панель свойств, не перекрыв ею список слоёв.
+   *
+   * Список слоёв — выпадающее меню из панели инструментов, оно раскрывается
+   * вниз в правый верхний угол сцены. Панель свойств стояла там же и ложилась
+   * поверх: человек открывал слои, кликал по объекту — и слои исчезали под
+   * свойствами. Панель переехала влево (там пусто), а меню слоёв на всякий
+   * случай закрывается: два всплывающих окна над одной картинкой — это шум.
+   */
+  function showProps() {
+    const menu = document.querySelector('.pm-layers-menu');
+    if (menu && menu.open) menu.open = false;
+    el('vw-props').hidden = false;
   }
 
   function closeProps() {

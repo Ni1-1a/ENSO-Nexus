@@ -14,10 +14,29 @@ const G = require('./site-geometry');
 const jts = require('./jts');
 const RR = require('./restriction-rules');
 
+/**
+ * Объект, которого на площадке не будет, ограничений не даёт.
+ *
+ * Шаг «Существующие объекты» — это решение о сносе и сохранении, и оно обязано
+ * доходить до геометрии. Снесённое здание не даёт противопожарного разрыва:
+ * разрыв нормируется между СУЩЕСТВУЮЩИМИ объектами, а не между новым зданием и
+ * тем, что уже разобрано. На боевом комплекте это решало задачу целиком —
+ * пять строений под снос давали двенадцатиметровые разрывы вокруг себя и
+ * съедали ту самую территорию, на которой их место и освобождается.
+ *
+ * Границы участка и красные линии решением человека не отменяются: от них
+ * считается отступ, и «снести границу» бессмысленно.
+ */
+function willBeGone(obj) {
+  const rel = obj && obj.properties && obj.properties.relocation;
+  if (rel !== 'demolish' && rel !== 'move') return false;
+  return obj.type !== 'parcel' && obj.type !== 'redLine' && obj.type !== 'buildLine';
+}
+
 /** Какие объекты участка соответствуют селектору правила. */
 function resolveTargets(site, rule) {
   const { selector, hint } = rule.target;
-  const byType = {
+  const all = {
     parcelBoundary: site.parcel ? [site.parcel] : [],
     redLine: site.redLines,
     building: site.buildings,
@@ -28,6 +47,7 @@ function resolveTargets(site, rule) {
     objectId: G.allObjects(site),
     unknown: [],
   }[selector] || [];
+  const byType = all.filter((o) => !willBeGone(o));
 
   if (!hint) return { targets: byType, narrowed: false };
 
@@ -92,6 +112,25 @@ function build(site, rules) {
   // worker: payload уезжает туда структурным клонированием, мутация site назад
   // не возвращается, и «зона построена от чужого объекта» терялась целиком.
   const warnings = [];
+
+  // Решение человека о сносе и переносе меняет геометрию ограничений, и молчать
+  // об этом нельзя: человек должен видеть, ПОЧЕМУ разрыв, который он ожидал
+  // увидеть, отсутствует. Это же число попадает в мероприятия и в ТЭП.
+  const gone = G.allObjects(site).filter(willBeGone);
+  if (gone.length) {
+    const byDecision = { demolish: [], move: [] };
+    for (const o of gone) byDecision[o.properties.relocation].push(o);
+    const area = (list) => G.round(list.reduce((s, o) => s + (o.properties.areaM2 || 0), 0), 2);
+    const parts = [];
+    if (byDecision.demolish.length) parts.push(`под снос ${byDecision.demolish.length} шт. (${area(byDecision.demolish)} м²)`);
+    if (byDecision.move.length) parts.push(`под перенос ${byDecision.move.length} шт. (${area(byDecision.move)} м²)`);
+    warnings.push({
+      code: 'objects-excluded',
+      message: `Зоны ограничений не строятся от объектов, которых на площадке не будет: ${parts.join(', ')}. `
+        + 'Противопожарные разрывы и охранные зоны от них не считаются — место под ними освобождается. '
+        + 'Если решение о сносе ещё не принято, верните объекту статус «не решено» на плане.',
+    });
+  }
 
   for (const rule of rules) {
     if (rule.operation === 'attribute') {

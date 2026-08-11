@@ -251,6 +251,22 @@ for (const sql of [
    )`,
   'CREATE INDEX IF NOT EXISTS idx_object_edits_session ON plan_object_edits(session_id)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_object_edits_key ON plan_object_edits(session_id, object_key)',
+
+  // Границы участка по ПОВОРОТНЫМ ТОЧКАМ из документа (ГПЗУ, выписка ЕГРН).
+  //
+  // Топосъёмка границ ЗУ может не содержать вовсе: в «МСК-47_Горбунки.dwg»
+  // самый крупный контур на слоях с границами — покрытие 72 м², а участок по
+  // ГПЗУ — 3700 м². Считать зоны и посадку по такому «участку» бессмысленно.
+  // Координаты характерных точек в ГПЗУ есть всегда — они и хранятся здесь.
+  // Точки — то, что прочла модель; полигон из них собирает код (parcel-source).
+  `CREATE TABLE IF NOT EXISTS plan_parcel_source (
+     session_id TEXT PRIMARY KEY,
+     points TEXT NOT NULL DEFAULT '[]',
+     meta TEXT NOT NULL DEFAULT '{}',
+     author TEXT NOT NULL DEFAULT '',
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   )`,
 ]) {
   try { db.exec(sql); } catch { /* колонка уже есть */ }
 }

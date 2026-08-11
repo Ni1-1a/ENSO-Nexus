@@ -429,19 +429,37 @@ test('маршрутизация: известные провайдеры пер
 
 /* ================= бюджет запросов ================= */
 
-test('бюджет: неудачный анализ тратит не больше четырёх обращений к модели', async () => {
+test('бюджет: безнадёжный анализ упирается в кассу и внятно объясняет причину', async () => {
   resetSession();
   scenario = { text: 'это не JSON', finish: 'length' }; // ответ обрезан и не проходит схему
   await assert.rejects(
     () => adapter.analyzeOnce(SID, { instruction: 'проанализируй', route: { provider: 'chatgpt', model: 'gpt-5.6-terra' } }),
     (err) => {
-      assert.match(err.message, /Потрачено обращений к модели: 4 из 4/);
+      // Сообщение обязано подсказывать, ЧТО делать. Прежнее «Потрачено обращений
+      // к модели: 4 из 4» этого не делало: человек видел счётчик и ничего больше.
+      assert.match(err.message, new RegExp(`из ${adapter.MAX_ANALYSIS_CALLS}`));
+      assert.match(err.message, /MAX_ANALYSIS_CALLS/, 'сказано, где поднять потолок');
+      assert.match(err.message, /лимит выходных токенов|OPENAI_MAX_TOKENS/, 'названа настоящая причина обрыва');
       return true;
     },
   );
   assert.strictEqual(chatRequests().length, adapter.MAX_ANALYSIS_CALLS,
-    'раньше один неудачный анализ съедал 6 платных вызовов из 25 на сессию');
+    'касса конечна: безнадёжный прогон обязан кончаться, а не уходить в десятки запросов');
   assert.strictEqual(session().ai_requests, adapter.MAX_ANALYSIS_CALLS, 'каждый вызов обязан быть учтён в бюджете сессии');
+  assert.ok(adapter.MAX_ANALYSIS_CALLS >= 8, 'потолок в четыре обращения выбирался одним неудачным прогоном насквозь');
+});
+
+test('бюджет: обрезанный ответ просят сократить всё сильнее, а не повторяют одно и то же', async () => {
+  resetSession();
+  scenario = { text: 'это не JSON', finish: 'length' };
+  await assert.rejects(() => adapter.analyzeOnce(SID, {
+    instruction: 'проанализируй', route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+  }));
+  // в последнем запросе обязана быть самая жёсткая формулировка сокращения:
+  // одного «сделай короче» модели, как правило, не хватает
+  const last = chatRequests()[chatRequests().length - 1];
+  const texts = (last.body.messages || []).map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+  assert.match(texts, /МИНИМАЛЬНЫЙ допустимый ответ|Сократи РЕЗКО/);
 });
 
 test('бюджет: кэш-токены Anthropic попадают во входные токены сессии', () => {

@@ -151,7 +151,7 @@ async function runJob(sessionId, instruction, signal, extraInstruction = '', pre
 
     const result = await adapter.runAnalysis(sessionId, {
       instruction: (instruction ||
-        'Проанализируй загруженные материалы по методике 12 шагов. Извлеки факты, определи ограничения, ' +
+        'Разбери загруженные материалы по порядку работы из блока <workplan>. Извлеки факты, определи ограничения, ' +
         'при нехватке данных задай уточняющие вопросы, при достаточности данных сформируй итоговый отчёт.')
         + (extraInstruction ? `\n\nДополнительное задание пользователя к этому прогону:\n${extraInstruction}` : ''),
       signal,
@@ -292,17 +292,52 @@ async function startZonesStage(sessionId) {
       const queue = require('./geometry/queue');
       const adapter2 = require('./claude/adapter');
 
+      const parcelSource = require('./geometry/parcel-source');
+
       progress.set(sessionId, { phase: 'zones', label: 'Разбор чертежей и поиск объектов…' });
-      const { planId, site } = await planSvc.ensurePlan(sessionId);
+      let { planId, site } = await planSvc.ensurePlan(sessionId);
+
+      const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+      const route = adapter2.effectiveProvider(session);
+
+      /*
+       * Границы ЗУ из документа — до всего остального.
+       *
+       * Топосъёмка границ участка может не содержать: в «МСК-47_Горбунки.dwg»
+       * их нет ни на одном слое, и участком становился контур покрытия 72 м²
+       * при 3700 м² по ГПЗУ. Пятно, зоны и посадка считались по чужой
+       * территории, а человек читал «здание не помещается». Координаты
+       * характерных точек есть в ГПЗУ таблицей — берём их оттуда.
+       *
+       * Спрашиваем модель только тогда, когда чертёж не дал надёжной границы,
+       * и только один раз на проект: результат хранится в plan_parcel_source.
+       */
+      if (!parcelSource.get(sessionId) && parcelSource.drawingParcelIsDoubtful(site)) {
+        progress.set(sessionId, { phase: 'zones', label: 'Границы участка в чертеже ненадёжны — ищу координаты в документах…' });
+        try {
+          const found = await parcelSource.extract(sessionId, { site, route, signal });
+          if (found.found) {
+            ({ planId, site } = await planSvc.ensurePlan(sessionId)); // перечитываем с применённой границей
+            logEvent(sessionId, 'Границы участка взяты из документа',
+              `${found.points.length} характерных точек, «${found.meta.sourceDocument || 'документ'}»`
+              + (found.meta.cadastralNumber ? `, ЗУ ${found.meta.cadastralNumber}` : ''));
+          } else {
+            logEvent(sessionId, 'Координат границы участка в документах нет', found.note || '', 'warn');
+          }
+        } catch (err) {
+          if (isAbort(err, signal)) throw err;
+          logEvent(sessionId, 'Границы участка из документов не прочитаны', err.message, 'warn');
+        }
+      }
+
       if (!site.parcel) {
         throw Object.assign(new Error(
-          'Границы участка в чертежах не найдены — строить зоны не от чего. ' +
-          'Загрузите топосъёмку или план границ в формате DWG/DXF.'), { expected: true });
+          'Границы участка не определены: в чертежах их нет, и в документах не нашлось таблицы координат '
+          + 'характерных точек. Строить зоны не от чего — загрузите план границ (DWG/DXF) или ГПЗУ '
+          + 'с перечнем координат.'), { expected: true });
       }
 
       progress.set(sessionId, { phase: 'zones', label: 'Извлечение ограничений из документов…' });
-      const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
-      const route = adapter2.effectiveProvider(session);
       // Объекты участка — чистая геометрия и модели не требуют. Если модель
       // недоступна, схема всё равно строится и уходит на согласование: пустой
       // список зон с честной причиной полезнее, чем упавший этап.
@@ -714,7 +749,7 @@ async function runComparison(sessionId, routes, instruction, signal) {
   const adapter2 = require('./claude/adapter');
   const { saveResult } = require('./outputs');
   const task = instruction ||
-    'Проанализируй загруженные материалы по методике 12 шагов: извлеки факты, определи ограничения, ' +
+    'Разбери загруженные материалы по порядку работы из блока <workplan>: извлеки факты, определи ограничения, ' +
     'сформируй краткий отчёт. Если данных не хватает — перечисли вопросы, но всё равно верни status=completed с тем, что удалось установить.';
   const runs = [];
   let aborted = false;

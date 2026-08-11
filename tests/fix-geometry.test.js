@@ -618,17 +618,77 @@ test('правки объектов: ключ переживает перера�
   second.big.id = 'existingObject-999';
   assert.notStrictEqual(second.big.id, first.big.id);
 
-  assert.strictEqual(OE.keyOf(second.big, 'existingObjects'), key, 'ключ строится по файлу, слою и сущности');
+  assert.strictEqual(OE.keyOf(second.big, 'existingObjects'), key, 'ключ строится по файлу, слою и отпечатку геометрии');
   const res = OE.applyTo(second.site, [{ objectKey: key, patch: { type: 'parcel' } }]);
   assert.strictEqual(res.applied, 1, 'правка нашла свой объект после переразбора');
   assert.strictEqual(second.site.parcel.id, 'existingObject-999');
 
-  // без provenance ключ падает на слой+id — хуже, но не пусто
+  // без provenance ключ держится на одном отпечатке геометрии — и этого хватает
   const bare = G.makeObject({
     type: 'existingObject', points: [[0, 0], [1, 0], [1, 1]], closed: true,
     provenance: { extractionMethod: 'computed' },
   });
-  assert.match(OE.keyOf(bare, 'existingObjects'), /^o:existingObjects\|/);
+  assert.match(OE.keyOf(bare, 'existingObjects'), /^g:\|\|#/);
+});
+
+test('правки объектов: правка одного здания не расползается на однотипные соседние', () => {
+  const OE = require('../server/services/geometry/object-edits');
+  const G = require('../server/services/geometry/site-geometry');
+  // Тридцать три здания одного слоя, снятые одинаковой сущностью, — ровно случай
+  // «МСК-47_Горбунки»: прежний ключ (файл|слой|сущность) был у них общий, и пометка
+  // одного здания сносимым помечала весь чертёж.
+  const site = G.createSiteGeometry();
+  const houses = [];
+  for (let i = 0; i < 33; i++) {
+    const x = i * 20;
+    const o = G.makeObject({
+      type: 'building', points: [[x, 0], [x + 10, 0], [x + 10, 12], [x, 12]], closed: true,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'МСК-47_Горбунки.dwg', sourceFileId: 'f1',
+        sourceLayer: '03_Здания и строения', sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+      },
+    });
+    site.buildings.push(o);
+    houses.push(o);
+  }
+  const keys = new Set(houses.map((o) => OE.keyOf(o, 'buildings')));
+  assert.strictEqual(keys.size, 33, 'у каждого контура свой ключ');
+  const legacy = new Set(houses.map((o) => OE.legacyKeyOf(o, 'buildings')));
+  assert.strictEqual(legacy.size, 1, 'прежний ключ был один на всех — это и был дефект');
+
+  const res = OE.applyTo(site, [{ objectKey: OE.keyOf(houses[7], 'buildings'), patch: { relocation: 'move', comment: 'демонтаж' } }]);
+  assert.strictEqual(res.applied, 1, 'правка применилась ровно к одному зданию');
+  assert.strictEqual(site.buildings[7].properties.relocation, 'move');
+  assert.strictEqual(site.buildings.filter((o) => o.properties.relocation === 'move').length, 1,
+    'у остальных тридцати двух статус не изменился');
+});
+
+test('правки объектов: правка прежнего образца не применяется, если её ключ неоднозначен', () => {
+  const OE = require('../server/services/geometry/object-edits');
+  const G = require('../server/services/geometry/site-geometry');
+  const site = G.createSiteGeometry();
+  const mk = (x) => G.makeObject({
+    type: 'building', points: [[x, 0], [x + 10, 0], [x + 10, 10], [x, 10]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceFileId: 'f1',
+      sourceLayer: '03_Здания и строения', sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+    },
+  });
+  const a = mk(0); const b = mk(50);
+  site.buildings.push(a, b);
+
+  const res = OE.applyTo(site, [{ objectKey: OE.legacyKeyOf(a, 'buildings'), patch: { relocation: 'move' } }]);
+  assert.strictEqual(res.applied, 0, 'неоднозначная старая правка не применяется ни к одному объекту');
+  assert.ok(res.legacySkipped >= 1);
+  assert.ok(site.warnings.some((w) => w.code === 'edits-legacy-ambiguous'), 'человеку сказано, что правку надо переставить');
+
+  // единственный объект с таким ключом — старую правку применяем, ничего не теряя
+  const solo = G.createSiteGeometry();
+  const only = mk(0);
+  solo.buildings.push(only);
+  const res2 = OE.applyTo(solo, [{ objectKey: OE.legacyKeyOf(only, 'buildings'), patch: { relocation: 'keep' } }]);
+  assert.strictEqual(res2.applied, 1);
+  assert.strictEqual(solo.buildings[0].properties.relocation, 'keep');
 });
 
 test('правки объектов: решение о переносе и выгрузка для дообучения', () => {
@@ -665,7 +725,11 @@ test('правки объектов: решение о переносе и вы�
 
   // мусор в правку не проходит
   assert.throws(() => OE.normalizePatch({ type: 'chair' }), /Недопустимый тип/);
-  assert.throws(() => OE.normalizePatch({ relocation: 'может быть' }), /переносе/);
+  assert.throws(() => OE.normalizePatch({ relocation: 'может быть' }), /Недопустимое решение/);
+  // снос — отдельное решение, а не «перенос» с припиской в комментарии:
+  // снесённое здание не даёт противопожарных разрывов, перенесённое требует мероприятия
+  assert.deepStrictEqual(OE.normalizePatch({ relocation: 'demolish' }), { relocation: 'demolish' });
+  assert.strictEqual(OE.RELOCATION_LABELS.demolish, 'сносится (демонтаж)');
   assert.throws(() => OE.normalizePatch({}), /пустая/);
 
   assert.strictEqual(OE.remove(SID, all[0].objectKey), true);
@@ -862,4 +926,278 @@ test('посадка: на треугольной площадке пятно н
   }
   assert.ok(edges.some((a) => Math.abs(a - top.rotationDeg) < 2),
     `поворот ${top.rotationDeg}° обязан совпасть с одной из сторон площадки (${edges.join(', ')})`);
+});
+
+/* ================= границы участка по координатам из документа ================= */
+
+/**
+ * Настоящие числа с первой страницы «ГПЗУ.pdf» проекта в Горбунках.
+ * Колонка «X» — 422 xxx (север), колонка «Y» — 2195 xxx (восток);
+ * в чертеже те же числа стоят наоборот. Площадь по документу — 3700 +/- 43 м².
+ */
+const GPZU_POINTS = [
+  { label: '1', first: 422352.83, second: 2195897.76 },
+  { label: '2', first: 422308.62, second: 2195954.01 },
+  { label: '3', first: 422286.62, second: 2195973.10 },
+  { label: '4', first: 422288.36, second: 2195974.18 },
+  { label: '5', first: 422322.63, second: 2195984.16 },
+  { label: '6', first: 422369.92, second: 2195992.21 },
+];
+const GPZU_META = {
+  declaredAreaM2: 3700, areaToleranceM2: 43, cadastralNumber: '47:14:0402001:7',
+  coordinateSystem: 'МСК-47', firstColumnMeans: 'X',
+  sourceDocument: 'ГПЗУ.pdf', sourcePage: 'стр. 1', confidence: 0.95,
+};
+
+/** Габариты настоящей топосъёмки МСК-47_Горбунки. */
+const TOPO_BOUNDS = { minX: 2195874.16, minY: 422259.47, maxX: 2196005.6, maxY: 422387.49 };
+
+test('границы ЗУ из документа: полигон по поворотным точкам сходится с заявленной площадью', () => {
+  const PS = require('../server/services/geometry/parcel-source');
+  const site = require('../server/services/geometry/site-geometry').createSiteGeometry();
+  site.drawingBounds = { ...TOPO_BOUNDS };
+
+  const built = PS.build({ points: GPZU_POINTS, meta: GPZU_META }, site);
+  assert.strictEqual(built.ok, true, `сборка обязана удаться: ${built.errors.join(' ')}`);
+  assert.strictEqual(built.points.length, 6);
+  assert.ok(Math.abs(built.areaM2 - 3700) <= 43,
+    `площадь ${built.areaM2} м² обязана уложиться в 3700 +/- 43 м² по ГПЗУ`);
+  assert.match(built.report.areaCheck, /^сходится/);
+  assert.strictEqual(built.errors.length, 0);
+});
+
+test('границы ЗУ из документа: порядок осей определяется по чертежу, а не по вере', () => {
+  const PS = require('../server/services/geometry/parcel-source');
+  const site = require('../server/services/geometry/site-geometry').createSiteGeometry();
+  site.drawingBounds = { ...TOPO_BOUNDS };
+
+  // ЕГРН пишет X на север, чертёж — X по горизонтали: колонки обязаны переставиться
+  const asIs = PS.build({ points: GPZU_POINTS, meta: GPZU_META }, site);
+  assert.strictEqual(asIs.orientation, 'swapped');
+  for (const [x, y] of asIs.points) {
+    assert.ok(x >= TOPO_BOUNDS.minX && x <= TOPO_BOUNDS.maxX, `X ${x} обязан лежать в габаритах чертежа`);
+    assert.ok(y >= TOPO_BOUNDS.minY && y <= TOPO_BOUNDS.maxY, `Y ${y} обязан лежать в габаритах чертежа`);
+  }
+
+  // тот же участок с колонками, набранными наоборот, обязан лечь ТУДА ЖЕ
+  const flipped = GPZU_POINTS.map((p) => ({ label: p.label, first: p.second, second: p.first }));
+  const other = PS.build({ points: flipped, meta: { ...GPZU_META, firstColumnMeans: 'Y' } }, site);
+  assert.strictEqual(other.orientation, 'direct');
+  assert.deepStrictEqual(other.points, asIs.points, 'положение участка не зависит от порядка колонок в документе');
+});
+
+test('границы ЗУ из документа: расхождение с заявленной площадью — отказ, а не молчаливая подстановка', () => {
+  const PS = require('../server/services/geometry/parcel-source');
+  const site = require('../server/services/geometry/site-geometry').createSiteGeometry();
+  site.drawingBounds = { ...TOPO_BOUNDS };
+
+  // одна цифра прочитана неверно — контур перестаёт быть тем участком
+  const broken = GPZU_POINTS.map((p, i) => (i === 2 ? { ...p, first: p.first - 30 } : p));
+  const built = PS.build({ points: broken, meta: GPZU_META }, site);
+  assert.strictEqual(built.ok, false, 'по неверно прочитанным координатам граница не строится');
+  assert.match(built.errors.join(' '), /расходится с заявленной/);
+});
+
+test('границы ЗУ из документа: подменяют разобранный контур, но не уничтожают его', async () => {
+  const PS = require('../server/services/geometry/parcel-source');
+  const G = require('../server/services/geometry/site-geometry');
+  const { db, now } = require('../server/db');
+  const SID = `parcelsrc-${Math.random().toString(36).slice(2)}`;
+  db.prepare('INSERT INTO sessions (id, token, status, created_at, updated_at, title) VALUES (?,?,?,?,?,?)')
+    .run(SID, 'tok', 'idle', now(), now(), 'Горбунки');
+
+  const site = G.createSiteGeometry();
+  site.drawingBounds = { ...TOPO_BOUNDS };
+  // ровно то, что разбор берёт за участок на настоящей топосъёмке: покрытие 72 м²
+  site.parcel = G.makeObject({
+    type: 'parcel', closed: true,
+    points: [[2195900, 422300], [2195908, 422300], [2195908, 422309], [2195900, 422309]],
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'МСК-47_Горбунки.dwg', sourceFileId: 'f1',
+      sourceLayer: '10_Границы покрытий и угодий', sourceEntity: 'замкнутая полилиния',
+      confidence: 0.6, reason: 'слой назван границей (без уточнения)',
+    },
+  });
+  site.warnings.push({ code: 'parcel-doubtful', message: 'контур занимает 0.2% площади чертежа' });
+  const wrongId = site.parcel.id;
+
+  PS.save(SID, { points: GPZU_POINTS, meta: GPZU_META });
+  const res = PS.applyTo(SID, site);
+
+  assert.strictEqual(res.applied, true);
+  assert.ok(Math.abs(site.parcel.properties.areaM2 - 3700) <= 43, 'участком стал контур по ГПЗУ');
+  assert.strictEqual(site.parcel.provenance.extractionMethod, 'document-stated');
+  assert.strictEqual(site.parcel.properties.cadastralNumber, '47:14:0402001:7');
+  assert.ok(site.existingObjects.some((o) => o.id === wrongId && o.properties.demotedFromParcel),
+    'прежний контур сохранён в плане, а не выброшен');
+  assert.ok(!site.warnings.some((w) => w.code === 'parcel-doubtful'),
+    'предупреждение о ненадёжном контуре снято: граница больше не из чертежа');
+  assert.ok(site.warnings.some((w) => w.code === 'parcel-from-document'),
+    'откуда взялась граница — сказано вслух');
+
+  assert.strictEqual(PS.remove(SID), true);
+});
+
+test('границы ЗУ из документа: правка человека сильнее документа', () => {
+  const PS = require('../server/services/geometry/parcel-source');
+  assert.strictEqual(typeof PS.drawingParcelIsDoubtful, 'function');
+  const G = require('../server/services/geometry/site-geometry');
+  const site = G.createSiteGeometry();
+  assert.strictEqual(PS.drawingParcelIsDoubtful(site), true, 'участка нет — документ нужен');
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [60, 0], [60, 60], [0, 60]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'a.dwg', sourceLayer: 'Границы ЗУ',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.85,
+    },
+  });
+  assert.strictEqual(PS.drawingParcelIsDoubtful(site), false, 'уверенно распознанный контур документа не требует');
+});
+
+/* ================= «посадки нет» → что именно сделать ================= */
+
+test('посадка: отказ несёт посчитанные мероприятия, а не три глагола без чисел', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+  const P = require('../server/services/geometry/placement-engine');
+
+  // прямоугольный участок 100 × 40 = 4000 м² и ЛЭП вдоль длинной стороны
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 40], [0, 40]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: 'Границы ЗУ',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.85,
+    },
+  });
+  site.utilities.push(G.makeObject({
+    type: 'utility', points: [[0, 34], [100, 34]], closed: false,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: 'ЛЭП 10 кВ',
+      sourceEntity: 'полилиния', confidence: 0.8,
+    },
+  }));
+  const rules = [
+    { kind: 'protectionZone', operation: 'bufferOutward', targetSelector: 'utility', targetHint: 'ЛЭП',
+      value: 10, unit: 'м', basis: 'ПП РФ № 160, п. 8', sourceDocument: 'НТД', confidence: 0.9 },
+  ].map((r, i) => RR.normalizeRule(r, i).rule).filter(Boolean);
+  const built = RE.build(site, rules);
+  site.restrictions = built.restrictions;
+  site.buildable = built.buildable;
+
+  // двухэтажное здание с пятном 2600 м²: свободного места меньше
+  const res = P.generate(site, site.buildable, { areaM2: 2600, floors: 2, allowReshape: true, allowRotate: true });
+  assert.strictEqual(res.candidates.length, 0);
+  assert.ok(res.relief, 'отказ обязан нести разбор мероприятий');
+
+  const kinds = res.relief.measures.map((m) => m.kind);
+  assert.ok(kinds.includes('floors'), 'этажность обязана быть посчитана, а не предложена словом');
+  assert.ok(kinds.includes('restriction'), 'снятие ограничения обязано быть в списке');
+
+  const floors = res.relief.measures.find((m) => m.kind === 'floors');
+  assert.ok(floors.to > floors.from, 'этажей должно стать больше');
+  // общая площадь сохраняется: 2600 × 2 этажа = 5200 м², их и раскладываем
+  assert.strictEqual(floors.totalM2, 5200);
+  assert.ok(Math.abs(floors.footprintM2 - 5200 / floors.to) < 0.02, 'пятно = общая площадь ÷ новую этажность');
+  assert.ok(floors.footprintM2 <= res.relief.availableM2, 'предложенное пятно обязано помещаться');
+
+  const zone = res.relief.measures.find((m) => m.kind === 'restriction');
+  assert.ok(zone.gainM2 > 0, 'сказано, сколько метров вернёт снятие зоны');
+  assert.strictEqual(zone.afterM2, Math.round((res.relief.availableM2 + zone.gainM2) * 100) / 100);
+  assert.match(zone.text, /выносом сети/, 'сказано, ЧЕМ снимается охранная зона, а не только что её можно снять');
+
+  // текст для человека собирается из тех же чисел
+  assert.match(res.reason, /Что можно сделать/);
+  assert.match(res.reason, new RegExp(String(floors.to)));
+});
+
+test('посадка: снятие зоны оценивается по приросту территории, а не по её собственной площади', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const relief = require('../server/services/geometry/placement-relief');
+
+  const parcel = { type: 'polygon', closed: true, points: [[0, 0], [100, 0], [100, 100], [0, 100]] };
+  const mk = (pts, kind, id) => ({
+    id, type: 'restriction',
+    geometry: { type: 'polygon', closed: true, points: pts },
+    properties: { kind, valueM: 10, targets: [{ id: 'u1', layer: 'ЛЭП 10 кВ' }] },
+    provenance: { basis: 'ПП РФ № 160' },
+  });
+  // большая зона и маленькая ЦЕЛИКОМ ВНУТРИ неё: снятие маленькой не даёт ничего
+  const big = mk([[0, 0], [60, 0], [60, 100], [0, 100]], 'protectionZone', 'z-big');
+  const inner = mk([[10, 10], [30, 10], [30, 30], [10, 30]], 'fireBreak', 'z-inner');
+
+  const gains = relief.gainsByZone(parcel, [big, inner]);
+  const byId = Object.fromEntries(gains.map((g) => [g.zoneId, g]));
+  assert.ok(byId['z-big'], 'внешняя зона освобождает территорию');
+  // 60 × 100 = 6000 м² собственной площади, но 20 × 20 = 400 м² внутри неё
+  // по-прежнему заняты противопожарным разрывом. Освободится 5600, и обещать
+  // человеку 6000 нельзя: он планирует посадку по этому числу.
+  assert.ok(Math.abs(byId['z-big'].gainM2 - 5600) < 1,
+    `прирост обязан быть 5600 м², а не 6000 м² собственной площади зоны; получено ${byId['z-big'].gainM2}`);
+  assert.strictEqual(byId['z-inner'], undefined,
+    'зона, спрятанная внутри другой, при снятии не даёт ни метра — обещать её площадь нельзя');
+});
+
+test('ограничения: от объекта под снос разрывы не считаются — решение доходит до геометрии', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+
+  const mkSite = (relocation) => {
+    const site = G.createSiteGeometry();
+    site.parcel = G.makeObject({
+      type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: 'Границы ЗУ',
+        sourceEntity: 'замкнутая полилиния', confidence: 0.85,
+      },
+    });
+    const shed = G.makeObject({
+      type: 'building', points: [[40, 40], [60, 40], [60, 60], [40, 60]], closed: true,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: '03_Здания и строения',
+        sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+      },
+    });
+    if (relocation) shed.properties = { ...shed.properties, relocation };
+    site.buildings.push(shed);
+    return site;
+  };
+  const rules = [{
+    kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building', targetHint: '',
+    value: 12, unit: 'м', basis: 'СП 4.13130, табл. 3', sourceDocument: 'НТД',
+    sourceClause: 'табл. 3', quote: '12 м', confidence: 0.9,
+  }].map((r, i) => RR.normalizeRule(r, i).rule).filter(Boolean);
+
+  const kept = RE.build(mkSite('keep'), rules);
+  assert.strictEqual(kept.restrictions.length, 1, 'сохраняемое здание даёт противопожарный разрыв');
+
+  const gone = RE.build(mkSite('demolish'), rules);
+  assert.strictEqual(gone.restrictions.length, 0,
+    'от здания, которого не будет, разрыв не нормируется — иначе снос не освобождает место');
+  assert.ok(gone.buildable.areaM2 > kept.buildable.areaM2,
+    `снос обязан увеличить допустимую территорию: было ${kept.buildable.areaM2}, стало ${gone.buildable.areaM2}`);
+  assert.ok(gone.warnings.some((w) => w.code === 'objects-excluded'),
+    'исключение объектов проговаривается вслух — иначе пропавший разрыв необъясним');
+
+  // «не решено» — не повод считать объект снесённым
+  const undecided = RE.build(mkSite('undecided'), rules);
+  assert.strictEqual(undecided.restrictions.length, 1, 'пока решения нет, объект считается существующим');
+});
+
+test('посадка: нереальная этажность не предлагается как мероприятие', () => {
+  const relief = require('../server/services/geometry/placement-relief');
+  // 1790 м² в два этажа при 250 м² свободных требуют пятнадцати этажей —
+  // для производственного корпуса это не решение, и предлагать его нечестно
+  const absurd = relief.floorsMeasure(1790, 2, 250);
+  assert.strictEqual(absurd.unreasonable, true);
+  assert.match(absurd.text, /Одной этажностью задача не решается/);
+  assert.ok(!/Поднять этажность/.test(absurd.text), 'совета «поднять до 15 этажей» быть не должно');
+
+  // а три этажа вместо двух — нормальное мероприятие
+  const sane = relief.floorsMeasure(1790, 2, 1739);
+  assert.strictEqual(sane.to, 3);
+  assert.ok(!sane.unreasonable);
+  assert.match(sane.text, /Поднять этажность с 2 до 3/);
 });

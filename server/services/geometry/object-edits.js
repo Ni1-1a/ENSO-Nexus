@@ -29,8 +29,26 @@ const USER_TYPES = layers.ids();
 /** Куда в плане попадает объект назначенного типа. parcel — отдельное поле, не массив. */
 const TYPE_LAYER = Object.fromEntries(USER_TYPES.map((id) => [id, layers.bucketOf(id)]));
 
-/** Решение о переносе: пока не спрошено — «не решено», молча «оставить» ставить нельзя. */
-const RELOCATIONS = ['undecided', 'keep', 'move'];
+/**
+ * Что человек решил делать с существующим объектом. Пока не спрошено — «не
+ * решено»: молча «оставить» ставить нельзя, от этого зависит пятно застройки.
+ *
+ * `demolish` (снос) добавлен потому, что без него шаг «Существующие объекты»
+ * методики выразить было нечем. Человек, разметивший здание под демонтаж,
+ * выбирал «переносится» и дописывал «демонтаж» в комментарий — то есть решение
+ * оставалось словами в свободном поле и до расчётов не доходило. Снесённое
+ * здание не даёт противопожарных разрывов и освобождает место под пятно;
+ * перенесённое — тоже, но требует мероприятия. Это разные вещи.
+ */
+const RELOCATIONS = ['undecided', 'keep', 'move', 'demolish'];
+
+/** Подписи решений — одни на сервер, интерфейс и чертёж. */
+const RELOCATION_LABELS = {
+  undecided: 'не решено',
+  keep: 'сохраняется',
+  move: 'переносится',
+  demolish: 'сносится (демонтаж)',
+};
 
 const LAYER_ARRAYS = ['buildings', 'redLines', 'utilities', 'existingObjects'];
 
@@ -38,11 +56,59 @@ const MAX_LABEL = 200;
 const MAX_COMMENT = 1000;
 
 /**
+ * Отпечаток геометрии: то, что отличает ОДИН контур от соседнего и при этом
+ * не меняется при повторном разборе того же файла.
+ *
+ * Берутся габариты (до сантиметра), число вершин и длина обхода. Разбор одного
+ * и того же DXF даёт те же координаты до последнего знака, поэтому отпечаток
+ * устойчив; совпасть сразу по габаритам, числу вершин и периметру два разных
+ * контура на одной площадке практически не могут, а если совпадут — они
+ * геометрически неразличимы, и правка к ним и должна относиться одинаково.
+ */
+function geometryFingerprint(obj) {
+  const g = obj && obj.geometry;
+  if (!g) return '';
+  const pts = [];
+  const ring = (r) => { for (const p of r || []) if (Array.isArray(p)) pts.push(p); };
+  const poly = (p) => { ring(p.points); for (const h of p.holes || []) ring(h); };
+  if (g.type === 'multipolygon') for (const p of g.polygons || []) poly(p);
+  else if (g.points) poly(g);
+  if (!pts.length) return '';
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const q = (n) => Math.round(n * 100) / 100; // сантиметр — предел точности съёмки
+  const len = G.pathLength(pts, g.type !== 'polyline');
+  return [q(Math.min(...xs)), q(Math.min(...ys)), q(Math.max(...xs)), q(Math.max(...ys)),
+    pts.length, q(len)].join(',');
+}
+
+/**
  * Устойчивый ключ объекта. Пока чертёж тот же, ключ тот же — и правка находит
- * свой объект после переразбора. Запасной вариант (без сущности) слабее, но
- * лучше, чем id: имя слоя и тип переживают перенумерацию.
+ * свой объект после переразбора.
+ *
+ * В ключ ОБЯЗАН входить отпечаток геометрии. Раньше он состоял из файла, слоя
+ * и вида сущности DXF — и все 33 здания со слоя «03_Здания и строения»,
+ * снятые замкнутой полилинией, получали ОДИН ключ на всех. Человек помечал
+ * одно здание сносимым, а помеченными оказывались все: правка одного объекта
+ * расползалась по чертежу. Файл и слой остаются в ключе, чтобы он оставался
+ * читаемым в выгрузке для дообучения.
  */
 function keyOf(obj, layer) {
+  const p = (obj && obj.provenance) || {};
+  const fp = geometryFingerprint(obj);
+  const parts = [p.sourceFileId || p.sourceFile || '', p.sourceLayer || '', p.sourceEntity || ''];
+  if (fp) return `g:${parts.join('|')}#${fp}`;
+  if (parts.some((x) => x)) return `e:${parts.join('|')}`;
+  return `o:${layer}|${(obj && obj.id) || ''}`;
+}
+
+/**
+ * Ключ прежнего образца — без отпечатка геометрии. Нужен ровно затем, чтобы
+ * правки, сохранённые до версии 3, не пропали: они накладываются, но только
+ * если такой ключ в плане ровно у одного объекта. Совпало у нескольких —
+ * применять нельзя, это и есть та самая расползающаяся правка.
+ */
+function legacyKeyOf(obj, layer) {
   const p = (obj && obj.provenance) || {};
   const parts = [p.sourceFileId || p.sourceFile || '', p.sourceLayer || '', p.sourceEntity || ''];
   if (parts.some((x) => x)) return `e:${parts.join('|')}`;
@@ -80,7 +146,7 @@ function normalizePatch(raw = {}) {
   if (raw.label !== undefined) patch.label = String(raw.label).slice(0, MAX_LABEL);
   if (raw.comment !== undefined) patch.comment = String(raw.comment).slice(0, MAX_COMMENT);
   if (raw.relocation !== undefined && raw.relocation !== '') {
-    if (!RELOCATIONS.includes(raw.relocation)) throw new Error(`Недопустимое решение о переносе: ${raw.relocation}`);
+    if (!RELOCATIONS.includes(raw.relocation)) throw new Error(`Недопустимое решение по объекту: ${raw.relocation}`);
     patch.relocation = raw.relocation;
   }
   if (!Object.keys(patch).length) throw new Error('Правка пустая: нечего сохранять');
@@ -229,8 +295,28 @@ function applyTo(plan, edits) {
   let applied = 0;
   let parcelReplaced = false;
 
+  /*
+   * Правки прежнего образца (без отпечатка геометрии) применяются только там,
+   * где их ключ однозначен. Слой «03_Здания и строения» с замкнутой полилинией
+   * даёт один и тот же старый ключ у всех тридцати трёх зданий — и такая правка
+   * не применяется ни к одному из них: пусть человек поставит её заново тому
+   * объекту, который имел в виду, чем платформа молча пометит весь чертёж.
+   */
+  const legacyCount = new Map();
   for (const { obj, layer } of iterate(plan)) {
-    const edit = byKey.get(keyOf(obj, layer));
+    const lk = legacyKeyOf(obj, layer);
+    legacyCount.set(lk, (legacyCount.get(lk) || 0) + 1);
+  }
+  let legacySkipped = 0;
+
+  for (const { obj, layer } of iterate(plan)) {
+    let edit = byKey.get(keyOf(obj, layer));
+    if (!edit) {
+      const lk = legacyKeyOf(obj, layer);
+      const legacy = byKey.get(lk);
+      if (legacy && legacyCount.get(lk) === 1) edit = legacy;
+      else if (legacy) legacySkipped++;
+    }
     if (!edit) continue;
     const patch = edit.patch || {};
     applied++;
@@ -265,6 +351,16 @@ function applyTo(plan, edits) {
     }
   }
 
+  if (legacySkipped) {
+    plan.warnings = (plan.warnings || []);
+    plan.warnings.push({
+      code: 'edits-legacy-ambiguous',
+      message: `Правки свойств, сохранённые прежней версией, не применены к ${legacySkipped} объект(ам): ` +
+        'их ключ не различал однотипные контуры одного слоя, и правка одного объекта расползалась на все. ' +
+        'Откройте нужный объект на плане и сохраните правку заново — теперь она относится только к нему.',
+    });
+  }
+
   if (parcelReplaced) {
     plan.warnings = (plan.warnings || []).filter((w) => w.code !== 'parcel-guess');
     plan.warnings.push({
@@ -273,7 +369,7 @@ function applyTo(plan, edits) {
         'Площади, зоны ограничений и посадка считаются по нему.',
     });
   }
-  return { applied, parcelReplaced };
+  return { applied, parcelReplaced, legacySkipped };
 }
 
 /**
@@ -295,6 +391,7 @@ function exportJsonl(sessionId) {
 }
 
 module.exports = {
-  list, save, remove, applyTo, exportJsonl, keyOf, findObject, parserSnapshot, normalizePatch,
-  USER_TYPES, RELOCATIONS, TYPE_LAYER,
+  list, save, remove, applyTo, exportJsonl, keyOf, legacyKeyOf, geometryFingerprint,
+  findObject, parserSnapshot, normalizePatch,
+  USER_TYPES, RELOCATIONS, RELOCATION_LABELS, TYPE_LAYER,
 };

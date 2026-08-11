@@ -1188,8 +1188,18 @@ function renderProgress() {
   card.hidden = false;
   $('progress-title').textContent = v.jobStatus === 'queued' ? 'Задача в очереди' : 'Выполняется анализ';
   $('progress-title').classList.add('live');
+  /*
+   * В шапке прогресса стоит модель, которая работает ПРЯМО СЕЙЧАС, и рядом —
+   * чем она занята. Раньше здесь был только идентификатор, и во время
+   * распознавания сканов он менялся: выбранная модель не видит изображения,
+   * страницы уходят локальной vision-модели, а выглядело это как «после запуска
+   * подменили модель». Модель не подменялась — менялась работа.
+   */
+  const ROLE_LABELS = { ocr: 'распознаёт сканы', analysis: 'ведёт разбор' };
   $('progress-model').textContent = p && p.model
-    ? `${PROVIDER_LABELS[p.provider] || p.provider || 'Модель'} · ${p.model}` : '';
+    ? `${PROVIDER_LABELS[p.provider] || p.provider || 'Модель'} · ${p.model}`
+      + (ROLE_LABELS[p.role] ? ` — ${ROLE_LABELS[p.role]}` : '')
+    : '';
   $('progress-label').textContent = (p && p.label) || 'Ожидание начала обработки…';
 
   const bar = $('progress-bar');
@@ -1389,6 +1399,32 @@ function setModelSelect(providerId, model) {
 function updateModelNote() {
   updateModelNoteBase();          // у базовой много ранних return — возможности дописываем поверх
   appendCapabilityLine($('model-note'), currentPick().provider);
+  renderModelAbout();
+}
+
+/**
+ * Описание выбранной модели: что это и для чего её брать.
+ *
+ * До этого пикер показывал только идентификатор и тариф — «meta/llama-3.3-70b»,
+ * «qwen/qwen3-vl-8b». По такому списку выбрать нельзя: не видно ни того, что
+ * модель умеет, ни того, годится ли она для комплекта ИД. Тексты приходят
+ * с сервера из реестра (services/ai/registry.js), а не пишутся в разметке.
+ */
+function renderModelAbout() {
+  const box = $('model-about');
+  if (!box) return;
+  const { provider, model } = currentPick();
+  const p = provider ? providerInfo(provider) : null;
+  const about = p && (p.modelsInfo || []).find((m) => m.id === (model || (p.models || [])[0]))?.about;
+  if (!about) { box.hidden = true; box.innerHTML = ''; return; }
+  const list = (items, cls) => (items && items.length
+    ? `<ul class="ma-list ${cls}">${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : '');
+  box.hidden = false;
+  box.innerHTML =
+    `<p class="ma-head"><span class="ma-tier">${esc(about.tier)}</span> ${esc(about.summary)}</p>`
+    + list(about.strengths, 'ma-plus')
+    + list(about.limits, 'ma-minus')
+    + (about.bestFor ? `<p class="ma-best"><strong>Когда выбирать:</strong> ${esc(about.bestFor)}</p>` : '');
 }
 
 function updateModelNoteBase() {
@@ -1425,12 +1461,18 @@ function updateModelNoteBase() {
     ? providerInfo('lmstudio')?.modelsInfo?.find((m) => m.id === model)
     : null;
   if (info) {
-    const parts = [`контекст ${(info.context || 0).toLocaleString('ru-RU')} токенов`];
+    // контекст показываем ФАКТИЧЕСКИЙ — с каким модель загрузится на этой машине.
+    // Если он урезан против желаемого, об этом сказано прямо: иначе подпись
+    // обещает 32 тыс. токенов там, где будет 8 тыс., и «документ не поместился»
+    // выглядит необъяснимым.
+    const parts = [`контекст ${(info.context || 0).toLocaleString('ru-RU')} токенов`
+      + (info.wantContext && info.wantContext > info.context ? ` (вместо ${info.wantContext.toLocaleString('ru-RU')} — не хватает памяти)` : '')];
     if (info.sizeGb) parts.push(`${info.sizeGb} ГБ`);
     parts.push(info.loaded ? 'сейчас загружена в память' : 'загрузится при первом запросе (1–2 мин)');
     if (info.note) parts.push(info.note);
     note.hidden = false;
     note.textContent = parts.join(' · ');
+    note.classList.toggle('hint-warn', !!info.heavy);
   } else {
     note.hidden = true;
     note.textContent = '';
@@ -1728,13 +1770,16 @@ const SETTINGS_INFO = {
       return `
         <h4>Что это</h4>
         <p>Список шагов, по которым модель разбирает проект: что проверить, в каком порядке
-           и на какой норматив опереться. Стандартный порядок — методика посадки здания
-           (${wp && wp.isDefault ? `${wp.steps.length} шагов` : '14 шагов'}): от классификации
-           документов и границ участка до пожарных проездов и оформления чертежа.</p>
+           и на какой норматив опереться. От классификации документов и границ участка
+           до пожарных проездов и оформления чертежа.</p>
+        <p><strong>Платформа работает ровно по этому списку — другого у неё нет.</strong>
+           Он целиком уходит модели вместе с документами, и разделы отчёта собираются
+           по его шагам. Если здесь четырнадцать шагов, то и разбор идёт по четырнадцати:
+           скрытого порядка «где-то внутри» не существует.</p>
         <ul>
           <li class="${own ? 'im-no' : 'im-ok'}">${own
             ? `Сейчас действует свой файл: «${esc(wp.name)}» — шагов: ${wp.steps.length}`
-            : 'Сейчас действует стандартный порядок'}</li>
+            : `Сейчас действует стандартный порядок — шагов: ${wp ? wp.steps.length : '…'}`}</li>
         </ul>
         <h4>Что скачивается</h4>
         <p>Кнопка со стрелкой вниз отдаёт <strong>действующий</strong> порядок файлом
@@ -1770,7 +1815,7 @@ const SETTINGS_INFO = {
           <li>Нумерация в колонке «№» своя, любая (0, 1, 1.1) — она только подпись.</li>
         </ul>
         <h4>На что это влияет</h4>
-        <p>Свой порядок <strong>заменяет стандартную методику целиком</strong>: модель ведёт анализ
+        <p>Свой порядок <strong>заменяет стандартный целиком</strong>: модель ведёт разбор
            строго по вашим шагам и по ним же собирает разделы отчёта. Не меняются при этом
            ни формат ответа, ни геометрический движок — координаты зон, площади и пятна застройки
            считает код, а не список шагов.</p>

@@ -1360,3 +1360,30 @@ test('схемы: необязательное выражается допуск
   });
   assert.ok(res.ok, `ответ с null не прошёл проверку: ${res.error}`);
 });
+
+/* ================= порядок работы: один список на всех ================= */
+
+test('порядок работы: список из настроек уходит модели, а не свой перечень в промпте', () => {
+  const workplan = require('../server/services/workplan');
+  const fs = require('fs');
+  const path = require('path');
+
+  const wp = workplan.forSession(null);
+  assert.strictEqual(wp.isDefault, true);
+
+  // Промпт обязан ссылаться на <workplan>, а не нести собственный перечень шагов.
+  // Прежде их было два: в настройках показывалось «стандартные (14)», в системном
+  // промпте стояли двенадцать пунктов — и на вопрос «по какой методике работает
+  // платформа» ответа не было ни у кого.
+  const prompt = fs.readFileSync(path.join(__dirname, '..', 'prompts', 'system-prompt.md'), 'utf8');
+  assert.ok(prompt.includes('<workplan>'), 'промпт обязан брать шаги из блока workplan');
+  assert.ok(!/методик[еа]\s*«?12 шаг/i.test(prompt), 'зашитого перечня «12 шагов» в промпте быть не должно');
+  assert.ok(!/^\s*12\.\s/m.test(prompt.split('# Порядок анализа файлов')[0]),
+    'нумерованного списка шагов в шапке промпта быть не должно');
+
+  // Блок уходит и для стандартного порядка тоже — иначе модель работает вслепую
+  const text = workplan.promptText(wp);
+  assert.match(text, new RegExp(`шагов: ${wp.steps.length}`), 'в блоке названо фактическое число шагов');
+  assert.ok(text.includes(wp.steps[0].title), 'шаги перечислены поимённо');
+  assert.ok(text.includes(wp.steps[wp.steps.length - 1].title));
+});
