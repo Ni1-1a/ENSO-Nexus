@@ -778,3 +778,23 @@ test('схемы: союз типов переписывается в anyOf — 
   assert.deepStrictEqual(out.required, ['a', 'b'], 'строгий режим требует все ключи в required');
   assert.deepStrictEqual(src.properties.a, { type: ['integer', 'null'] }, 'исходная схема не портится');
 });
+
+test('описания моделей: класс берётся из размера в имени, а не из списка исключений', () => {
+  const registry = require('../server/services/ai/registry');
+  const tier = (m) => registry.describe('lmstudio', m).tier;
+
+  // Перечислять размеры поштучно нельзя: gemma-4-31b мимо списка «30b|32b|35b»
+  // проходила и получала «небольшая модель» при 27 ГБ весов.
+  assert.match(tier('google/gemma-4-31b'), /рабочая/);
+  assert.match(tier('qwen/qwen3.5-35b-a3b'), /рабочая/);
+  assert.match(tier('qwen/qwen3-coder-30b'), /рабочая/);
+  assert.match(tier('meta/llama-3.3-70b'), /тяжёлая/, '70 млрд параметров — не рабочий средний класс');
+  assert.match(tier('meta-llama-3.1-8b-instruct'), /лёгкая/);
+  assert.match(tier('qwen/qwen3-vl-8b'), /зрение/, 'зрение важнее размера: это роль модели');
+
+  // у описания есть всё, на что человек опирается при выборе
+  const about = registry.describe('lmstudio', 'qwen/qwen3-coder-30b');
+  assert.ok(about.summary && about.bestFor);
+  assert.ok(about.strengths.length && about.limits.length, 'и сильные стороны, и цена — иначе это реклама');
+  assert.strictEqual(registry.describe('невиданный-провайдер', 'x'), null, 'выдумывать описание нечестно');
+});

@@ -67,6 +67,10 @@ targetSelector "unknown", unit "м".`;
  */
 const HINT_PATTERNS = [
   { re: /охранн\w*\s+зон\w*/gi, label: 'охранная зона' },
+  // ключи фактов приходят латиницей («plot.area_ohrannaya_lip») — по-русски
+  // такое не ловится, а именно в них на боевом прогоне и жили все семь зон
+  { re: /ohrann\w*/gi, label: 'охранная зона (в фактах)' },
+  { re: /zone_flood|подтоплен/gi, label: 'зона подтопления' },
   { re: /санитарн\w*[- ]защитн\w*\s+зон\w*|\bсзз\b/gi, label: 'санитарно-защитная зона' },
   { re: /противопожарн\w*\s+(разрыв|расстояни)\w*/gi, label: 'противопожарный разрыв' },
   { re: /минимальн\w*\s+отступ\w*|отступ\w*\s+от\s+границ/gi, label: 'отступ от границ' },
@@ -140,6 +144,30 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
 
   const messages = [];
   messages.push({ role: 'user', content: `<site_inventory>\n${inventory(site)}\n</site_inventory>` });
+
+  /*
+   * Факты анализа уходят в извлечение ограничений.
+   *
+   * Живой прогон на Горбунках: анализ нашёл `plot.area_ohrannaya_lip = 1058`,
+   * `..._teploset = 300`, `..._kanalizaciya = 479` и ещё четыре — то есть
+   * охранные зоны в документах названы прямо. А извлечение ограничений,
+   * работавшее с теми же документами, вернуло НОЛЬ правил, и допустимая
+   * территория вышла в 100 % участка. Модель уже сделала половину работы;
+   * не показать ей собственную находку — значит заставить искать заново по
+   * конспекту, где строчка про зону могла и не уцелеть.
+   */
+  const factRows = db.prepare('SELECT key, value, source FROM facts WHERE session_id = ? ORDER BY key').all(sessionId);
+  if (factRows.length) {
+    const lines = factRows.map((f) => `- ${f.key} = ${f.value}${f.source ? ` [${f.source}]` : ''}`);
+    messages.push({
+      role: 'user',
+      content: '<extracted_facts>\nФакты, уже извлечённые из этих документов на предыдущем шаге. '
+        + 'Если среди них есть охранная зона, разрыв, отступ или ЗОУИТ — по КАЖДОМУ обязано быть правило. '
+        + 'Величины бери из документа или из базы знаний, а не из этих чисел: здесь площади зон, '
+        + 'а правилу нужен отступ в метрах.\n' + lines.join('\n') + '\n</extracted_facts>',
+    });
+  }
+
   if (manifest.length) {
     messages.push({ role: 'user', content: `<uploaded_files>\n${manifest.join('\n')}\n</uploaded_files>` });
   }
@@ -193,7 +221,12 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   // Пусто, хотя в документах явно есть формулировки ограничений — переспрашиваем
   // один раз, прямо называя найденное. Мелкие модели часто «сдаются» на первом
   // проходе, но по конкретной наводке отвечают.
-  const docText = blocks.map((b) => b.text || '').join('\n');
+  //
+  // Наводки ищутся и в ФАКТАХ тоже: на Горбунках конспект документов до
+  // извлечения дошёл без слова «охранная», а в фактах их было семь штук —
+  // и молчание модели выглядело законным «ограничений нет».
+  const docText = blocks.map((b) => b.text || '').join('\n')
+    + '\n' + factRows.map((f) => `${f.key} ${f.value}`).join('\n');
   const hints = hintsInDocuments(docText);
   if ((!parsed.rules || !parsed.rules.length) && hints.length) {
     progress.set(sessionId, { phase: 'generating', label: 'Ограничений не найдено — уточняющий повторный запрос…' });

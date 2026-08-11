@@ -1201,3 +1201,33 @@ test('посадка: нереальная этажность не предла�
   assert.ok(!sane.unreasonable);
   assert.match(sane.text, /Поднять этажность с 2 до 3/);
 });
+
+test('ограничения: зона на весь участок не обнуляет допустимую территорию молча', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: 'Границы ЗУ',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.85,
+    },
+  });
+  // СЗЗ 500 м от границы участка накрывает его целиком — так на Горбунках и вышло
+  // (plot.zone_sanitary_protection = 3700 при участке 3700 м²)
+  const rules = [{
+    kind: 'sanitaryZone', operation: 'bufferOutward', targetSelector: 'parcelBoundary', targetHint: '',
+    value: 500, unit: 'м', basis: 'СанПиН 2.2.1/2.1.1.1200-03', sourceDocument: 'ГПЗУ.pdf',
+    sourceClause: 'разд. 4', quote: 'СЗЗ', confidence: 0.9,
+  }].map((r, i) => RR.normalizeRule(r, i).rule).filter(Boolean);
+
+  const built = RE.build(site, rules);
+  assert.strictEqual(built.restrictions.length, 1, 'зона строится и остаётся на плане');
+  assert.strictEqual(built.restrictions[0].properties.wholeParcel, true, 'помечена как накрывающая участок');
+  assert.ok(built.buildable.areaM2 > 9000,
+    `территория не должна обнуляться: получено ${built.buildable.areaM2} м² из 10000`);
+  assert.ok(built.warnings.some((w) => w.code === 'zone-covers-parcel'),
+    'решение проговаривается вслух — молча вычесть или молча не вычесть одинаково недопустимо');
+});

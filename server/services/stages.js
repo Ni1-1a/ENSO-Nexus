@@ -154,6 +154,40 @@ function toNumber(raw) {
 }
 
 /**
+ * Площадь участка — для проверки правдоподобия пятна застройки.
+ *
+ * Берётся из ДОКУМЕНТОВ, а не из разбора чертежа, и в этом весь смысл: в таблице
+ * `plans` лежит чистый разбор, а на Горбунках он даёт 72,39 м² вместо 3700 —
+ * проверять правдоподобие по такому числу значило бы объявить неправдоподобным
+ * любое здание. Порядок источников: заявленная площадь из фактов, затем допуск
+ * из таблицы поворотных точек, и только потом разобранный контур.
+ *
+ * 0 — сверять не с чем (документы ещё не разобраны); проверка тогда молчит.
+ */
+function parcelAreaOf(sessionId, facts = null) {
+  const rows = facts || db.prepare('SELECT key, value FROM facts WHERE session_id = ?').all(sessionId);
+  for (const f of rows) {
+    const key = String(f.key).toLowerCase();
+    const hay = `${key} ${String(f.value).toLowerCase()}`;
+    // «площадь застройки» — про здание, а не про участок: сюда её пускать нельзя
+    if (!/(plot|parcel|участок|зу)/.test(key) || !/(area|площад)/.test(key)) continue;
+    if (/застро|building|охранн|ohrann|zone|зона/.test(hay)) continue;
+    const n = toNumber(f.value);
+    if (n) return n;
+  }
+  try {
+    const src = require('./geometry/parcel-source').get(sessionId);
+    if (src && src.meta && Number(src.meta.declaredAreaM2) > 0) return Number(src.meta.declaredAreaM2);
+  } catch { /* сервис может быть недоступен в тестах */ }
+  try {
+    const row = db.prepare('SELECT geometry FROM plans WHERE session_id = ? ORDER BY version DESC LIMIT 1').get(sessionId);
+    if (!row) return 0;
+    const site = JSON.parse(row.geometry);
+    return (site && site.parcel && Number(site.parcel.properties.areaM2)) || 0;
+  } catch { return 0; }
+}
+
+/**
  * Требования к зданию, вытащенные из фактов анализа.
  *
  * Требования НЕ выдумываются: если площадь застройки в исходных данных не
@@ -206,8 +240,40 @@ function requirementsFromFacts(sessionId) {
     toNumber,
   );
 
+  /*
+   * Неоднозначный факт про площадь здания проверяется НА ПРАВДОПОДОБИЕ.
+   *
+   * Модель выдала `object.area_m2 = 3580` при `object.floors = 2` — это общая
+   * площадь по ТЗ, но ключ не сказал об этом ни слова, и прежнее правило брало
+   * число пятном. На участке 3700 м² это 97 % застройки: движок честно отвечал
+   * «ни одно положение не уместилось», хотя пятно нужно вдвое меньше. Прошлая
+   * починка ловила только явное `total_area_m2` — стоило модели назвать ключ
+   * иначе, и грабли возвращались.
+   *
+   * Проверка геометрическая, а не по имени ключа: пятно, занимающее почти весь
+   * участок, пятном не бывает. Плотнее этой доли застройки не бывает даже на
+   * промплощадках без отступов, а по ГПЗУ здесь ещё и отступ 3 м по периметру.
+   */
+  const MAX_PLAUSIBLE_COVERAGE = 0.6;
+  const parcelM2 = parcelAreaOf(sessionId, facts);
+  const implausible = (v) => parcelM2 > 0 && v > parcelM2 * MAX_PLAUSIBLE_COVERAGE;
+
   if (footprint) {
     found.areaM2 = footprint;
+    // даже явная «площадь застройки» может оказаться опиской — говорим вслух
+    if (implausible(footprint)) {
+      found.warning = `Площадь застройки ${footprint} м² — это ${Math.round((footprint / parcelM2) * 100)} % участка `
+        + `(${Math.round(parcelM2)} м²). Проверьте: обычно столько занимает ОБЩАЯ площадь здания, а не пятно.`;
+      found.sources.push(found.warning);
+    }
+  } else if (genericArea && implausible(genericArea) && found.floors > 1) {
+    // почти весь участок при этажности больше одного — это общая площадь
+    found.areaM2 = Math.round((genericArea / found.floors) * 100) / 100;
+    found.assumption = `Площадь ${genericArea} м² принята за ОБЩУЮ, а не за пятно застройки: пятном она заняла бы `
+      + `${Math.round((genericArea / parcelM2) * 100)} % участка (${Math.round(parcelM2)} м²), чего не бывает. `
+      + `Пятно = ${genericArea} м² ÷ ${found.floors} эт. = ${found.areaM2} м². `
+      + 'Если площадь застройки другая, задайте её прямо.';
+    found.sources.push(found.assumption);
   } else if (genericArea) {
     found.areaM2 = genericArea;
   } else if (totalArea && found.floors > 0) {

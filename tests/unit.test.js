@@ -1284,10 +1284,49 @@ test('этапы: требования к зданию берутся из фа�
   addFact('building.area_m2', '3 580 м²');
   addFact('building.floors', '2 этажа');
 
+  /*
+   * 3580 м² на участке 3700 м² — это 97 % застройки, то есть не пятно, а общая
+   * площадь; ключ `building.area_m2` об этом не сказал ни слова. Живой прогон
+   * 11.08.2026 на этом и встал: движок честно отвечал «ни одно положение не
+   * уместилось», хотя пятно нужно вдвое меньше. Проверка геометрическая —
+   * от имени ключа она не зависит, поэтому не ломается от новой формулировки.
+   */
   const req = stages.requirementsFromFacts(id);
-  assert.strictEqual(req.areaM2, 3580, 'площадь застройки берётся из факта о здании, а не об участке');
+  assert.strictEqual(req.areaM2, 1790, 'неправдоподобное пятно раскладывается по этажам');
   assert.strictEqual(req.floors, 2);
+  assert.match(req.assumption, /принята за ОБЩУЮ/, 'допущение проговаривается вслух, а не применяется молча');
   assert.ok(req.sources.length, 'источник требования обязан прослеживаться');
+});
+
+test('этапы: правдоподобное пятно остаётся пятном и по этажам не делится', () => {
+  const id = makeSession('stage-req-ok');
+  const addFact = (key, value) => stagesDb
+    .prepare('INSERT INTO facts (id, session_id, key, value, source, created_at) VALUES (?,?,?,?,?,?)')
+    .run(`${id}-${key}`, id, key, value, 'ТЗ', stagesNow());
+  addFact('plot.area_m2', '3700');
+  addFact('building.area_m2', '900 м²');   // 24 % участка — нормальная застройка
+  addFact('building.floors', '2 этажа');
+
+  const req = stages.requirementsFromFacts(id);
+  assert.strictEqual(req.areaM2, 900, 'делить нечего: столько здание и занимает');
+  assert.strictEqual(req.assumption, undefined, 'допущения нет — значит и говорить не о чем');
+});
+
+test('этапы: площадь участка для проверки берётся из документов, а не из разбора чертежа', () => {
+  const id = makeSession('stage-req-parcel');
+  const addFact = (key, value) => stagesDb
+    .prepare('INSERT INTO facts (id, session_id, key, value, source, created_at) VALUES (?,?,?,?,?,?)')
+    .run(`${id}-${key}`, id, key, value, 'ГПЗУ', stagesNow());
+  // площади охранных зон тоже начинаются с «plot.area» — за участок их принимать нельзя
+  addFact('plot.area_ohrannaya_lip', '1058');
+  addFact('plot.zone_sanitary_protection', '3700');
+  addFact('plot.area_m2', '3700');
+  addFact('building.area_m2', '3580');
+  addFact('building.floors', '2');
+
+  const req = stages.requirementsFromFacts(id);
+  assert.strictEqual(req.areaM2, 1790,
+    'сверка идёт с 3700 м² участка, а не с 1058 м² охранной зоны и не с 72 м² из чертежа');
 });
 
 test('этапы: сводка по зонам группирует их по типу с площадью', () => {

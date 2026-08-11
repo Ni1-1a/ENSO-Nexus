@@ -246,7 +246,47 @@ function computeBuildable(site, parcelJts, restrictions, warnings = []) {
     return null;
   }
 
-  const zones = restrictions.map((r) => jts.toJts(r.geometry));
+  /*
+   * Зона, накрывшая участок целиком, из вычитания ИСКЛЮЧАЕТСЯ.
+   *
+   * На Горбунках анализ извлёк `plot.zone_sanitary_protection = 3700` и
+   * `plot.zone_airport_pulkovo = 3700` — участок целиком лежит внутри СЗЗ и
+   * приаэродромной территории Пулкова. Это РЕЖИМ, а не запрет застройки:
+   * приаэродромная зона ограничивает высоту, СЗЗ запрещает жильё и детские
+   * учреждения, но не производственный корпус. Вычесть такую зону — значит
+   * получить ноль свободной территории и ответить «здание не помещается»
+   * там, где строить можно.
+   *
+   * Решение за человеком, поэтому зона не исчезает: она остаётся на плане и
+   * в перечне, но площадь не отнимает, а предупреждение говорит об этом прямо.
+   * Молча вычесть или молча не вычесть — одинаково недопустимо.
+   */
+  const WHOLE_PARCEL_SHARE = 0.98;
+  const covering = [];
+  const cutting = [];
+  for (const r of restrictions) {
+    const g = jts.toJts(r.geometry);
+    if (!g) continue;
+    const inter = jts.intersection(g, parcelJts);
+    const share = inter ? jts.area(inter) / parcelArea : 0;
+    if (share >= WHOLE_PARCEL_SHARE) {
+      r.properties.wholeParcel = true;
+      covering.push(r);
+    } else cutting.push(g);
+  }
+  if (covering.length) {
+    const names = covering.map((r) => RR.KIND_LABELS[r.properties.kind] || r.properties.kind);
+    warnings.push({
+      code: 'zone-covers-parcel',
+      message: `Зона «${names.join('», «')}» накрывает участок целиком. Из допустимой территории она НЕ вычтена: `
+        + 'зона на весь участок — это, как правило, режим (приаэродромная территория, СЗЗ, зона подтопления), '
+        + 'а не запрет застройки. Вычесть её значило бы ответить «места нет» там, где строить можно. '
+        + 'Проверьте по документу, что именно она запрещает: если застройку — участок под этот объект не годится, '
+        + 'и это отдельный вывод, а не результат расчёта.',
+    });
+  }
+
+  const zones = cutting;
   const forbidden = jts.union(zones);
   const free = forbidden ? jts.difference(parcelJts, forbidden) : parcelJts;
   if (!free) {
