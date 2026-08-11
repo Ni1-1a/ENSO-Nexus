@@ -22,9 +22,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "@google/genai": "^2.16.0",
     "adm-zip": "^0.6.0",
     "express": "^5.2.1",
+    "jsts": "^2.7.1",
     "multer": "^2.2.0",
-    "pdf-parse": "^1.1.4"
+    "pdf-parse": "^1.1.4",
+    "playwright": "^1.62.1"
   }
 }

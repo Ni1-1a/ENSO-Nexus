@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enso-nexus — страница не найдена</title>
+<!--
+  Страница 404 самой платформы (в отличие от cf-*.html, которые показывает
+  Cloudflare, когда до сервера не достучаться). Отдаётся из middleware/index.js
+  для обычных переходов браузера; запросы к /api/ по-прежнему получают JSON.
+  Стили инлайновые: страница обязана открываться и тогда, когда статика недоступна.
+-->
+<style>
+  :root {
+    --bg: #f3efe6; --panel: #fdfbf4; --text: #26211b; --text-2: #6f665a;
+    --text-3: #857b6e; --accent: #b95740; --stroke-soft: rgba(62,50,35,.09);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #201c17; --panel: #292420; --text: #eee7db; --text-2: #a89c8c;
+      --text-3: #9a8f80; --accent: #d0715a; --stroke-soft: rgba(235,220,195,.08);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh; display: grid; place-items: center; padding: 24px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text); background: var(--bg);
+    background-image:
+      radial-gradient(1100px 650px at 85% -10%, rgba(185,87,64,.05), transparent 60%),
+      radial-gradient(850px 550px at -10% 110%, rgba(74,107,138,.05), transparent 55%);
+    -webkit-font-smoothing: antialiased;
+  }
+  .sheet {
+    position: relative; width: min(460px, 100%); padding: 34px 32px 26px;
+    text-align: center; background: var(--panel);
+    border: 1px solid var(--stroke-soft); border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(70,55,35,.12), 0 16px 40px rgba(70,55,35,.16);
+  }
+  /* сигнатура платформы: вторая, «чертёжная» рамка внутри листа */
+  .sheet::before {
+    content: ''; position: absolute; inset: 6px; pointer-events: none;
+    border: 1px solid var(--stroke-soft); border-radius: 6px;
+  }
+  .mark { width: 54px; height: 54px; margin: 0 auto 12px; color: var(--accent); }
+  h1 {
+    font-family: "New York", ui-serif, Georgia, serif;
+    font-size: 23px; font-weight: 600; letter-spacing: .01em;
+  }
+  .sub { margin-top: 3px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); }
+  .code {
+    margin-top: 20px; font-family: "New York", ui-serif, Georgia, serif;
+    font-size: 40px; font-weight: 600; color: var(--text-3); letter-spacing: .04em;
+  }
+  h2 { font-family: "New York", ui-serif, Georgia, serif; font-size: 16px; font-weight: 600; margin-top: 4px; }
+  p { margin-top: 8px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+  .path {
+    display: block; margin-top: 12px; padding: 8px 12px; border-radius: 8px;
+    background: rgba(62,50,35,.05); font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px; color: var(--text-3); word-break: break-all;
+  }
+  @media (prefers-color-scheme: dark) { .path { background: rgba(235,220,195,.06); } }
+  .go {
+    display: inline-block; margin-top: 20px; padding: 10px 22px; border-radius: 999px;
+    background: var(--accent); color: #fdfbf4; text-decoration: none; font-size: 13.5px;
+  }
+</style>
+</head>
+<body>
+  <main class="sheet">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 100 100" fill="none" width="54" height="54">
+        <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+        <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+        <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <h1>Enso-nexus</h1>
+    <p class="sub">Платформа автоматического проектирования</p>
+
+    <div class="code">404</div>
+    <h2>Такой страницы здесь нет</h2>
+    <p>Адрес набран с ошибкой или ссылка устарела. Проекты, файлы и результаты
+       никуда не делись — они на главной странице платформы.</p>
+    <code class="path" id="path"></code>
+
+    <a class="go" href="/">Вернуться на платформу</a>
+  </main>
+<script>
+  // Показываем ровно тот адрес, который не нашёлся, — иначе непонятно,
+  // где именно опечатка. Пишем текстом, разметка сюда не попадает.
+  // Пустая рамка на корневом адресе выглядела бы недорисованной — прячем.
+  (function () {
+    var el = document.getElementById('path');
+    var p = decodeURI(location.pathname) + location.search;
+    if (p && p !== '/') el.textContent = p; else el.hidden = true;
+  }());
+</script>
+</body>
+</html>

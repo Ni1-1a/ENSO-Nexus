@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 process.env.DATA_DIR = path.join(os.tmpdir(), `pilot1-e2e-${process.pid}`);
 process.env.ANTHROPIC_API_KEY = '';
+process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-users-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 process.env.RATE_LIMIT_GENERAL = '1000';
 process.env.RATE_LIMIT_EXPENSIVE = '1000';
 
@@ -31,7 +32,11 @@ test('e2e smoke: page → session → upload → comment → process → Q&A →
   const page = await fetch(base + '/');
   assert.strictEqual(page.status, 200);
   const html = await page.text();
-  assert.ok(html.includes('ENSO Nexus'));
+  assert.ok(html.includes('Enso-nexus'));
+  // устаревшие подписи из UI убраны (ТЗ, п. 8–9)
+  for (const gone of ['Pilot 1', 'Генплан', '12 шаг', 'методик', 'Скачать Excel']) {
+    assert.ok(!html.includes(gone), `в разметке осталось «${gone}»`);
+  }
   assert.ok((await fetch(base + '/app.js')).ok);
   assert.ok((await fetch(base + '/styles.css')).ok);
 
@@ -39,9 +44,17 @@ test('e2e smoke: page → session → upload → comment → process → Q&A →
   const health = await (await fetch(base + '/api/health')).json();
   assert.strictEqual(health.aiMode, 'mock'); // honest mock mode is reported to the UI
 
-  // 3. create session
-  const s = await (await fetch(base + '/api/sessions', { method: 'POST' })).json();
-  const H = { Authorization: `Bearer ${s.token}` };
+  // 3. вход на платформу и создание проекта
+  const entered = await (await fetch(base + '/api/auth/enter', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lastName: 'Тестов', firstName: 'Пробный' }),
+  })).json();
+  assert.strictEqual(entered.status, 'active', 'свободная регистрация впускает сразу');
+  const U = { 'X-User-Token': entered.token };
+  // без входа проект не заводится
+  assert.strictEqual((await fetch(base + '/api/sessions', { method: 'POST' })).status, 401);
+  const s = await (await fetch(base + '/api/sessions', { method: 'POST', headers: U })).json();
+  const H = { Authorization: `Bearer ${s.token}`, ...U };
   const HJ = { ...H, 'Content-Type': 'application/json' };
 
   // 4. upload files
@@ -87,13 +100,18 @@ test('e2e smoke: page → session → upload → comment → process → Q&A →
   // 9. results exist, are non-empty, and download correctly
   assert.ok(view.results.length >= 3);
   const report = view.results.find((r) => r.filename === 'ОТЧЁТ.md');
-  const dxf = view.results.find((r) => r.format === 'dxf');
+  const data = view.results.find((r) => r.filename === 'session-data.json');
   const zip = view.results.find((r) => r.format === 'zip');
-  assert.ok(report && dxf && zip);
+  assert.ok(report && data && zip);
+  // чертежа среди результатов анализа быть не должно: генплан собирается
+  // из геометрической модели на выгрузке, а не из ответа модели
+  assert.ok(!view.results.some((r) => r.format === 'dxf' || r.format === 'dwg'),
+    'анализ больше не выпускает чертёж — раньше он выходил пустым');
+  for (const r of view.results) assert.ok(r.size > 0, `пустой файл в результатах: ${r.filename}`);
   const reportText = await (await fetch(`${base}/api/sessions/${s.id}/results/${report.id}/download`, { headers: H })).text();
   assert.ok(reportText.includes('ОТЧЁТ'));
-  const dxfText = await (await fetch(`${base}/api/sessions/${s.id}/results/${dxf.id}/download`, { headers: H })).text();
-  assert.ok(dxfText.includes('POLYLINE'));
+  const dataText = await (await fetch(`${base}/api/sessions/${s.id}/results/${data.id}/download`, { headers: H })).text();
+  assert.ok(JSON.parse(dataText).facts, 'файл фактов должен разбираться как JSON');
 
   // 10. dialogue history persisted server-side
   const msgs = await (await fetch(`${base}/api/sessions/${s.id}/messages`, { headers: H })).json();

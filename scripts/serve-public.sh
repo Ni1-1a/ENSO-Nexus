@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # ENSO Nexus Pilot 1 — публичный запуск с этого компьютера (самовосстанавливающийся).
-# Сервер приложения + бесплатный туннель Cloudflare + watchdog: при падении сервера
-# или туннеля всё перезапускается само, постоянная ссылка (GitHub Pages) обновляется.
+# Сервер приложения + ИМЕННОЙ туннель Cloudflare (enso-nexus, постоянный адрес
+# https://app.enso-nexus.ru) + watchdog: при падении сервера или туннеля всё
+# перезапускается само. Конфиг туннеля: ~/.cloudflared/config.yml.
 #
 # Запуск:    bash scripts/serve-public.sh
 # Остановка: bash scripts/serve-public.sh stop
 set -u
 cd "$(dirname "$0")/.."
 mkdir -p logs
+
+PUBLIC_URL="https://app.enso-nexus.ru"
 
 start_server() {
   # caffeinate -i: Mac не уходит в сон, пока работает сервер (крышку не закрывать)
@@ -17,21 +20,18 @@ start_server() {
 
 start_tunnel() {
   : > logs/tunnel.log
-  cloudflared tunnel --url http://localhost:3000 --no-autoupdate >> logs/tunnel.log 2>&1 &
+  cloudflared tunnel run enso-nexus >> logs/tunnel.log 2>&1 &
   echo $! > logs/tunnel.pid
-  local url=""
+  local ok=""
   for _ in $(seq 1 30); do
     sleep 1
-    # хост API (api.trycloudflare.com) встречается в строках ОШИБОК cloudflared —
-    # без фильтра битый запуск туннеля записывал его в public-url.txt как «URL»
-    url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' logs/tunnel.log | grep -v '^https://api\.trycloudflare\.com$' | head -1 || true)
-    [ -n "$url" ] && break
+    grep -q 'Registered tunnel connection' logs/tunnel.log && { ok=1; break; }
   done
-  if [ -n "$url" ]; then
-    echo "$url" > logs/public-url.txt
+  if [ -n "$ok" ]; then
+    echo "$PUBLIC_URL" > logs/public-url.txt
     bash scripts/update-public-link.sh >> logs/watchdog.log 2>&1 || true
   fi
-  echo "$url"
+  [ -n "$ok" ] && echo "$PUBLIC_URL"
 }
 
 stop_all() {
@@ -49,19 +49,18 @@ if [ "${1:-start}" = "stop" ]; then
 fi
 
 if [ -f logs/server.pid ] && kill -0 "$(cat logs/server.pid)" 2>/dev/null; then
-  echo "Уже запущено. Текущий адрес: $(cat logs/public-url.txt 2>/dev/null || echo '—')"
-  echo "Постоянная ссылка: https://ni1-1a.github.io/ENSO-Nexus/"
+  echo "Уже запущено. Адрес: $PUBLIC_URL (также enso-nexus.ru)"
   exit 0
 fi
 
 start_server
 URL=$(start_tunnel)
 if [ -z "$URL" ]; then
-  echo "Не удалось получить URL туннеля — см. logs/tunnel.log"
+  echo "Не удалось подключить туннель — см. logs/tunnel.log"
   exit 1
 fi
-echo "Приложение опубликовано: $URL"
-echo "Постоянная ссылка (не меняется): https://ni1-1a.github.io/ENSO-Nexus/"
+echo "Приложение опубликовано: $URL (также https://enso-nexus.ru)"
+echo "Старая ссылка https://ni1-1a.github.io/ENSO-Nexus/ перенаправляет туда же"
 
 # watchdog: каждую минуту проверяет сервер и туннель, чинит упавшее
 # (сервер перезапускается только после ДВУХ подряд неудачных проверок — под пиковой
@@ -82,15 +81,10 @@ echo "Постоянная ссылка (не меняется): https://ni1-1a.
         sleep 8
       fi
     fi
-    url=$(cat logs/public-url.txt 2>/dev/null || true)
-    ok=0
-    for _ in 1 2; do
-      curl -s -m 10 -o /dev/null "$url/api/health" && { ok=1; break; }
-      sleep 5
-    done
-    if [ "$ok" = 0 ]; then
-      echo "$(date '+%F %T') туннель недоступен — перезапуск" >> logs/watchdog.log
-      kill "$(cat logs/tunnel.pid 2>/dev/null)" 2>/dev/null
+    # именной туннель сам держит 4 резервных соединения — чиним только мёртвый процесс
+    # (проверка по публичному URL убрана: при задержках DNS/сети она убивала живой туннель)
+    if ! kill -0 "$(cat logs/tunnel.pid 2>/dev/null)" 2>/dev/null; then
+      echo "$(date '+%F %T') процесс туннеля умер — перезапуск" >> logs/watchdog.log
       start_tunnel >> logs/watchdog.log
     fi
   done

@@ -53,9 +53,15 @@ async function convertDwgToDxf(dwgPath) {
 }
 
 /* ---------------- разбор DXF ---------------- */
-const INSUNITS_LABELS = {
-  0: 'не заданы', 1: 'дюймы', 2: 'футы', 4: 'миллиметры', 5: 'сантиметры', 6: 'метры',
-};
+// Единицы чертежа — единой таблицей из геометрической модели: два независимых
+// списка кодов INSUNITS уже разъезжались (выжимка писала «код 7», а модель
+// принимала километры за метры).
+const units = require('./geometry/site-geometry');
+
+/** Число сегментов на полную окружность при аппроксимации дуг. */
+const ARC_SEGMENTS = 72;
+/** Допуск сшивки отрезков в цепочку, в единицах чертежа. */
+const STITCH_TOL_DIGITS = 6;
 
 /** Снимает базовое MTEXT-форматирование: {\f...;текст}, \P (перевод строки) и т.п. */
 function cleanMtext(s) {
@@ -67,40 +73,197 @@ function cleanMtext(s) {
     .trim();
 }
 
+/** Дуга окружности ломаной: центр, радиус, углы в градусах (против часовой). */
+function arcPoints(cx, cy, r, startDeg, endDeg) {
+  let sweep = endDeg - startDeg;
+  while (sweep <= 0) sweep += 360;
+  const n = Math.max(2, Math.ceil((Math.abs(sweep) / 360) * ARC_SEGMENTS));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = ((startDeg + (sweep * i) / n) * Math.PI) / 180;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+/** Окружность замкнутой ломаной. */
+function circlePoints(cx, cy, r) {
+  const pts = [];
+  for (let i = 0; i < ARC_SEGMENTS; i++) {
+    const a = (i / ARC_SEGMENTS) * 2 * Math.PI;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+/**
+ * Сшивка отрезков LINE в цепочки по слоям.
+ *
+ * Граница участка, нарисованная четырьмя отрезками, — обычное дело для выгрузок
+ * из геодезического ПО. Пока каждый LINE оставался сам по себе, участок такого
+ * чертежа не определялся вовсе. Соединяются только точно совпадающие концы
+ * (округление до 1e-6 единицы чертежа): «дотягивать» разрывы догадками нельзя —
+ * так рождается контур, которого в чертеже нет.
+ */
+function stitchSegments(segments) {
+  const key = (p) => `${p[0].toFixed(STITCH_TOL_DIGITS)},${p[1].toFixed(STITCH_TOL_DIGITS)}`;
+  const byLayer = new Map();
+  for (const s of segments) {
+    if (!byLayer.has(s.layer)) byLayer.set(s.layer, []);
+    byLayer.get(s.layer).push(s);
+  }
+
+  const out = [];
+  for (const [layer, list] of byLayer) {
+    const used = new Array(list.length).fill(false);
+    const index = new Map(); // ключ точки → номера отрезков
+    list.forEach((s, i) => {
+      for (const p of [s.a, s.b]) {
+        const k = key(p);
+        if (!index.has(k)) index.set(k, []);
+        index.get(k).push(i);
+      }
+    });
+
+    const nextFrom = (k, skip) => {
+      const cand = (index.get(k) || []).filter((i) => !used[i] && i !== skip);
+      return cand.length === 1 ? cand[0] : -1; // развилка направление не задаёт
+    };
+
+    for (let i = 0; i < list.length; i++) {
+      if (used[i]) continue;
+      used[i] = true;
+      const chain = [list[i].a, list[i].b];
+      // вперёд
+      for (;;) {
+        const j = nextFrom(key(chain[chain.length - 1]), -1);
+        if (j < 0) break;
+        used[j] = true;
+        const seg = list[j];
+        chain.push(key(seg.a) === key(chain[chain.length - 1]) ? seg.b : seg.a);
+      }
+      // назад
+      for (;;) {
+        const j = nextFrom(key(chain[0]), -1);
+        if (j < 0) break;
+        used[j] = true;
+        const seg = list[j];
+        chain.unshift(key(seg.b) === key(chain[0]) ? seg.a : seg.b);
+      }
+      const closed = chain.length > 3 && key(chain[0]) === key(chain[chain.length - 1]);
+      out.push({
+        layer,
+        closed,
+        points: closed ? chain.slice(0, -1) : chain,
+        source: chain.length > 2 ? 'LINE (сшитая цепочка)' : 'LINE',
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Разбор текста DXF: пары (код группы, значение) построчно.
- * Возвращает { header, layers, entities, texts, inserts, polylines }.
+ *
+ * Что важно помимо очевидного:
+ *  - код группы 67 = 1 означает пространство ЛИСТА. Рамка и штамп — не объекты
+ *    местности; попадая в геометрию, они превращались в «существующие объекты»
+ *    площадью 250 000 м² и уводили габариты плана на два миллиона метров.
+ *    Сущности листа считаются отдельно и в геометрию не идут.
+ *  - геометрия — это не только полилинии. LINE, ARC, CIRCLE и SOLID приводятся
+ *    к тому же виду {layer, closed, points}, отрезки предварительно сшиваются
+ *    в цепочки. Иначе граница участка из четырёх отрезков давала пустую модель.
+ *
+ * Возвращает { header, layers, entities, paperEntities, texts, inserts,
+ *              polylines, blockEntities }.
  */
 function parseDxf(text) {
   const lines = text.split(/\r?\n/);
   const header = {};
   const layerTable = [];
-  const entities = new Map();  // тип → количество (только секция ENTITIES)
-  const texts = [];            // {value, layer}
-  const inserts = new Map();   // имя блока → количество
-  const polylines = [];        // {layer, closed, points: [[x,y],…]}
+  const entities = new Map();      // тип → количество, модельное пространство
+  const paperEntities = new Map(); // тип → количество, пространство листа
+  const blockEntities = new Map(); // тип → количество внутри определений блоков
+  const texts = [];                // {value, layer}
+  const inserts = new Map();       // имя блока → количество
+  const polylines = [];            // {layer, closed, points: [[x,y],…], source}
+  const segments = [];             // LINE до сшивки
 
   let section = '';
   let headerVar = '';
   let current = '';            // тип текущей сущности
-  let currentLayer = '';
   let inLayerRecord = false;
-  let mtextParts = [];
-  let poly = null;             // накапливаемая LWPOLYLINE
+  let ent = null;              // накапливаемая сущность секции ENTITIES
   let seqPoly = null;          // старая POLYLINE + VERTEX…SEQEND
-  let pendingX = null;
 
-  const flushText = () => {
-    if (current === 'MTEXT' && mtextParts.length) {
-      const value = cleanMtext(mtextParts.join(''));
-      if (value) texts.push({ value, layer: currentLayer });
+  const newEntity = (type) => ({
+    type, layer: '', paper: false, closed: false,
+    pts: [], pendingX: null, p11: null, x11: null, p12: null, x12: null, p13: null, x13: null,
+    radius: null, a50: null, a51: null, textParts: [], name: '',
+  });
+
+  /** Завершение сущности: пересчёт в геометрию и учёт в счётчиках. */
+  const flushEntity = () => {
+    const e = ent;
+    ent = null;
+    if (!e) return;
+    if (e.type !== 'VERTEX' && e.type !== 'SEQEND') {
+      (e.paper ? paperEntities : entities).set(e.type, ((e.paper ? paperEntities : entities).get(e.type) || 0) + 1);
+    } else {
+      entities.set(e.type, (entities.get(e.type) || 0) + 1);
     }
-    mtextParts = [];
-  };
-  const flushPoly = () => {
-    if (poly && poly.points.length >= 2) polylines.push(poly);
-    poly = null;
-    pendingX = null;
+
+    if (e.type === 'VERTEX') {
+      if (seqPoly && e.pts.length) seqPoly.points.push(e.pts[0]);
+      return;
+    }
+    if (e.paper) return; // рамка, штамп, видовые экраны — не геометрия местности
+
+    if (e.type === 'TEXT') {
+      // однострочный TEXT не размечен: снимать с него MTEXT-форматирование нельзя,
+      // иначе из подписи «{кв. 12}» пропадут скобки
+      const v = e.textParts.join('').trim();
+      if (v) texts.push({ value: v, layer: e.layer });
+      return;
+    }
+    if (e.type === 'MTEXT') {
+      const v = cleanMtext(e.textParts.join(''));
+      if (v) texts.push({ value: v, layer: e.layer });
+      return;
+    }
+    if (e.type === 'INSERT') {
+      if (e.name) inserts.set(e.name, (inserts.get(e.name) || 0) + 1);
+      return;
+    }
+    if (e.type === 'LWPOLYLINE') {
+      if (e.pts.length >= 2) polylines.push({ layer: e.layer, closed: e.closed, points: e.pts, source: 'LWPOLYLINE' });
+      return;
+    }
+    if (e.type === 'LINE') {
+      if (e.pts.length && e.p11) segments.push({ layer: e.layer, a: e.pts[0], b: e.p11 });
+      return;
+    }
+    if (e.type === 'CIRCLE') {
+      if (e.pts.length && e.radius > 0) {
+        polylines.push({ layer: e.layer, closed: true, points: circlePoints(e.pts[0][0], e.pts[0][1], e.radius), source: 'CIRCLE' });
+      }
+      return;
+    }
+    if (e.type === 'ARC') {
+      if (e.pts.length && e.radius > 0 && Number.isFinite(e.a50) && Number.isFinite(e.a51)) {
+        polylines.push({ layer: e.layer, closed: false, points: arcPoints(e.pts[0][0], e.pts[0][1], e.radius, e.a50, e.a51), source: 'ARC' });
+      }
+      return;
+    }
+    if (e.type === 'SOLID' || e.type === 'TRACE') {
+      // вершины SOLID идут в порядке 1,2,4,3 — «бабочка», если брать подряд
+      const corners = [e.pts[0], e.p11, e.p13, e.p12].filter(Boolean);
+      const uniq = [];
+      for (const c of corners) {
+        if (!uniq.some((u) => u[0] === c[0] && u[1] === c[1])) uniq.push(c);
+      }
+      if (uniq.length >= 3) polylines.push({ layer: e.layer, closed: true, points: uniq, source: e.type });
+    }
   };
 
   for (let i = 0; i + 1 < lines.length; i += 2) {
@@ -121,47 +284,67 @@ function parseDxf(text) {
     }
 
     if (code === '0') {
-      flushText();
-      flushPoly();
+      flushEntity();
       if (value === 'SEQEND' && seqPoly) {
         if (seqPoly.points.length >= 2) polylines.push(seqPoly);
         seqPoly = null;
       }
       current = value;
-      currentLayer = '';
       inLayerRecord = section === 'TABLES' && value === 'LAYER';
+      if (section === 'BLOCKS' && value !== 'SECTION' && value !== 'ENDSEC') {
+        blockEntities.set(value, (blockEntities.get(value) || 0) + 1);
+      }
       if (section === 'ENTITIES' && value !== 'SECTION' && value !== 'ENDSEC') {
-        entities.set(value, (entities.get(value) || 0) + 1);
-        if (value === 'LWPOLYLINE') poly = { layer: '', closed: false, points: [] };
-        if (value === 'POLYLINE') seqPoly = { layer: '', closed: false, points: [] };
+        ent = newEntity(value);
+        if (value === 'POLYLINE') seqPoly = { layer: '', closed: false, points: [], source: 'POLYLINE' };
       }
       if (value === 'ENDSEC') { section = ''; seqPoly = null; }
       continue;
     }
     if (inLayerRecord && code === '2') { layerTable.push(value); continue; }
-    if (section !== 'ENTITIES') continue;
+    if (section !== 'ENTITIES' || !ent) continue;
 
-    if (code === '8') {
-      currentLayer = value;
-      if (current === 'LWPOLYLINE' && poly) poly.layer = value;
-      if (current === 'POLYLINE' && seqPoly) seqPoly.layer = value;
-    } else if (code === '1' && current === 'TEXT') { if (value) texts.push({ value, layer: currentLayer }); }
-    else if ((code === '1' || code === '3') && current === 'MTEXT') mtextParts.push(value);
-    else if (code === '2' && current === 'INSERT') inserts.set(value, (inserts.get(value) || 0) + 1);
-    else if (current === 'LWPOLYLINE' && poly) {
-      if (code === '70') poly.closed = (parseInt(value, 10) & 1) === 1;
-      else if (code === '10') pendingX = parseFloat(value);
-      else if (code === '20' && pendingX !== null) { poly.points.push([pendingX, parseFloat(value)]); pendingX = null; }
-    } else if (current === 'POLYLINE' && seqPoly && code === '70') {
-      seqPoly.closed = (parseInt(value, 10) & 1) === 1;
-    } else if (current === 'VERTEX' && seqPoly) {
-      if (code === '10') pendingX = parseFloat(value);
-      else if (code === '20' && pendingX !== null) { seqPoly.points.push([pendingX, parseFloat(value)]); pendingX = null; }
+    switch (code) {
+      case '8':
+        ent.layer = value;
+        if (ent.type === 'POLYLINE' && seqPoly) seqPoly.layer = value;
+        break;
+      case '67':
+        ent.paper = parseInt(value, 10) === 1;
+        if (ent.type === 'POLYLINE' && seqPoly && ent.paper) seqPoly = null; // лист: цепочку не собираем
+        break;
+      case '70':
+        if (ent.type === 'LWPOLYLINE') ent.closed = (parseInt(value, 10) & 1) === 1;
+        else if (ent.type === 'POLYLINE' && seqPoly) seqPoly.closed = (parseInt(value, 10) & 1) === 1;
+        break;
+      case '1':
+      case '3':
+        if (ent.type === 'TEXT' || ent.type === 'MTEXT') ent.textParts.push(value);
+        break;
+      case '2':
+        if (ent.type === 'INSERT') ent.name = value;
+        break;
+      case '10': ent.pendingX = parseFloat(value); break;
+      case '20':
+        if (ent.pendingX !== null) { ent.pts.push([ent.pendingX, parseFloat(value)]); ent.pendingX = null; }
+        break;
+      case '11': ent.x11 = parseFloat(value); break;
+      case '21': if (ent.x11 !== null) { ent.p11 = [ent.x11, parseFloat(value)]; ent.x11 = null; } break;
+      case '12': ent.x12 = parseFloat(value); break;
+      case '22': if (ent.x12 !== null) { ent.p12 = [ent.x12, parseFloat(value)]; ent.x12 = null; } break;
+      case '13': ent.x13 = parseFloat(value); break;
+      case '23': if (ent.x13 !== null) { ent.p13 = [ent.x13, parseFloat(value)]; ent.x13 = null; } break;
+      case '40': if (ent.type === 'CIRCLE' || ent.type === 'ARC') ent.radius = parseFloat(value); break;
+      case '50': if (ent.type === 'ARC') ent.a50 = parseFloat(value); break;
+      case '51': if (ent.type === 'ARC') ent.a51 = parseFloat(value); break;
+      default: break;
     }
   }
-  flushText();
-  flushPoly();
-  return { header, layers: layerTable, entities, texts, inserts, polylines };
+  flushEntity();
+  if (seqPoly && seqPoly.points.length >= 2) polylines.push(seqPoly);
+
+  polylines.push(...stitchSegments(segments));
+  return { header, layers: layerTable, entities, paperEntities, texts, inserts, polylines, blockEntities };
 }
 
 /* ---------------- геометрия контуров ---------------- */
@@ -196,8 +379,15 @@ const GEOM_MAX_POLYS = 30;   // контуров в выжимке
 const GEOM_MAX_VERTS = 40;   // вершин на контур
 const GEOM_MAX_CHARS = 12000;
 
-/** Раздел «контуры и границы»: координаты полилиний со слоёв зданий/границ. */
-function contoursSection(polylines) {
+/**
+ * Раздел «контуры и границы»: координаты полилиний со слоёв зданий/границ.
+ *
+ * Площади и длины пересчитываются в МЕТРЫ и подписываются единицами. Раньше
+ * они уходили модели прямо в единицах чертежа: у миллиметрового чертежа
+ * участок 30 000 × 50 000 подавался как «площадь ≈ 1 500 000 000» без единиц,
+ * при том что геометрический движок для того же файла честно считал 1500 м².
+ */
+function contoursSection(polylines, unit) {
   let picked = polylines.filter((p) => CONTOUR_LAYER_RE.test(p.layer));
   let title = 'Контуры и границы (слои зданий/границ)';
   if (!picked.length) {
@@ -207,8 +397,9 @@ function contoursSection(polylines) {
   }
   if (!picked.length) return '';
 
+  const s = unit.scale;
   const ranked = picked
-    .map((p) => ({ ...p, area: p.closed ? polyArea(p.points) : 0, perim: polyPerimeter(p.points, p.closed) }))
+    .map((p) => ({ ...p, area: p.closed ? polyArea(p.points) * s * s : 0, perim: polyPerimeter(p.points, p.closed) * s }))
     .sort((a, b) => b.area - a.area || b.perim - a.perim)
     .slice(0, GEOM_MAX_POLYS);
 
@@ -217,29 +408,54 @@ function contoursSection(polylines) {
     const verts = p.points.slice(0, GEOM_MAX_VERTS).map(fmtPt).join(' → ');
     const more = p.points.length > GEOM_MAX_VERTS ? ` …ещё ${p.points.length - GEOM_MAX_VERTS} вершин` : '';
     const metrics = p.closed
-      ? `замкнутый, ${p.points.length} вершин, площадь ≈ ${fmtN(p.area)}, периметр ≈ ${fmtN(p.perim)}`
-      : `разомкнутый, ${p.points.length} вершин, длина ≈ ${fmtN(p.perim)}`;
-    lines.push(`- [${p.layer || 'без слоя'}] ${metrics}: ${verts}${more}`);
+      ? `замкнутый, ${p.points.length} вершин, площадь ≈ ${fmtN(p.area)} м², периметр ≈ ${fmtN(p.perim)} м`
+      : `разомкнутый, ${p.points.length} вершин, длина ≈ ${fmtN(p.perim)} м`;
+    const from = p.source && p.source !== 'LWPOLYLINE' ? ` (из ${p.source})` : '';
+    lines.push(`- [${p.layer || 'без слоя'}]${from} ${metrics}: ${verts}${more}`);
   }
   const skipped = picked.length - ranked.length;
   if (skipped > 0) lines.push(`(ещё ${skipped} контуров пропущено — показаны крупнейшие)`);
-  return `${title} — координаты в единицах чертежа:\n${lines.join('\n')}`.slice(0, GEOM_MAX_CHARS);
+  const head = `${title} — площади и длины в метрах, координаты вершин в единицах чертежа (${unit.label})`;
+  return `${head}:\n${lines.join('\n')}`.slice(0, GEOM_MAX_CHARS);
+}
+
+/**
+ * Похожи ли координаты чертежа на государственную/местную систему.
+ * Раньше фраза про МСК приписывалась любому чертежу, включая план 40 × 30 м
+ * от начала координат, — и модель строила на этом привязку.
+ */
+const MSK_MIN_COORD_M = 100000; // МСК-координаты имеют порядок сотен тысяч метров
+
+function looksLikeMsk(x1, y1, x2, y2, scale) {
+  const vals = [x1, y1, x2, y2].filter(Number.isFinite).map((v) => Math.abs(v * scale));
+  if (!vals.length) return false;
+  return Math.max(...vals) >= MSK_MIN_COORD_M;
 }
 
 /** Компактная Markdown-выжимка чертежа для контекста модели. */
 function summarizeDxf(dxfText, name, maxChars = 32000) {
-  const { header, layers, entities, texts, inserts, polylines } = parseDxf(dxfText);
+  const { header, layers, entities, paperEntities, texts, inserts, polylines, blockEntities } = parseDxf(dxfText);
   const parts = [`## Выжимка из CAD-чертежа «${name}»`];
 
   const x1 = header['$EXTMIN.10'], y1 = header['$EXTMIN.20'];
   const x2 = header['$EXTMAX.10'], y2 = header['$EXTMAX.20'];
-  const units = INSUNITS_LABELS[header.$INSUNITS] || `код ${header.$INSUNITS}`;
+  const unit = units.unitInfo(header.$INSUNITS);
+  const s = unit.scale;
   if ([x1, y1, x2, y2].every(Number.isFinite)) {
+    const msk = looksLikeMsk(x1, y1, x2, y2, s)
+      ? ' Координаты такого порядка обычно означают государственную/местную систему координат (МСК).'
+      : ' Координаты малы по величине — это, скорее всего, локальная (условная) система координат, а не МСК.';
     parts.push(`Габариты чертежа: X ${fmtN(x1)}…${fmtN(x2)}, Y ${fmtN(y1)}…${fmtN(y2)} ` +
-      `(≈ ${fmtN(x2 - x1)} × ${fmtN(y2 - y1)}, единицы: ${units}). ` +
-      'Крупные значения координат обычно означают государственную/местную систему координат (МСК).');
-  } else if (header.$INSUNITS !== undefined) {
-    parts.push(`Единицы чертежа: ${units}.`);
+      `(≈ ${fmtN((x2 - x1) * s)} × ${fmtN((y2 - y1) * s)} м, единицы чертежа: ${unit.label}).${msk}`);
+  } else {
+    parts.push(`Единицы чертежа: ${unit.label}.`);
+  }
+  if (unit.assumed) {
+    parts.push(unit.code === null || unit.code === 0
+      ? `ВНИМАНИЕ: единицы измерения в чертеже не заданы (${unit.code === null ? '$INSUNITS отсутствует' : '$INSUNITS=0'}). ` +
+        'Все размеры ниже посчитаны в предположении, что чертёж в метрах.'
+      : `ВНИМАНИЕ: код единиц $INSUNITS=${unit.code} не распознан. ` +
+        'Все размеры ниже посчитаны в предположении, что чертёж в метрах.');
   }
 
   if (layers.length) parts.push(`Слои (${layers.length}): ${layers.join('; ')}`);
@@ -247,16 +463,33 @@ function summarizeDxf(dxfText, name, maxChars = 32000) {
   if (entities.size) {
     const ent = [...entities.entries()].sort((a, b) => b[1] - a[1])
       .map(([t, n]) => `${t} ×${n}`).join(', ');
-    parts.push(`Объекты: ${ent}`);
+    parts.push(`Объекты модельного пространства: ${ent}`);
+  }
+
+  if (paperEntities && paperEntities.size) {
+    const total = [...paperEntities.values()].reduce((a, b) => a + b, 0);
+    const ent = [...paperEntities.entries()].sort((a, b) => b[1] - a[1])
+      .map(([t, n]) => `${t} ×${n}`).join(', ');
+    parts.push(`Оформление листа (${total} сущностей: ${ent}) — рамка, штамп и видовые экраны. ` +
+      'В геометрию местности не входит и в контурах ниже не участвует.');
   }
 
   if (inserts.size) {
+    const total = [...inserts.values()].reduce((a, b) => a + b, 0);
     const top = [...inserts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)
       .map(([t, n]) => (n > 1 ? `${t} ×${n}` : t)).join(', ');
-    parts.push(`Вставки блоков (условные знаки): ${top}${inserts.size > 25 ? '…' : ''}`);
+    parts.push(`Вставки блоков (условные знаки), всего ${total}: ${top}${inserts.size > 25 ? '…' : ''}. ` +
+      'Содержимое блоков не разбирается — геометрия внутри них в модель участка не попадает.');
   }
 
-  const contours = contoursSection(polylines);
+  if (blockEntities && blockEntities.size) {
+    const inner = [...blockEntities.entries()]
+      .filter(([t]) => t !== 'BLOCK' && t !== 'ENDBLK')
+      .sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} ×${n}`).join(', ');
+    if (inner) parts.push(`Внутри определений блоков: ${inner} (не разобрано).`);
+  }
+
+  const contours = contoursSection(polylines, unit);
   if (contours) parts.push(contours);
 
   if (texts.length) {
@@ -278,12 +511,27 @@ function summarizeDxf(dxfText, name, maxChars = 32000) {
  * Выжимка CAD-файла с кэшем рядом с файлом. ext: 'dwg' | 'dxf'.
  * Бросает ошибку с человекочитаемой причиной — вызывающий решает, чем заменить.
  */
+/**
+ * Отметка версии разбора внутри файла кэша.
+ *
+ * Имя файла остаётся прежним (`.cad.v2.md`): его удаляет маршрут при удалении
+ * чертежа, и переименование оставило бы мусор на диске. Зато выжимка, снятая
+ * прежним разбором, больше не годится — в ней площади в единицах чертежа,
+ * сущности листа и фраза про МСК на локальном плане. Кэш без нужной отметки
+ * пересобирается, а сама отметка модели не показывается.
+ */
+const SUMMARY_VERSION = 3;
+const SUMMARY_STAMP = `<!-- cad-summary v${SUMMARY_VERSION} -->`;
+
 async function extractCad(storedPath, ext, originalName) {
-  const cachePath = storedPath + '.cad.v2.md'; // v2: добавлены координаты контуров
-  if (fs.existsSync(cachePath)) return fs.readFileSync(cachePath, 'utf8');
+  const cachePath = storedPath + '.cad.v2.md';
+  try {
+    const cached = fs.readFileSync(cachePath, 'utf8');
+    if (cached.startsWith(SUMMARY_STAMP)) return cached.slice(SUMMARY_STAMP.length).replace(/^\n/, '');
+  } catch { /* кэша нет — разбираем заново */ }
   const dxfText = ext === 'dwg' ? await convertDwgToDxf(storedPath) : fs.readFileSync(storedPath, 'utf8');
   const md = summarizeDxf(dxfText, originalName);
-  try { fs.writeFileSync(cachePath, md); } catch { /* кэш вторичен */ }
+  try { fs.writeFileSync(cachePath, `${SUMMARY_STAMP}\n${md}`); } catch { /* кэш вторичен */ }
   return md;
 }
 

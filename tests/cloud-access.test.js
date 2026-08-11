@@ -1,0 +1,312 @@
+'use strict';
+/**
+ * Доступ к облачным моделям и пометка конечного пользователя.
+ *
+ * Что здесь закрывается. Условия OpenAI, Anthropic и Google запрещают не только
+ * пользоваться сервисом из неподдерживаемого региона, но и ОТКРЫВАТЬ к нему
+ * доступ другим людям. Платформа отдаёт один ключ на всех вошедших — за это
+ * аккаунт OpenAI деактивировали 2026-08-10. Поэтому:
+ *  - облако доступно только людям с `"cloudAi": true` в users.json;
+ *  - запрет стоит НА ДНЕ адаптера, а не только в интерфейсе: выбор провайдера
+ *    хранится в сессии и переживает смену правил, а `provider` подставляется
+ *    клиентом в тело запроса;
+ *  - каждый запрос к OpenAI помечен `safety_identifier`, к Anthropic —
+ *    `metadata.user_id`, чтобы срабатывание политики привязывалось к человеку,
+ *    а не ко всей организации;
+ *  - в идентификатор не уходят ни ФИО, ни идентификатор человека в открытом виде.
+ *
+ * Настоящие модели не вызываются: облачные адреса указывают на поддельный
+ * OpenAI-совместимый сервер, поднятый здесь же.
+ */
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const crypto = require('crypto');
+
+process.env.DATA_DIR = path.join(os.tmpdir(), `pilot1-cloudacc-${process.pid}`);
+process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-cloudacc-users-${process.pid}.json`);
+process.env.ANTHROPIC_API_KEY = '';
+process.env.LOCAL_AI_TIMEOUT = '5000';
+// политика включена: именно она здесь и проверяется
+delete process.env.CLOUD_AI_OPEN;
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+
+let server = null;
+let baseUrl = '';
+let requests = [];
+
+function startFakeServer() {
+  return new Promise((resolve) => {
+    server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        let parsed = null;
+        try { parsed = JSON.parse(body); } catch { /* тело не JSON */ }
+        requests.push({ url: req.url, body: parsed });
+        // адаптер по умолчанию просит стриминг — отвечаем тем же, иначе текст
+        // приходит пустым и тест ловит не то, что проверяет
+        if (parsed && parsed.stream) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+          send({ choices: [{ delta: { content: 'ответ' } }] });
+          send({ choices: [{ delta: {}, finish_reason: 'stop' }] });
+          send({ usage: { prompt_tokens: 10, completion_tokens: 10 } });
+          res.write('data: [DONE]\n\n');
+          return res.end();
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{ message: { content: 'ответ' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 10 },
+        }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+      resolve();
+    });
+  });
+}
+
+/** Менеджер моделей запускает CLI `lms` и трогает LM Studio владельца — не здесь. */
+function stubModelManager() {
+  const p = require.resolve('../server/services/model-manager');
+  require.cache[p] = {
+    id: p, filename: p, loaded: true, exports: {
+      ensureLoaded: async () => {}, acquireUse: () => {}, releaseUse: () => {},
+      desiredContext: () => 32768, listLoaded: async () => [],
+      feasibility: async () => ({ feasible: true, note: '' }),
+    },
+  };
+}
+
+let adapter, users, cloudAccess, providers, db, now;
+
+/** Человек в users.json с нужным флагом; возвращает его id. */
+function makeUser(lastName, firstName, cloudAi) {
+  const res = users.enter({ lastName, firstName });
+  assert.strictEqual(res.status, 'active', 'человек должен войти свободной регистрацией');
+  const store = JSON.parse(fs.readFileSync(process.env.USERS_FILE, 'utf8'));
+  const rec = store.users.find((u) => u.id === res.user.id);
+  rec.cloudAi = cloudAi;
+  fs.writeFileSync(process.env.USERS_FILE, JSON.stringify(store, null, 2));
+  return res.user.id;
+}
+
+/** Проект, принадлежащий человеку (или ничей, если userId пустой). */
+function makeSession(userId) {
+  const id = `cloud-${crypto.randomBytes(6).toString('hex')}`;
+  db.prepare('INSERT INTO sessions (id, token, user_id, status, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+    .run(id, 'tok', userId || '', 'idle', now(), now());
+  return id;
+}
+
+before(async () => {
+  await startFakeServer();
+  process.env.OPENAI_BASE_URL = baseUrl;
+  process.env.KIMI_BASE_URL = baseUrl;
+  process.env.OPENAI_API_KEY = 'sk-test-fake-key';
+  process.env.KIMI_API_KEY = 'sk-kimi-fake-key';
+  process.env.LOCAL_AI_BASE_URL = baseUrl.replace('/v1', '/lm');
+
+  stubModelManager();
+  adapter = require('../server/services/claude/adapter');
+  users = require('../server/services/users');
+  cloudAccess = require('../server/services/ai/cloud-access');
+  providers = require('../server/services/providers');
+  ({ db, now } = require('../server/db'));
+});
+
+after(() => {
+  if (server) server.close();
+  fs.rmSync(process.env.USERS_FILE, { force: true });
+});
+
+/* ================= сам запрет ================= */
+
+test('облако закрыто человеку без cloudAi — и запрос никуда не уходит', async () => {
+  const sid = makeSession(makeUser('Тестов', 'Пётр', false));
+  requests = [];
+  for (const provider of ['chatgpt', 'kimi']) {
+    await assert.rejects(
+      () => adapter.plainCall({
+        system: 'с', sessionId: sid, route: { provider, model: 'gpt-5.6-terra' },
+        messages: [{ role: 'user', content: 'привет' }],
+      }),
+      (err) => {
+        assert.ok(err instanceof adapter.AiUnavailableError, 'отказ обязан быть понятной ошибкой, а не 500');
+        assert.match(err.message, /только владельцу/);
+        return true;
+      },
+      `${provider} обязан быть закрыт человеку без разрешения`,
+    );
+  }
+  assert.strictEqual(requests.length, 0, 'ни одного обращения к облаку быть не должно');
+});
+
+test('облако открыто человеку с cloudAi', async () => {
+  const sid = makeSession(makeUser('Владельцев', 'Никита', true));
+  requests = [];
+  const out = await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  assert.strictEqual(out.text, 'ответ');
+  assert.strictEqual(requests.length, 1, 'разрешённый человек обязан дойти до модели');
+});
+
+test('проект без хозяина облако не получает: с его токеном работает кто угодно', async () => {
+  const sid = makeSession('');
+  requests = [];
+  await assert.rejects(
+    () => adapter.plainCall({
+      system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+      messages: [{ role: 'user', content: 'привет' }],
+    }),
+    /только владельцу/,
+  );
+  assert.strictEqual(requests.length, 0);
+});
+
+test('локальные модели остаются доступны всем — иначе платформа перестаёт работать', async () => {
+  const sid = makeSession(makeUser('Локалев', 'Иван', false));
+  requests = [];
+  const out = await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'lmstudio', model: 'qwen/qwen3-coder-30b' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  assert.strictEqual(out.text, 'ответ');
+  assert.strictEqual(requests.length, 1, 'локальная модель обязана работать без всяких разрешений');
+});
+
+test('запрет действует и на структурный вызов, и на анализ — не только на чат', async () => {
+  const sid = makeSession(makeUser('Схемов', 'Олег', false));
+  requests = [];
+  const schema = { type: 'object', properties: {}, required: [], additionalProperties: false };
+  await assert.rejects(
+    () => adapter.structuredCall({
+      system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+      messages: [{ role: 'user', content: 'привет' }], schema,
+    }),
+    /только владельцу/,
+  );
+  await assert.rejects(
+    () => adapter.analyzeOnce(sid, { instruction: 'разбери', route: { provider: 'chatgpt', model: 'gpt-5.6-terra' } }),
+    /только владельцу/,
+  );
+  assert.strictEqual(requests.length, 0, 'ни один путь к модели не имеет права обойти запрет');
+});
+
+test('маршрут по умолчанию не уводит закрытого человека в облако', () => {
+  const denied = makeSession(makeUser('Умолчаний', 'Павел', false));
+  const allowed = makeSession(makeUser('Разрешённый', 'Артём', true));
+  const row = (id) => db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  // сессия без явного выбора: config.aiMode здесь не 'live' (ключа Anthropic нет),
+  // но проверяем главное — облачного умолчания у закрытого человека не бывает
+  assert.strictEqual(cloudAccess.allowedForSession(denied), false);
+  assert.strictEqual(cloudAccess.allowedForSession(allowed), true);
+  assert.ok(!cloudAccess.isCloud(adapter.effectiveProvider(row(denied)).provider),
+    'человеку без разрешения умолчание обязано быть локальным');
+});
+
+/* ================= пикер ================= */
+
+test('пикер: облачные провайдеры помечены недоступными для закрытого человека', async () => {
+  const closed = { id: 'u1', approved: true, cloudAi: false };
+  const open = { id: 'u2', approved: true, cloudAi: true };
+  const forClosed = await providers.listProvidersFor(closed);
+  for (const p of forClosed) {
+    if (cloudAccess.isCloud(p.id)) {
+      assert.strictEqual(p.available, false, `${p.id} не имеет права быть доступным`);
+      assert.strictEqual(p.note, providers.CLOUD_CLOSED_NOTE);
+    }
+  }
+  const lm = forClosed.find((p) => p.id === 'lmstudio');
+  assert.ok(lm, 'локальный провайдер обязан остаться в списке');
+
+  const forOpen = await providers.listProvidersFor(open);
+  const gpt = forOpen.find((p) => p.id === 'chatgpt');
+  assert.strictEqual(gpt.available, true, 'владельцу список не режется');
+
+  // аноним (ручка /health отвечает и без токена) облака не видит
+  const forAnon = await providers.listProvidersFor(null);
+  assert.strictEqual(forAnon.find((p) => p.id === 'chatgpt').available, false);
+});
+
+test('пикер: выбор облачного провайдера отклоняется на сервере, а не только в интерфейсе', async () => {
+  const closed = { id: 'u1', approved: true, cloudAi: false };
+  const check = await providers.validateChoice('chatgpt', 'gpt-5.6-terra', closed);
+  assert.strictEqual(check.ok, false);
+  assert.match(check.error, /только владельцу/);
+  const okCheck = await providers.validateChoice('chatgpt', 'gpt-5.6-terra', { id: 'u2', approved: true, cloudAi: true });
+  assert.strictEqual(okCheck.ok, true);
+});
+
+/* ================= пометка конечного пользователя ================= */
+
+test('safety_identifier уходит в тело запроса к OpenAI и не содержит ничего личного', async () => {
+  const userId = makeUser('Помеченный', 'Сергей', true);
+  const sid = makeSession(userId);
+  requests = [];
+  await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  const sent = requests[0].body;
+  assert.ok(sent.safety_identifier, 'запрос к OpenAI обязан называть конечного пользователя');
+  assert.match(sent.safety_identifier, /^enso-[0-9a-f]{24}$/);
+  const raw = JSON.stringify(sent);
+  assert.ok(!raw.includes('Помеченный'), 'ФИО не имеет права уходить провайдеру');
+  assert.ok(!raw.includes(userId), 'идентификатор человека уходит только хэшем');
+});
+
+test('идентификатор стабилен для человека и различает разных людей', () => {
+  const a = makeUser('Первый', 'Иван', true);
+  const b = makeUser('Второй', 'Пётр', true);
+  const a1 = makeSession(a);
+  const a2 = makeSession(a);
+  const b1 = makeSession(b);
+  assert.strictEqual(cloudAccess.safetyIdentifier(a1), cloudAccess.safetyIdentifier(a2),
+    'у одного человека разные проекты — один идентификатор');
+  assert.notStrictEqual(cloudAccess.safetyIdentifier(a1), cloudAccess.safetyIdentifier(b1),
+    'разные люди обязаны различаться');
+  assert.strictEqual(cloudAccess.safetyIdentifier(''), '', 'без проекта идентификатора нет');
+});
+
+test('Kimi и локальные модели поля safety_identifier не получают — его нет в их контракте', async () => {
+  const sid = makeSession(makeUser('Кимов', 'Роман', true));
+  requests = [];
+  await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'kimi', model: 'kimi-k2.6' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'lmstudio', model: 'qwen/qwen3-coder-30b' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  assert.strictEqual(requests.length, 2);
+  for (const r of requests) {
+    assert.strictEqual(r.body.safety_identifier, undefined,
+      'неизвестное поле в чужом контракте — повод для 400 на ровном месте');
+  }
+});
+
+/* ================= выключатель ================= */
+
+test('CLOUD_AI_OPEN=1 возвращает прежнее поведение целиком', () => {
+  const config = require('../server/config');
+  const sid = makeSession(makeUser('Закрытов', 'Глеб', false));
+  assert.strictEqual(cloudAccess.allowedForSession(sid), false);
+  config.cloudAiOpen = true;
+  try {
+    assert.strictEqual(cloudAccess.allowedForSession(sid), true, 'выключатель обязан открывать облако всем');
+    assert.strictEqual(cloudAccess.userAllowed(null), true);
+  } finally {
+    config.cloudAiOpen = false;
+  }
+  assert.strictEqual(cloudAccess.allowedForSession(sid), false, 'и возвращать запрет обратно');
+});

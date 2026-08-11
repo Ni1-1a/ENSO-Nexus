@@ -25,8 +25,8 @@ async function probeLocalAi() {
   await probeLocalAi();
   const app = createApp();
   startCleanup();
-  app.listen(config.port, () => {
-    console.log(`ENSO Nexus Pilot 1 Web — http://localhost:${config.port}`);
+  app.listen(config.port, config.bindHost, () => {
+    console.log(`Enso-nexus — http://localhost:${config.port}`);
     const label = config.aiMode === 'live' ? `live (${config.anthropicModel})`
       : config.aiMode === 'local' ? `local (${config.localAiModel} @ ${config.localAiBaseUrl})`
       : 'mock — задайте ANTHROPIC_API_KEY или запустите LM Studio';

@@ -3,29 +3,49 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ENSO Nexus · Pilot 1 — Генплан по ГОСТ 21.508</title>
-  <meta name="description" content="AI-сервис анализа исходных данных для посадки здания на земельный участок и подготовки генплана по ГОСТ 21.508">
+  <title>Enso-nexus — платформа автоматического проектирования</title>
+  <meta name="description" content="Платформа автоматического проектирования: анализ исходных данных, запретные зоны, посадка здания на участок и выгрузка чертежа">
   <meta name="theme-color" content="#f3efe6">
-  <link rel="stylesheet" href="styles.css?v=7">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M28 70 L28 42 L50 28 L72 42 L72 70 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="styles.css?v=45">
+  <script src="boot.js?v=1"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
 </head>
 <body>
-  <div id="mock-banner" class="mock-banner" hidden>
-    Демонстрационный режим: AI не настроен на сервере. Ответы формируются тестовой заглушкой.
+  <!-- Плашки-предупреждения идут стопкой в одном контейнере: раньше каждая
+       была position: fixed на всю ширину, они ложились друг на друга (видно
+       было только последнюю) и накрывали верх сайдбара. Высота стопки
+       уезжает в --banners-h, на неё сдвигается всё приложение. -->
+  <div id="banners" class="banners" role="status" aria-live="polite">
+    <div id="offline-banner" class="mock-banner" hidden>
+      ⚠️ Сервер сейчас недоступен — возможно, компьютер с приложением выключен.
+      Проверяем связь каждые 10 секунд, всё восстановится автоматически.
+    </div>
+    <div id="local-ai-banner" class="mock-banner" hidden>
+      ⚠️ Локальная нейросеть (LM Studio) не отвечает: анализ и диалог на локальной модели
+      работать не будут. Запустите LM Studio на сервере или выберите облачную модель в «Настройках».
+    </div>
+    <div id="mock-banner" class="mock-banner" hidden>
+      Демонстрационный режим: AI не настроен на сервере. Ответы формируются тестовой заглушкой.
+    </div>
   </div>
 
-  <div class="shell">
+  <div class="shell" id="shell">
+    <!-- Переключатель панели. Живёт ВНЕ сайдбара: у того backdrop-filter,
+         а он делает элемент содержащим блоком для position: fixed внутри. -->
+    <button id="sidebar-toggle" class="sidebar-toggle" type="button"
+            aria-expanded="true" aria-controls="sidebar"
+            aria-label="Свернуть боковую панель" title="Свернуть панель (⌘\ или Ctrl+\)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+        <path d="M9.5 4v16"/>
+      </svg>
+    </button>
+
     <!-- ══════════ Сайдбар ══════════ -->
-    <aside class="sidebar" aria-label="Основная навигация">
+    <aside class="sidebar" id="sidebar" aria-label="Основная навигация">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
-            <path d="M5 19V10l7-5 7 5v9H5z"/><path d="M9 19v-5h6v5"/>
-          </svg>
-        </div>
         <div class="brand-text">
-          <span class="brand-name">ENSO Nexus</span>
-          <span class="brand-sub">Pilot 1 · Генплан</span>
+          <span class="brand-name">Enso-nexus</span>
         </div>
       </div>
 
@@ -34,7 +54,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
             <path d="M4 5h16v12H4z" stroke-linejoin="round"/><path d="M8 21h8M12 17v4"/><path d="M8 9l3 3 2-2 3 3" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          Анализ
+          Этап 1
         </button>
         <button class="nav-item" data-screen="normo" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
@@ -43,23 +63,32 @@
           Нормоконтроль
         </button>
         <button class="nav-item" data-screen="settings" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-            <circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8" stroke-linecap="round"/>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.1"/>
+            <path d="M19.4 14.5a1.7 1.7 0 0 0 .34 1.88l.06.06a2.06 2.06 0 1 1-2.92 2.92l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56v.17a2.06 2.06 0 0 1-4.12 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06a2.06 2.06 0 1 1-2.92-2.92l.06-.06a1.7 1.7 0 0 0 .34-1.88 1.7 1.7 0 0 0-1.56-1.03h-.17a2.06 2.06 0 0 1 0-4.12h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2.06 2.06 0 1 1 2.92-2.92l.06.06a1.7 1.7 0 0 0 1.88.34h.08A1.7 1.7 0 0 0 9.8 4.13v-.17a2.06 2.06 0 0 1 4.12 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06a2.06 2.06 0 1 1 2.92 2.92l-.06.06a1.7 1.7 0 0 0-.34 1.88v.08a1.7 1.7 0 0 0 1.56 1.03h.17a2.06 2.06 0 0 1 0 4.12h-.09a1.7 1.7 0 0 0-1.56 1.03z"
+                  stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           Настройки
         </button>
+        <button id="btn-new-session-side" class="nav-item nav-action" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke-linecap="round"/>
+          </svg>
+          Новая сессия
+        </button>
       </nav>
 
+      <!-- Проекты устройства: несколько сессий параллельно -->
+      <div class="sessions-nav">
+        <p class="sessions-head">Проекты</p>
+        <ul id="sessions-list" class="sessions-list" title="Клик — открыть · двойной клик или «⋮» — действия"></ul>
+      </div>
+
       <div class="sidebar-foot">
-        <div class="session-actions">
-          <button id="btn-new-session-side" class="btn btn-quiet btn-sm" type="button">Новая сессия</button>
-          <button id="btn-delete-session-side" class="btn btn-quiet btn-sm" type="button" disabled>Удалить сессию</button>
-        </div>
-        <div id="ai-badge" class="ai-chip" title="Действующая нейросеть">
+        <div id="ai-badge" class="ai-badge" title="Действующая нейросеть">
           <span class="ai-dot" aria-hidden="true"></span>
           <span id="ai-badge-text">Подключение…</span>
         </div>
-        <p class="sidebar-note">Сессия хранится <span id="ttl-hours">72</span> ч</p>
       </div>
     </aside>
 
@@ -67,12 +96,15 @@
     <main class="content">
       <section id="screen-analysis" class="screen active" aria-label="Анализ исходных данных">
         <header class="toolbar">
-          <h1>Анализ</h1>
-          <p class="toolbar-sub">Посадка здания на участок · исходные данные → отчёт по 12 шагам</p>
+          <h1>Этап 1</h1>
+          <p class="toolbar-sub">Посадка здания на участок</p>
         </header>
 
         <div class="columns">
           <!-- Колонка 1: данные -->
+          <!-- Порядок работы («Этапы») переехал в «Настройки»: на экране анализа
+               он занимал первый экран колонки, а трогают его редко — обычно один
+               раз, чтобы загрузить свой Excel. -->
           <div class="col">
             <div class="card">
               <h2>Исходные данные</h2>
@@ -88,13 +120,7 @@
               </div>
               <ul id="file-list" class="file-list" aria-live="polite"></ul>
 
-              <div class="field">
-                <label for="comment">Комментарий к данным</label>
-                <textarea id="comment" rows="3" maxlength="4000"
-                  placeholder="Например: ТХ отсутствует, пожарные требования взять из базы знаний, этажность до 3."></textarea>
-                <button id="btn-save-comment" class="btn btn-quiet btn-sm" type="button">Сохранить комментарий</button>
-              </div>
-
+              <!-- Указания к данным пишутся в диалоге: одно поле ввода на всё -->
               <button id="btn-process" class="btn btn-primary btn-block" type="button" disabled>
                 Запустить анализ
               </button>
@@ -103,8 +129,7 @@
             <!-- Живой индикатор выполнения -->
             <div id="progress-card" class="card progress-card" hidden>
               <div class="progress-head">
-                <span class="live-dot" aria-hidden="true"></span>
-                <span id="progress-title">Выполняется анализ</span>
+                <span id="progress-title" class="progress-title live">Выполняется анализ</span>
                 <span id="progress-elapsed" class="progress-elapsed">0:00</span>
                 <button id="btn-cancel-job" class="btn btn-quiet btn-sm btn-cancel" type="button"
                         title="Остановить текущую обработку">Прервать</button>
@@ -123,6 +148,7 @@
                 <h2>Статус</h2>
                 <p id="job-status" class="job-status" data-status="idle" aria-live="polite">Ожидает данных</p>
               </div>
+              <p id="usage-line" class="usage-line" title="Расход токенов за всю сессию" hidden></p>
               <details id="events-details">
                 <summary>Журнал этапов</summary>
                 <ol id="events-log" class="events-log"></ol>
@@ -134,16 +160,33 @@
           <div class="col col-dialog">
             <div class="card card-dialog">
               <h2>Диалог с помощником</h2>
-              <div id="chat" class="chat" aria-live="polite"></div>
-
-              <div id="questions-block" class="questions-block" hidden>
-                <h3>Уточняющие вопросы</h3>
-                <div id="questions-list"></div>
+              <div id="chat" class="chat" aria-live="polite">
+                <div id="chat-messages" class="chat-messages"></div>
               </div>
 
+              <!-- Уточняющий вопрос: по одному, в стиле Claude Code (варианты + свой ответ) -->
+              <div id="question-widget" class="question-widget" hidden>
+                <div class="qw-head">
+                  <span id="qw-counter" class="qw-counter">1/1</span>
+                  <span id="qw-title" class="qw-title"></span>
+                </div>
+                <p id="qw-why" class="qw-why" hidden></p>
+                <div id="qw-options" class="qw-options"></div>
+                <div class="qw-other">
+                  <span class="qw-other-label">Другое</span>
+                  <input id="qw-input" type="text" maxlength="4000" placeholder="Напишите свой ответ…" aria-label="Свой ответ на вопрос">
+                </div>
+                <div class="qw-foot">
+                  <button id="qw-skip" class="btn btn-quiet btn-sm" type="button" title="Пропустить вопрос — анализ продолжится с допущениями">Пропустить</button>
+                  <button id="qw-send" class="btn btn-primary btn-sm" type="button" disabled>Ответить</button>
+                </div>
+              </div>
+
+              <p id="chat-hint" class="hint chat-hint"></p>
               <form id="chat-form" class="chat-form">
                 <label for="chat-input" class="visually-hidden">Сообщение помощнику</label>
-                <textarea id="chat-input" rows="2" maxlength="4000" placeholder="Сообщение помощнику… (запускает анализ)" disabled></textarea>
+                <textarea id="chat-input" rows="2" maxlength="4000"
+                  placeholder="Спросите что угодно или напишите указание к данным"></textarea>
                 <button id="btn-send" class="btn btn-primary" type="submit" disabled aria-label="Отправить">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -162,10 +205,18 @@
               </div>
               <ul id="results-list" class="results-list"></ul>
             </div>
-            <div id="facts-card" class="card" hidden>
-              <h2>Извлечённые факты</h2>
+            <!-- Фактов после анализа набирается несколько десятков: карточка
+                 раскрывается, как разделы настроек, и не оттесняет результаты вниз -->
+            <details id="facts-card" class="card card-fold" hidden>
+              <summary class="fold-summary">
+                <span class="fold-title">Извлечённые факты</span>
+                <span class="fold-count" id="facts-count"></span>
+                <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </summary>
               <dl id="facts-list" class="facts-list"></dl>
-            </div>
+            </details>
           </div>
         </div>
       </section>
@@ -194,63 +245,337 @@
       <section id="screen-settings" class="screen" aria-label="Настройки">
         <header class="toolbar">
           <h1>Настройки</h1>
-          <p class="toolbar-sub">Нейросеть, база знаний и управление сессией</p>
+          <p class="toolbar-sub">Этапы, нейросеть, база знаний, сравнение и оформление</p>
         </header>
 
-        <div class="settings-grid">
-          <div class="card">
-            <h2>Нейросеть</h2>
-            <div class="field">
-              <label for="sel-model">Модель для анализа</label>
-              <select id="sel-model" disabled>
-                <option value="">Загрузка…</option>
-              </select>
-              <p id="model-note" class="hint" hidden></p>
-            </div>
-            <div class="field">
-              <label for="sel-kb">База знаний</label>
-              <select id="sel-kb" disabled></select>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Сравнение моделей</h2>
-            <p class="hint">Один и тот же анализ выполняется каждой выбранной моделью по очереди;
-               результат — сводная таблица и файл сравнения.</p>
-            <div id="compare-list" class="compare-list"></div>
-            <button id="btn-compare" class="btn btn-quiet btn-block" type="button" disabled>
-              Запустить сравнение
-            </button>
-          </div>
-
-          <div class="card">
-            <h2>Оформление</h2>
-            <div class="field">
-              <span class="field-label" id="theme-label">Тема</span>
-              <div class="segmented" role="radiogroup" aria-labelledby="theme-label" id="theme-seg">
-                <button type="button" role="radio" data-theme="auto" aria-checked="true">Авто</button>
-                <button type="button" role="radio" data-theme="light" aria-checked="false">Светлая</button>
-                <button type="button" role="radio" data-theme="dark" aria-checked="false">Тёмная</button>
+        <!-- Разделы настроек — равноправные выпадающие списки друг под другом.
+             Открыт всегда ровно один: состояние запоминается в localStorage. -->
+        <div class="settings-stack" id="settings-stack">
+          <!-- Порядок работы: карта этапов анализа (стандартная или свой Excel).
+               Второй раскрывашки внутри нет — сам раздел ею и является. -->
+          <details class="set-group" data-group="workplan">
+            <summary class="set-summary">
+              <span class="set-title">Этапы</span>
+              <button class="info-btn" type="button" data-info="workplan"
+                      aria-label="Что скачивается, каким должен быть свой файл и как формулировать шаги"
+                      title="Как это работает">i</button>
+              <span class="set-value" id="set-value-workplan"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="set-body">
+              <!-- подпись показывается только для загруженного пользователем файла -->
+              <p id="workplan-name" class="hint" hidden></p>
+              <ol id="workplan-steps" class="workplan-steps"></ol>
+              <div class="workplan-actions">
+                <button id="btn-workplan-download" class="icon-btn wp-act" type="button"
+                        aria-label="Скачать текущий порядок работы в Excel"
+                        title="Скачать текущий порядок работы в Excel">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path d="M12 4v11m0 0l-4-4m4 4l4-4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M5 18.5h14" stroke-linecap="round"/>
+                  </svg>
+                </button>
+                <button id="btn-workplan-upload" class="icon-btn wp-act" type="button"
+                        aria-label="Загрузить свой Excel"
+                        title="Загрузить свой Excel (колонки: № · Этап · Содержание · Нормативная база)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path d="M12 15V4m0 0L8 8m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M5 18.5h14" stroke-linecap="round"/>
+                  </svg>
+                </button>
+                <button id="btn-workplan-reset" class="icon-btn wp-act" type="button" hidden
+                        aria-label="Вернуть стандартный порядок работы"
+                        title="Вернуть стандартный порядок работы">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" stroke-linecap="round"/>
+                    <path d="M4 4.5V7.5H7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <input id="workplan-file" type="file" accept=".xlsx" hidden>
               </div>
             </div>
-          </div>
+          </details>
 
-          <div class="card">
-            <h2>Сессия</h2>
-            <p class="hint">Файлы и результаты изолированы по сессиям и удаляются автоматически
-               через <span id="ttl-hours-2">72</span> ч после последней активности.</p>
-            <div class="btn-row">
-              <button id="btn-new-session" class="btn btn-quiet" type="button">Новая сессия</button>
-              <button id="btn-delete-session" class="btn btn-danger" type="button" disabled>Удалить сессию</button>
+          <details class="set-group" data-group="ai" open>
+            <summary class="set-summary">
+              <span class="set-title">Нейросеть</span>
+              <button class="info-btn" type="button" data-info="ai"
+                      aria-label="Как выбирается нейросеть и на что влияет выбор" title="Как это работает">i</button>
+              <span class="set-value" id="set-value-ai"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="set-body">
+              <div class="field">
+                <label for="sel-provider">Провайдер</label>
+                <select id="sel-provider" disabled>
+                  <option value="">Загрузка…</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="sel-model">Модель</label>
+                <select id="sel-model" disabled></select>
+                <p id="model-note" class="hint" hidden></p>
+              </div>
             </div>
-          </div>
+          </details>
+
+          <details class="set-group" data-group="kb">
+            <summary class="set-summary">
+              <span class="set-title">База знаний</span>
+              <button class="info-btn" type="button" data-info="kb"
+                      aria-label="Что такое база знаний и как она участвует в анализе" title="Как это работает">i</button>
+              <span class="set-value" id="set-value-kb"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="set-body">
+              <p class="hint">Выдержки из выбранной базы подмешиваются в контекст анализа:
+                 нормативные требования модель берёт оттуда, а не из памяти.</p>
+              <div class="field">
+                <label for="sel-kb">Действующая база</label>
+                <select id="sel-kb" disabled></select>
+              </div>
+            </div>
+          </details>
+
+          <details class="set-group" data-group="compare">
+            <summary class="set-summary">
+              <span class="set-title">Сравнение моделей</span>
+              <button class="info-btn" type="button" data-info="compare"
+                      aria-label="Как работает сравнение и что нужно для запуска" title="Как это работает">i</button>
+              <span class="set-value" id="set-value-compare"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="set-body">
+              <p class="hint">Один и тот же анализ выполняется каждой выбранной моделью по очереди;
+                 результат — сводная таблица и файл сравнения.</p>
+              <div id="compare-list" class="compare-list"></div>
+              <button id="btn-compare" class="btn btn-quiet btn-block" type="button" disabled>
+                Запустить сравнение
+              </button>
+            </div>
+          </details>
+
+          <details class="set-group" data-group="theme">
+            <summary class="set-summary">
+              <span class="set-title">Оформление</span>
+              <span class="set-value" id="set-value-theme"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="set-body">
+              <div class="field">
+                <span class="field-label" id="theme-label">Тема</span>
+                <div class="segmented" role="radiogroup" aria-labelledby="theme-label" id="theme-seg">
+                  <button type="button" role="radio" data-theme="auto" aria-checked="true">Авто</button>
+                  <button type="button" role="radio" data-theme="light" aria-checked="false">Светлая</button>
+                  <button type="button" role="radio" data-theme="dark" aria-checked="false">Тёмная</button>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
     </main>
   </div>
 
+  <!-- Меню проекта: вызывается «⋮», двойным кликом и долгим нажатием.
+       Лежит на уровне body: у сайдбара backdrop-filter, он запирает position: fixed. -->
+  <div id="sess-menu" class="sess-menu" role="menu" hidden>
+    <button class="sess-menu-item" type="button" role="menuitem" data-act="rename">Переименовать</button>
+    <button class="sess-menu-item danger" type="button" role="menuitem" data-act="delete">Удалить</button>
+  </div>
+
+  <!-- ══════════ План участка: полноэкранный вьювер ══════════
+       Отдельного раздела в навигации нет — план живёт карточкой в ленте диалога,
+       а здесь разворачивается на весь экран для разбора и замечаний. -->
+  <div id="plan-modal" class="plan-modal" role="dialog" aria-modal="true" aria-labelledby="plan-modal-title" hidden>
+    <header class="pm-head">
+      <div class="pm-head-text">
+        <h2 id="plan-modal-title">План участка</h2>
+        <p id="vw-status" class="pm-status"></p>
+      </div>
+      <button id="plan-modal-close" class="icon-btn pm-close" type="button" aria-label="Закрыть план">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+
+    <div class="pm-toolbar">
+      <div class="vw-tools" role="group" aria-label="Инструменты плана">
+        <button id="vw-zoom-in" class="pm-tool" type="button" title="Приблизить" aria-label="Приблизить">+</button>
+        <button id="vw-zoom-out" class="pm-tool" type="button" title="Отдалить" aria-label="Отдалить">−</button>
+        <button id="vw-fit" class="pm-tool" type="button" title="Вписать участок в экран">По участку</button>
+        <button id="vw-reset" class="pm-tool" type="button" title="Сбросить вид">Сбросить</button>
+        <button id="vw-select" class="pm-tool" type="button" title="Обвести область для вопроса или заметки">Выделить область</button>
+        <button id="vw-restrictions" class="pm-tool" type="button" title="Извлечь ограничения из документов и построить зоны">Рассчитать ограничения</button>
+        <button id="vw-export" class="pm-tool" type="button"
+                title="Скачать DWG с объектами, разложенными по слоям (с вашими переназначениями)">Скачать по слоям</button>
+        <button id="vw-reload" class="pm-tool" type="button" title="Перечитать чертежи">Обновить</button>
+      </div>
+      <details class="pm-layers-menu">
+        <summary class="pm-tool">Слои</summary>
+        <div id="vw-layers" class="vw-layers" role="group" aria-label="Видимость слоёв"></div>
+      </details>
+    </div>
+
+    <div id="vw-stage" class="vw-stage pm-stage">
+      <svg id="vw-svg" class="vw-svg" role="img" aria-label="Схема участка"></svg>
+      <div id="vw-tip" class="vw-tip" hidden></div>
+
+      <!-- Свойства объекта: открывается кликом по объекту, живёт ВНУТРИ плана.
+           Разбор угадывает тип по имени слоя и ошибается — здесь человек говорит,
+           чем объект является на самом деле. Правка применяется к плану и уходит
+           в выгрузку для дообучения. -->
+      <aside id="vw-props" class="vw-props" hidden aria-label="Свойства объекта">
+        <div class="vw-props-head">
+          <h3 id="vw-props-title">Объект</h3>
+          <button id="vw-props-close" class="icon-btn" type="button" aria-label="Закрыть свойства">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <dl id="vw-props-facts" class="vw-props-facts"></dl>
+        <form id="vw-props-form" class="vw-props-form">
+          <label class="vw-props-field">
+            <span>Что это на самом деле</span>
+            <!-- список слоёв приходит с сервера (services/geometry/layers.js):
+                 он общий с разбором чертежа и с выгрузкой DXF, дублировать его
+                 в разметке значит однажды получить «переназначил, а в чертеже по-старому» -->
+            <select id="vw-prop-type">
+              <option value="">— как определил разбор —</option>
+            </select>
+          </label>
+          <label class="vw-props-field">
+            <span>Назначение или подпись</span>
+            <input id="vw-prop-label" type="text" maxlength="200" placeholder="Например: административный корпус">
+          </label>
+          <label class="vw-props-field">
+            <span>Перенос</span>
+            <select id="vw-prop-relocation">
+              <option value="undecided">не решено</option>
+              <option value="keep">остаётся на месте</option>
+              <option value="move">переносится</option>
+            </select>
+          </label>
+          <label class="vw-props-field">
+            <span>Комментарий</span>
+            <textarea id="vw-prop-comment" rows="2" maxlength="1000" placeholder="Что здесь важно знать"></textarea>
+          </label>
+          <div class="vw-props-foot">
+            <button id="vw-prop-save" class="btn btn-primary btn-sm" type="submit">Сохранить</button>
+            <button id="vw-prop-reset" class="btn btn-quiet btn-sm" type="button" hidden>Сбросить правку</button>
+          </div>
+          <p id="vw-props-note" class="hint"></p>
+        </form>
+      </aside>
+    </div>
+    <p id="vw-empty" class="empty-state pm-empty">Загрузите чертёж DWG или DXF на экране «Этап 1».</p>
+    <ul id="vw-warnings" class="vw-warnings pm-warnings" hidden></ul>
+  </div>
+
+  <!-- ══════════ Вход на платформу ══════════
+       Пароля нет: вход по «Фамилия Имя» — решение владельца. Список людей
+       наружу не показывается, ответ сервера одинаков для нового и
+       существующего имени. -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true"
+       aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Платформа автоматического проектирования</p>
+
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off"
+                 autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off"
+                 autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">
+          Войти на платформу
+        </button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <script src="app.js?v=7"></script>
+  <!-- Диалог ввода/подтверждения (вместо системных prompt/confirm) -->
+  <div id="dialog-modal" class="modal-backdrop" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <div class="modal-head">
+        <h3 id="dialog-title"></h3>
+      </div>
+      <div class="modal-body">
+        <p id="dialog-message" class="dialog-message" hidden></p>
+        <div id="dialog-fields" class="dialog-fields"></div>
+      </div>
+      <div class="dialog-foot">
+        <!-- третья кнопка: разрушающее действие прямо из диалога правки
+             (например, «Удалить выделение» на плане). Обычно скрыта. -->
+        <button id="dialog-extra" class="btn btn-danger dialog-extra" type="button" hidden></button>
+        <button id="dialog-cancel" class="btn btn-quiet" type="button">Отмена</button>
+        <button id="dialog-ok" class="btn btn-primary" type="button">ОК</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Информационное окно (значок «i») -->
+  <div id="info-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="info-modal-title">
+      <div class="modal-head">
+        <h3 id="info-modal-title">Справка</h3>
+        <button id="info-modal-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div id="info-modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="auth.js?v=3"></script>
+  <script src="geo-transform.js?v=1"></script>
+  <script src="zone-style.js?v=2"></script>
+  <script src="viewer.js?v=14"></script>
+  <script src="app.js?v=46"></script>
 </body>
 </html>

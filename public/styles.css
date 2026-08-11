@@ -1,4 +1,4 @@
-/* ENSO Nexus Pilot 1 — премиальное «бумажное» оформление.
+/* Enso-nexus — премиальное «бумажное» оформление.
    Палитра: слоновая кость + тёплая тушь; терракота — действия и внимание,
    архивный синий — данные (форматы, счётчики) — дуэт из подсветки документации.
    Светлая и тёмная (тёплый графит) темы: авто (prefers-color-scheme) или вручную
@@ -18,6 +18,13 @@
   --green: #4f7d58;
   --orange: #b07e36;
   --red: #a93e2c;
+  /* Заголовок «Выполняется анализ» — тушь и терракота, дуэт всей платформы.
+     Золотой цвет прежней точки-индикатора выбивался из палитры: в карточке
+     он был единственным, чего больше нет нигде. Значения — ссылки на токены
+     темы, поэтому в тёмной подхватываются сами и переопределять их не нужно
+     (тушь 15.4:1 в светлой и 12.5:1 в тёмной, гребень волны — 5.8:1 и 5.3:1). */
+  --progress-title: var(--text);
+  --progress-title-glow: var(--accent-press);
 
   --bg: #f3efe6;
   --bg-gradient: radial-gradient(1100px 650px at 85% -10%, rgba(185, 87, 64, .05), transparent 60%),
@@ -106,6 +113,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 button { font: inherit; color: inherit; }
+/* атрибут hidden должен побеждать любые display у классов (.btn, .icon-btn, .card…):
+   правило браузера по специфичности им проигрывает, и скрытое остаётся на экране */
+[hidden] { display: none !important; }
 ::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 
 :focus-visible {
@@ -122,38 +132,66 @@ button { font: inherit; color: inherit; }
 /* ---------- каркас ---------- */
 .shell { display: flex; min-height: 100vh; }
 
-.mock-banner {
+/* Переключатель боковой панели — как в Claude Code: значок стоит на месте,
+   панель уезжает влево, содержимое занимает освободившееся место.
+   Двигается только margin панели: ширина её содержимого не меняется, поэтому
+   при сворачивании нечему переверстаться и «схлопнуться». */
+.sidebar-toggle {
+  position: fixed; top: calc(12px + var(--banners-h, 0px)); left: 12px; z-index: 45;
+  display: grid; place-items: center;
+  width: 32px; height: 32px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-2); cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.sidebar-toggle:hover { background: var(--fill-hover); color: var(--text); border-color: var(--stroke-soft); }
+.sidebar-toggle svg { width: 17px; height: 17px; }
+
+/* место под значок: в развёрнутом виде — в шапке панели, в свёрнутом — у контента */
+.brand { padding-left: 38px !important; }
+.shell.sidebar-collapsed .content { padding-left: 58px; }
+
+/* Стопка плашек-предупреждений.
+   Раньше каждая плашка была position: fixed; inset: 0 0 auto 0 — все три
+   вставали в одну и ту же точку, друг на друга: при «сервер недоступен +
+   демо-режим» человек видел только демо-режим, а самое важное сообщение
+   пропадало. Плюс полоса накрывала верх сайдбара, и на узком экране «Этап 1»
+   и первый проект переставали нажиматься.
+   Теперь плашки лежат стопкой в одном контейнере, а его высота уезжает в
+   --banners-h (её ставит app.js) — на неё сдвигается всё приложение. */
+.banners {
   position: fixed; inset: 0 0 auto 0; z-index: 60;
+  display: flex; flex-direction: column;
+}
+.mock-banner {
   padding: 8px 16px; text-align: center; font-size: 12.5px;
   background: var(--orange); color: #1f1a13;
 }
+.mock-banner + .mock-banner { border-top: 1px solid color-mix(in srgb, #1f1a13 18%, transparent); }
+/* приложение начинается под стопкой плашек — перекрывать меню нечему */
+.shell { padding-top: var(--banners-h, 0px); }
 
 /* ---------- сайдбар ---------- */
 .sidebar {
-  width: 236px; flex-shrink: 0;
+  width: var(--sidebar-w, 236px); flex-shrink: 0;
+  transition: margin-left .28s cubic-bezier(.4, 0, .2, 1);
   display: flex; flex-direction: column; gap: 22px;
   padding: 22px 14px 18px;
   background: var(--sidebar);
   -webkit-backdrop-filter: blur(30px) saturate(1.3);
   backdrop-filter: blur(30px) saturate(1.3);
   border-right: 1px solid var(--stroke-soft);
-  position: sticky; top: 0; height: 100vh;
+  /* панель прилипает под стопкой плашек, а не под верх окна */
+  position: sticky; top: var(--banners-h, 0px); height: calc(100vh - var(--banners-h, 0px));
 }
 
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; }
-/* плашка бренда — как тиснёная обложка: бумага, терракотовый знак */
-.brand-mark {
-  width: 36px; height: 36px; border-radius: 9px;
-  display: grid; place-items: center;
-  background: var(--panel-solid);
-  border: 1px solid var(--stroke);
-  color: var(--accent);
-  box-shadow: 0 1px 3px rgba(70, 55, 35, .12);
-}
-.brand-mark svg { width: 20px; height: 20px; }
+.shell.sidebar-collapsed .sidebar { margin-left: calc(-1 * var(--sidebar-w, 236px)); }
+/* содержимое свёрнутой панели не должно ловить фокус табом */
+.shell.sidebar-collapsed .sidebar { visibility: hidden; }
+.shell.sidebar-collapsed .sidebar * { transition: none; }
 .brand-text { display: flex; flex-direction: column; }
 .brand-name { font-family: var(--font-display); font-weight: 600; font-size: 16px; letter-spacing: .01em; }
-.brand-sub { font-size: 11px; color: var(--text-2); font-family: var(--font-mono); letter-spacing: .02em; }
 
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-item {
@@ -166,25 +204,97 @@ button { font: inherit; color: inherit; }
 }
 .nav-item svg { width: 18px; height: 18px; color: var(--text-2); flex-shrink: 0; transition: color .15s ease; }
 .nav-item:hover { background: var(--fill); }
+.nav-action { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--stroke-soft); border-radius: 0 0 var(--radius-sm) var(--radius-sm); color: var(--text-2); }
+.nav-action:hover { color: var(--text); }
 .nav-item.active { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
 .nav-item.active svg { color: var(--accent); }
 
+/* ---------- проекты устройства (список сессий) ---------- */
+.sessions-nav { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: -6px; }
+.sessions-head {
+  margin: 0 0 6px 12px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.sessions-list {
+  list-style: none; margin: 0; padding: 0 2px;
+  overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}
+.sess-item {
+  position: relative; padding: 7px 34px 7px 10px;
+  border-radius: var(--radius-sm); cursor: pointer;
+  transition: transform .18s ease;
+}
+.sess-item:hover { background: var(--fill); }
+.sess-item.active { background: var(--fill); }
+/* «⋮» проявляется по наведению, на touch — после свайпа влево */
+.sess-more {
+  position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-3); cursor: pointer;
+  font-size: 15px; line-height: 1; opacity: 0; transition: opacity .12s ease, color .12s ease;
+}
+.sess-item:hover .sess-more, .sess-item.active .sess-more, .sess-more:focus-visible { opacity: 1; }
+.sess-more:hover { color: var(--text); background: var(--stroke-soft); }
+.sess-item.swiped { transform: translateX(-34px); }
+.sess-item.swiped .sess-more { opacity: 1; }
+.sess-title {
+  display: block; font-size: 12.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sess-item.active .sess-title { font-weight: 600; }
+.sess-meta {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 2px; font-size: 10.5px; color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* точка статуса — та же логика, что у индикатора нейросети внизу сайдбара */
+.sess-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--text-3);
+}
+.sess-dot[data-status="completed"] { background: var(--green); }
+.sess-dot[data-status="failed"] { background: var(--red); }
+.sess-dot[data-status="needs_clarification"],
+.sess-dot[data-status="awaiting_approval"] { background: var(--orange); }
+/* работа идёт — точка медленно дышит; частить в углу глаза незачем */
+.sess-dot[data-status="queued"],
+.sess-dot[data-status="running"] {
+  background: var(--orange);
+  animation: sess-pulse 2.6s ease-in-out infinite;
+}
+@keyframes sess-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
 .sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; padding: 0 4px; }
-.session-actions { display: flex; gap: 6px; }
-.session-actions .btn { flex: 1; font-size: 11.5px; padding: 5px 6px; white-space: nowrap; }
-.ai-chip {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-radius: 10px;
-  background: var(--fill); border: 1px solid var(--stroke-soft);
-  font-family: var(--font-mono); font-size: 11px; color: var(--text);
-  overflow-wrap: anywhere;
+.ai-badge {
+  display: flex; align-items: center; gap: 8px; padding: 2px 6px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-2);
+  overflow-wrap: anywhere; cursor: default;
 }
 .ai-dot {
   width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
   background: var(--green); box-shadow: 0 0 6px var(--green);
 }
-.ai-chip[data-mode="mock"] .ai-dot { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
-.sidebar-note { font-size: 11px; color: var(--text-3); padding: 0 4px; }
+.ai-badge[data-mode="mock"] .ai-dot { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+
+/* Меню проекта: «⋮», двойной клик, долгое нажатие */
+/* подпись под селектором модели: строка возможностей идёт с новой строки */
+#model-note { white-space: pre-line; }
+
+.sess-menu {
+  position: fixed; z-index: 120; min-width: 168px; padding: 5px;
+  background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm); box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.sess-menu[hidden] { display: none; }
+.sess-menu-item {
+  padding: 8px 10px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer;
+}
+.sess-menu-item:hover, .sess-menu-item:focus-visible { background: var(--fill); }
+.sess-menu-item.danger { color: var(--red); }
 
 /* ---------- контент и экраны ---------- */
 .content { flex: 1; min-width: 0; padding: 28px 30px 40px; }
@@ -223,9 +333,11 @@ button { font: inherit; color: inherit; }
 }
 .card + .card { margin-top: 16px; }
 
+/* Диалог — самая широкая колонка: план участка и варианты посадки приходят
+   карточками именно туда, и на 360 px схема читается как марка на конверте. */
 .columns {
   display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(360px, 1fr) minmax(280px, 340px);
+  grid-template-columns: minmax(280px, 330px) minmax(420px, 1.6fr) minmax(260px, 310px);
   gap: 16px; align-items: start;
 }
 .col { min-width: 0; }
@@ -252,7 +364,6 @@ button { font: inherit; color: inherit; }
 .btn-cancel:not(:disabled):hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
 .btn-sm { padding: 5px 10px; font-size: 12.5px; }
 .btn-block { width: 100%; margin-top: 12px; }
-.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- поля ---------- */
 .field { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
@@ -290,9 +401,13 @@ textarea:focus, select:focus, input:focus {
 }
 
 /* ---------- дроп-зона и файлы ---------- */
+/* Вертикальный ритм задан одним шагом: от пунктира до значка, от значка до
+   текста и от текста до пунктира — одинаково. Подпись с форматами прижата
+   к своему заголовку: это один блок текста, а не третья строка ритма. */
 .dropzone {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 22px 14px; text-align: center; cursor: pointer;
+  --dz-step: 18px;
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  padding: var(--dz-step) 14px; text-align: center; cursor: pointer;
   border: 1.5px dashed var(--stroke);
   border-radius: var(--radius-sm);
   color: var(--text-2); font-size: 13px;
@@ -302,7 +417,9 @@ textarea:focus, select:focus, input:focus {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
-.dz-icon { width: 26px; height: 26px; color: var(--accent); margin-bottom: 2px; }
+/* к шагу добавлена толщина пунктира: глазом отсчёт идёт от самой линии */
+.dz-icon { width: 26px; height: 26px; color: var(--accent); margin: 0 0 calc(var(--dz-step, 18px) + 1.5px); }
+.dropzone .hint { margin-top: 5px; }
 
 .file-list, .results-list { list-style: none; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .file-item, .result-item {
@@ -346,6 +463,12 @@ details summary {
   cursor: pointer; font-size: 12.5px; font-weight: 590; color: var(--text-2);
   margin-top: 10px; user-select: none;
 }
+.usage-line {
+  margin-top: 8px;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .events-log { list-style: none; margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
 .events-log li { font-size: 11.5px; color: var(--text-2); padding-left: 14px; position: relative; }
 .events-log li::before {
@@ -370,13 +493,24 @@ details summary {
   font-family: var(--font-display); font-weight: 600; font-size: 15px;
 }
 .progress-head .btn-cancel { margin-left: 8px; flex-shrink: 0; }
-.live-dot {
-  width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
+/* Идёт анализ: заголовок набран тушью, как остальные заголовки платформы, и по
+   нему медленно проходит терракотовая волна — тем же цветом, что и полоса
+   прогресса под ним. Размер и положение не меняются, сдвига вёрстки нет.
+   Скорость намеренно низкая: индикатор должен обозначать жизнь, а не
+   мельтешить в углу глаза всё время работы анализа. */
+.progress-title.live {
+  background-image: linear-gradient(100deg,
+    var(--progress-title) 0%, var(--progress-title) 38%,
+    var(--progress-title-glow) 50%,
+    var(--progress-title) 62%, var(--progress-title) 100%);
+  background-size: 300% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+  animation: text-wave 6s linear infinite;
 }
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
-  50% { box-shadow: 0 0 0 7px transparent; }
+@keyframes text-wave {
+  from { background-position: 150% 0; }
+  to { background-position: -150% 0; }
 }
 .progress-elapsed { margin-left: auto; font-family: var(--font-mono); font-size: 12px; color: var(--text-2); font-weight: 400; }
 .progress-model {
@@ -428,7 +562,18 @@ details summary {
 
 /* ---------- чат ---------- */
 .card-dialog { display: flex; flex-direction: column; min-height: 480px; max-height: calc(100vh - 160px); }
+/* Сжиматься имеет право ТОЛЬКО лента — она для того и прокручиваемая.
+   У остальных блоков колонки flex-shrink по умолчанию = 1, и в узкой колонке
+   подсказка ужималась до своей min-height, то есть до одной строки: вторая
+   строка вылезала за коробку и уходила под поле ввода — «замечания можно
+   писать и сюда» обрывалось на «и». Воспроизводится при ширине колонки ≤ 440 px. */
+.card-dialog > * { flex-shrink: 0; }
 .chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.card-dialog > .chat { flex-shrink: 1; }
+/* внутри прокрутки чата: сообщения + блок вопросов; контейнер их не сжимает,
+ * а .chat-messages растягивается, чтобы пустое состояние центрировалось */
+.chat > * { flex-shrink: 0; }
+.chat-messages { flex: 1 0 auto; display: flex; flex-direction: column; gap: 10px; }
 .msg {
   max-width: 92%; padding: 10px 13px; border-radius: 14px;
   font-size: 13px; line-height: 1.5;
@@ -447,29 +592,22 @@ details summary {
 .msg-user code { background: color-mix(in srgb, var(--accent-contrast) 24%, transparent); }
 .msg-empty { color: var(--text-3); font-size: 12.5px; text-align: center; margin: auto; max-width: 300px; }
 
-.chat-form { display: flex; gap: 8px; margin-top: 12px; align-items: flex-end; }
+/* панель чатов с помощником (треды по темам) */
+
+/* подсказка под лентой: что случится с написанным прямо сейчас */
+.msg-waiting {
+  display: block; margin-top: 4px;
+  font-size: 10.5px; opacity: .75; font-style: italic;
+}
+.chat-hint { margin-top: 10px; min-height: 1.5em; }
+.chat-hint:empty { min-height: 0; margin-top: 0; }
+.chat-form { display: flex; gap: 8px; margin-top: 8px; align-items: flex-end; }
 .chat-form textarea { flex: 1; }
 .chat-form .btn { padding: 9px 12px; }
 
-/* ---------- вопросы ---------- */
-.questions-block { margin-top: 12px; border-top: 1px solid var(--stroke-soft); padding-top: 12px; }
-.questions-block h3 { font-size: 13px; font-weight: 600; margin-bottom: 8px; font-family: var(--font-display); }
-.question {
-  padding: 10px 12px; border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--orange) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--orange) 20%, transparent);
-  margin-bottom: 8px;
-}
-.q-status {
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
-  color: var(--orange);
-}
-.q-status[data-s="answered"], .q-status[data-s="closed"] { color: var(--green); }
-.q-text { font-size: 13px; margin-top: 4px; }
-.q-why { font-size: 11.5px; color: var(--text-2); margin-top: 3px; }
-.q-answered { font-size: 12px; color: var(--text-2); margin-top: 5px; }
-.q-row { display: flex; gap: 6px; margin-top: 8px; }
-.q-row input { flex: 1; font-size: 12.5px; }
+/* Блок вопросов старого образца (.questions-block, .question, .q-*) удалён
+   вместе со своей разметкой: уточняющие вопросы рисует виджет #question-widget
+   с классами .qw-*. */
 
 /* ---------- результаты и факты ---------- */
 .empty-state { color: var(--text-3); font-size: 12.5px; padding: 14px 4px; }
@@ -488,14 +626,193 @@ details summary {
 }
 .compare-list label:hover { background: var(--fill); }
 .compare-list input { accent-color: var(--accent); }
-.cl-provider { margin-left: auto; font-size: 10.5px; color: var(--text-3); }
-.cl-warn { font-size: 10.5px; color: var(--orange); }
-
-/* ---------- настройки ---------- */
-.settings-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 420px)); gap: 16px;
+/* .cl-provider и .cl-warn убраны вместе с прежним плоским списком сравнения:
+   теперь провайдеры рисуются группами .cl-group/label */
+/* группы провайдеров (раскрывающиеся) */
+.cl-group { border: 1px solid var(--stroke); border-radius: var(--radius-sm); padding: 2px 6px; }
+.cl-group > summary {
+  cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-2);
+  padding: 6px 4px; list-style-position: inside;
 }
-.settings-grid .card + .card { margin-top: 0; }
+.cl-group[open] > summary { color: var(--text); }
+
+/* ---------- значок «i» и информационное окно ---------- */
+.info-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 6px; vertical-align: 2px;
+  border: 1px solid var(--stroke); border-radius: 50%;
+  background: var(--fill); color: var(--text-2);
+  font-size: 11px; font-weight: 700; font-style: italic; font-family: Georgia, serif;
+  cursor: pointer; transition: border-color .15s ease, color .15s ease;
+}
+.info-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Диалог обязан лежать ВЫШЕ полноэкранного плана (.plan-modal, z-index 95).
+   При 90 он открывался под планом: комментарий к выделенной области, ответ модели
+   и подтверждение удаления были не видны, пока не закроешь план крестиком — и
+   выглядело это как «выделение ничего не делает». */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 110;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(40, 32, 22, .35);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+/* атрибут hidden обязан побеждать display:flex — иначе окно «всегда открыто» */
+.modal-backdrop[hidden] { display: none; }
+
+/* компактный диалог ввода/подтверждения */
+.modal-sm { width: min(420px, 100%); }
+.dialog-message { margin: 0 0 6px; font-size: 13px; line-height: 1.55; color: var(--text-2); }
+.dialog-fields { display: flex; flex-direction: column; gap: 12px; }
+.dialog-fields label { display: flex; flex-direction: column; gap: 5px; }
+.dialog-fields label > span { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.dialog-fields input {
+  font: inherit; font-size: 13px; color: var(--text);
+  padding: 8px 11px; border: 1px solid var(--stroke); border-radius: var(--radius-sm);
+  background: var(--fill); outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.dialog-fields input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 20%, transparent);
+  background: var(--panel-solid);
+}
+.dialog-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px 14px;
+}
+/* разрушающее действие уходит к левому краю: рядом с «ОК» его нажимают по ошибке */
+.dialog-extra { margin-right: auto; }
+.modal {
+  width: min(560px, 100%); max-height: min(80vh, 640px);
+  display: flex; flex-direction: column;
+  background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: var(--radius); box-shadow: 0 24px 60px rgba(40, 32, 22, .25);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--stroke);
+}
+.modal-head h3 { margin: 0; font-size: 15px; }
+.modal-body { padding: 12px 16px 16px; overflow-y: auto; font-size: 12.5px; line-height: 1.55; color: var(--text-2); }
+.modal-body h4 { margin: 12px 0 6px; font-size: 12.5px; color: var(--text); }
+.modal-body h4:first-child { margin-top: 0; }
+.modal-body ul, .modal-body ol { margin: 6px 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+.modal-body .im-ok { color: var(--green, #3f7d4e); }
+.modal-body .im-no { color: var(--orange, #b07a2a); }
+
+/* ---------- виджет уточняющего вопроса (стиль Claude Code) ---------- */
+.question-widget {
+  margin-top: 10px; padding: 12px;
+  border: 1px solid var(--stroke); border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  box-shadow: 0 8px 22px rgba(70, 55, 35, .10);
+}
+.qw-head { display: flex; align-items: baseline; gap: 8px; }
+.qw-counter {
+  flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 2px 8px; border-radius: 999px;
+}
+.qw-title { font-size: 13.5px; font-weight: 600; line-height: 1.4; }
+.qw-why { margin: 6px 0 0; font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
+.qw-options { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.qw-opt {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  text-align: left; cursor: pointer;
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--stroke); background: var(--fill);
+  font-size: 12.5px; line-height: 1.4; color: var(--text);
+  transition: border-color .15s ease, background .15s ease;
+}
+.qw-opt:hover { border-color: var(--accent); background: var(--panel-solid); }
+.qw-opt:disabled { opacity: .5; cursor: default; }
+.qw-opt-text { min-width: 0; }
+/* номер варианта — это номер КЛАВИШИ (1..9), поэтому и выглядит клавишей,
+   а не хвостом текста: раньше он читался как «до 1 кВ1» */
+.qw-num {
+  flex-shrink: 0; min-width: 18px; padding: 1px 5px;
+  border: 1px solid var(--stroke); border-radius: 4px;
+  background: var(--panel-solid);
+  font-family: var(--font-mono); font-size: 10.5px; text-align: center;
+  color: var(--text-3);
+}
+.qw-other {
+  display: flex; align-items: center; gap: 10px; margin-top: 6px;
+  padding: 6px 12px; border: 1px solid var(--stroke); border-radius: var(--radius-sm);
+}
+.qw-other-label { flex-shrink: 0; font-size: 12.5px; color: var(--text-2); }
+.qw-other input {
+  flex: 1; border: 0; background: transparent; outline: none;
+  font: inherit; font-size: 12.5px; color: var(--text); padding: 3px 0;
+}
+.qw-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+/* ---------- порядок работы (раздел «Этапы» в настройках) ---------- */
+.workplan-steps {
+  margin: 8px 0 0; padding-left: 4px; list-style: none;
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: 12px; line-height: 1.45; color: var(--text-2);
+  max-height: 260px; overflow-y: auto;
+}
+.workplan-steps strong { color: var(--text); font-weight: 600; }
+.workplan-steps .meta { color: var(--text-3); font-size: 11px; }
+/* действия — значки с подсказкой по наведению, а не подписи: карточка остаётся короткой */
+.workplan-actions { display: flex; align-items: center; gap: 2px; margin-top: 10px; }
+.wp-act { border: 1px solid transparent; }
+.wp-act:hover { background: var(--fill-hover); color: var(--accent); border-color: var(--stroke-soft); }
+.wp-act:disabled { opacity: .45; cursor: default; }
+.wp-act:disabled:hover { background: transparent; color: var(--text-2); border-color: transparent; }
+
+/* ---------- настройки: список выпадающих разделов ----------
+   Один лист с внутренними разлиновками вместо четырёх плавающих карточек:
+   настройки читаются сверху вниз, как спецификация, а не как панель приборов.
+   Открытый раздел помечен терракотовой линией на поле — как пометка на чертеже. */
+.settings-stack {
+  max-width: 640px;
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(24px) saturate(1.25);
+  backdrop-filter: blur(24px) saturate(1.25);
+  border: 1px solid var(--stroke-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.set-group + .set-group { border-top: 1px solid var(--stroke-soft); }
+
+.set-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 15px 18px; cursor: pointer; user-select: none;
+  list-style: none; margin: 0;
+  transition: background .15s ease;
+}
+.set-summary::-webkit-details-marker { display: none; }
+.set-summary:hover { background: color-mix(in srgb, var(--fill) 55%, transparent); }
+.set-title {
+  font-family: var(--font-display);
+  font-size: 16px; font-weight: 600; letter-spacing: .005em; color: var(--text);
+}
+.set-value {
+  margin-left: auto; text-align: right;
+  font-size: 11.5px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 58%;
+}
+.set-chev {
+  width: 15px; height: 15px; flex-shrink: 0; color: var(--text-3);
+  transition: transform .18s ease;
+}
+.set-group[open] > .set-summary .set-chev { transform: rotate(180deg); }
+.set-group[open] > .set-summary .set-value { display: none; }
+
+.set-body {
+  padding: 2px 18px 18px;
+  border-left: 2px solid var(--accent);
+  margin-left: 18px; padding-left: 16px;
+  animation: set-open .2s ease;
+}
+@keyframes set-open { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.set-body .field:first-child { margin-top: 4px; }
+.set-body .compare-list { margin-top: 12px; }
 
 /* ---------- нормоконтроль ---------- */
 .normo-hero {
@@ -522,7 +839,8 @@ details summary {
 /* ---------- тост ---------- */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  z-index: 70; max-width: min(90vw, 480px);
+  /* выше плана и выше диалога: тост сообщает результат действия, сделанного в них */
+  z-index: 130; max-width: min(90vw, 480px);
   padding: 10px 18px; border-radius: 12px;
   background: var(--panel-solid);
   border: 1px solid var(--stroke-soft);
@@ -541,6 +859,10 @@ details summary {
 }
 @media (max-width: 800px) {
   .shell { flex-direction: column; }
+  /* полоса сверху: уезжать ей некуда — просто убираем из потока */
+  .shell.sidebar-collapsed .sidebar { display: none; margin-left: 0; }
+  .shell.sidebar-collapsed .content { padding-left: 14px; padding-top: 54px; }
+  .sidebar-toggle { top: calc(8px + var(--banners-h, 0px)); left: 8px; }
   .sidebar {
     width: 100%; height: auto; position: static;
     flex-direction: row; align-items: center; gap: 12px;
@@ -548,18 +870,407 @@ details summary {
     padding: 10px 14px;
     border-right: 0; border-bottom: 1px solid var(--stroke-soft);
   }
-  .brand-text, .sidebar-note { display: none; }
-  .nav { flex-direction: row; flex: 1; }
+  .brand-text { display: none; }
+  .nav { flex-direction: row; flex: 1; flex-wrap: wrap; }
+  /* в строку разделитель не нужен — кнопка просто ещё один пункт */
+  .nav-action { margin-top: 0; padding-top: 7px; border-top: 0; }
   .nav-item { padding: 7px 10px; font-size: 12.5px; }
   .sidebar-foot { margin: 0; flex-direction: row; align-items: center; }
-  .session-actions .btn { font-size: 11px; padding: 4px 6px; }
-  .ai-chip { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ai-badge { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .content { padding: 18px 14px 30px; }
   .columns { grid-template-columns: 1fr; }
   .toolbar h1 { font-size: 26px; }
+  /* в узкой строке заголовку раздела важнее места, чем подписи значения */
+  .set-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .set-value { max-width: 40%; }
 }
 
 /* ---------- движение по запросу ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  /* статичное состояние вместо волны: та же тушь, никакой анимации */
+  .progress-title.live {
+    background-image: none; -webkit-text-fill-color: currentColor;
+    color: var(--progress-title); animation: none !important;
+  }
 }
+/* ---------- план участка: карточка в ленте и полноэкранный вьювер ----------
+   Отдельного раздела в навигации нет. План приходит в диалог карточкой —
+   чертёжным листом с двойной рамкой (сигнатура приложения) и экспликацией,
+   набранной теми же штриховками, что и сам чертёж. Разбор идёт на весь экран. */
+
+/* --- карточка плана в ленте --- */
+.pc {
+  margin-top: 10px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  overflow: hidden;
+}
+.pc-sheet {
+  position: relative; display: block; width: 100%; padding: 10px;
+  border: 0; background: transparent; cursor: zoom-in; color: var(--text);
+}
+/* двойная чертёжная рамка — та же сигнатура, что у живого индикатора */
+.pc-sheet::after {
+  content: ''; position: absolute; inset: 4px; pointer-events: none;
+  border: 1px solid var(--stroke-soft); border-radius: 5px;
+}
+.pc-sheet .vw-mini { width: 100%; height: 190px; display: block; color: var(--text); }
+.pc-expand {
+  position: absolute; right: 10px; bottom: 10px; z-index: 2;
+  display: grid; place-items: center; width: 26px; height: 26px;
+  border-radius: 6px; border: 1px solid var(--stroke);
+  background: var(--panel-solid); color: var(--text-2);
+  transition: color .15s ease, border-color .15s ease;
+}
+.pc-sheet:hover .pc-expand { color: var(--accent); border-color: var(--accent); }
+.pc-expand svg { width: 14px; height: 14px; }
+
+.pc-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  padding: 8px 12px; border-top: 1px solid var(--stroke-soft);
+  font-size: 11.5px; color: var(--text-2);
+}
+.pc-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.pc-swatch { width: 15px; height: 11px; border-radius: 2px; flex-shrink: 0; }
+.pc-facts {
+  display: flex; flex-wrap: wrap; gap: 2px 14px;
+  padding: 0 12px 10px; font-size: 12px; color: var(--text-2);
+}
+.pc-facts b { color: var(--text); font-weight: 600; }
+.pc-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 10px 12px; border-top: 1px solid var(--stroke-soft);
+  background: var(--fill);
+}
+.pc-note { padding: 0 12px 10px; font-size: 11.5px; color: var(--text-3); }
+/* устаревшая карточка согласования: кнопок нет, и видно почему */
+.pc-stale {
+  padding: 10px 12px; border-top: 1px solid var(--stroke-soft);
+  font-size: 11.5px; color: var(--text-3); font-style: italic;
+}
+.pc-done {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 12px; border-top: 1px solid var(--stroke-soft);
+  font-size: 12px; color: var(--green);
+}
+
+/* --- варианты посадки: карточки в ленте --- */
+.pc-variants { display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 10px; padding: 10px; }
+.pc-variant-wrap { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* решения по мероприятиям: без них вариант «требует решения» выбрать нельзя */
+.pc-decisions {
+  border: 1px solid color-mix(in srgb, var(--orange) 35%, transparent);
+  border-radius: 6px; padding: 8px;
+  background: color-mix(in srgb, var(--orange) 8%, transparent);
+}
+.pc-decisions-head { font-size: 11px; font-weight: 590; color: var(--text-2); margin-bottom: 6px; }
+.pc-acts { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.pc-act { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; }
+.pc-act-title { color: var(--text); }
+.pc-act-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.pc-act-wait { font-size: 10.5px; color: var(--text-3); }
+.pc-act-done {
+  align-self: flex-start; padding: 1px 7px; border-radius: 999px;
+  font-family: var(--font-mono); font-size: 10px;
+}
+.pc-act-done[data-d="allow"] { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+.pc-act-done[data-d="forbid"] { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+.pc-variant {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; border: 1px solid var(--stroke-soft); border-radius: 6px;
+  background: var(--fill); cursor: pointer; text-align: left; color: var(--text);
+  transition: border-color .15s ease, background .15s ease;
+}
+.pc-variant:hover { border-color: var(--accent); background: var(--panel-solid); }
+.pc-variant.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: var(--panel-solid); }
+.pc-variant .vw-mini { width: 100%; height: 96px; background: var(--panel-solid); border-radius: 4px; }
+.pc-variant h4 { margin: 0; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.pc-shape { font-size: 11px; color: var(--text-3); }
+.pc-metrics { display: flex; flex-wrap: wrap; gap: 1px 10px; font-size: 11px; color: var(--text-2); }
+.vw-badge { font-size: 10px; padding: 2px 6px; border-radius: 999px; font-family: var(--font-mono); }
+.vw-badge.ok { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+.vw-badge.wait { background: color-mix(in srgb, var(--orange) 22%, transparent); color: var(--orange); }
+.vw-badge.bad { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+
+/* --- полноэкранный вьювер --- */
+body.modal-open { overflow: hidden; }
+.plan-modal {
+  position: fixed; inset: 0; z-index: 95;
+  display: flex; flex-direction: column;
+  background: var(--bg); background-image: var(--bg-gradient);
+  animation: pm-in .2s ease;
+}
+.plan-modal[hidden] { display: none; }
+@keyframes pm-in { from { opacity: 0; } to { opacity: 1; } }
+
+.pm-head {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 14px 18px 10px; border-bottom: 1px solid var(--stroke-soft);
+}
+.pm-head-text { flex: 1; min-width: 0; }
+.pm-head h2 { font-family: var(--font-display); font-size: 19px; font-weight: 600; margin: 0; }
+.pm-status { font-size: 11.5px; color: var(--text-3); line-height: 1.5; margin-top: 2px; }
+.pm-close { width: 34px; height: 34px; }
+.pm-close svg { width: 17px; height: 17px; }
+
+.pm-toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 10px 18px;
+}
+.vw-tools { display: flex; gap: 4px; flex-wrap: wrap; }
+.pm-tool {
+  padding: 6px 11px; border: 1px solid var(--stroke-soft); border-radius: 999px;
+  background: var(--panel); color: var(--text-2); cursor: pointer;
+  font-size: 12.5px; list-style: none;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.pm-tool::-webkit-details-marker { display: none; }
+.pm-tool:hover { color: var(--text); border-color: var(--stroke); background: var(--panel-solid); }
+.pm-tool:disabled { opacity: .45; cursor: default; }
+#vw-select.active { color: var(--accent); border-color: var(--accent); }
+
+.pm-layers-menu { position: relative; margin-left: auto; }
+.pm-layers-menu .vw-layers {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 3;
+  display: flex; flex-direction: column; gap: 7px;
+  min-width: 220px; padding: 12px 14px;
+  background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-pop);
+}
+.vw-layer-toggle {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-2); cursor: pointer; user-select: none;
+}
+.vw-layer-toggle.empty { opacity: .45; cursor: default; }
+.vw-layer-toggle input { accent-color: var(--accent); }
+.vw-swatch { width: 13px; height: 13px; border-radius: 3px; border: 1px solid var(--stroke); flex-shrink: 0; }
+.vw-sw-parcel { border-color: var(--text); background: transparent; }
+.vw-sw-buildings { background: color-mix(in srgb, var(--data) 45%, transparent); border-color: var(--data); }
+.vw-sw-redLines { background: transparent; border-color: var(--red); border-style: dashed; }
+.vw-sw-utilities { background: transparent; border-color: var(--orange); }
+.vw-sw-existingObjects { background: color-mix(in srgb, var(--text-3) 30%, transparent); }
+.vw-sw-restrictions { background: color-mix(in srgb, var(--accent) 35%, transparent); border-color: var(--accent); }
+.vw-sw-buildable { background: rgba(126, 176, 138, .45); border-color: #6f9e78; }
+.vw-sw-annotations { background: color-mix(in srgb, var(--accent) 20%, transparent); border-color: var(--accent); border-style: dashed; }
+
+.pm-stage { flex: 1; min-height: 0; margin: 0 18px 18px; border-radius: var(--radius); }
+.pm-empty { margin: 0 18px 18px; }
+.pm-warnings { margin: 0 18px 18px; padding-left: 18px; }
+
+.vw-stage {
+  position: relative;
+  border: 1px solid var(--stroke-soft);
+  background: var(--panel-solid); overflow: hidden; cursor: grab; touch-action: none;
+}
+.vw-stage.dragging { cursor: grabbing; }
+.vw-stage.selecting { cursor: crosshair; }
+.vw-stage.selecting .vw-shape { pointer-events: none; }
+.vw-svg { width: 100%; height: 100%; display: block; }
+
+/* толщина линий приходит из viewer'а в мировых единицах — иначе при зуме
+   линии либо исчезают, либо превращаются в плиты */
+.vw-shape { vector-effect: non-scaling-stroke; }
+.vw-parcel .vw-shape { fill: none; stroke: var(--text); stroke-width: 2px; }
+.vw-buildings .vw-shape { fill: color-mix(in srgb, var(--data) 30%, transparent); stroke: var(--data); stroke-width: 1.5px; }
+.vw-redLines .vw-shape { fill: none; stroke: var(--red); stroke-width: 1.5px; stroke-dasharray: 8 5; }
+.vw-utilities .vw-shape { fill: none; stroke: var(--orange); stroke-width: 1.5px; }
+.vw-existingObjects .vw-shape { fill: color-mix(in srgb, var(--text-3) 18%, transparent); stroke: var(--text-3); stroke-width: 1px; }
+/* заливку зон и допустимой территории задаёт viewer инлайном (штриховка по типу) */
+.vw-restrictions .vw-shape { stroke-width: 1.2px; }
+.vw-buildable .vw-shape { stroke-width: 1.2px; }
+/* Объект под курсором подсвечивается ЦЕЛИКОМ. Прежняя подсветка была
+   `brightness(1.12)`: на тонкой линии чертежа она не читается вообще, и понять,
+   где линия начинается и кончается, было нельзя — а именно это и нужно, чтобы
+   решить, что перед тобой. Правило идёт ПОСЛЕ слоевых и специфичнее их. */
+.vw-layer .vw-shape.vw-hover {
+  stroke: var(--accent);
+  stroke-width: 4px;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 65%, transparent));
+}
+/* выбранный объект (открыты свойства) остаётся подсвеченным без курсора */
+.vw-layer .vw-shape.vw-picked {
+  stroke: var(--accent);
+  stroke-width: 4.5px;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 75%, transparent));
+}
+/* объект с правкой человека виден и без наведения: пунктир по контуру */
+.vw-layer .vw-shape.vw-edited { stroke-dasharray: 10 4; }
+
+/* ---------- свойства объекта: панель внутри плана ---------- */
+.vw-props {
+  position: absolute; right: 12px; top: 12px; z-index: 6;
+  width: min(320px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto;
+  background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 12px 14px 14px;
+}
+.vw-props-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.vw-props-head h3 { font-family: var(--font-display); font-size: 14px; font-weight: 600; flex: 1; }
+.vw-props-facts { font-size: 12px; color: var(--text-2); display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+.vw-props-facts dt { color: var(--text-3); }
+.vw-props-facts dd { overflow-wrap: anywhere; }
+.vw-props-form { display: flex; flex-direction: column; gap: 8px; margin-top: 12px;
+                 border-top: 1px solid var(--stroke-soft); padding-top: 12px; }
+.vw-props-field { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-2); }
+.vw-props-field input, .vw-props-field select, .vw-props-field textarea { font-size: 12.5px; }
+.vw-props-foot { display: flex; gap: 8px; margin-top: 2px; }
+.vw-props .hint:empty { display: none; }
+
+.vw-shape:hover { filter: brightness(1.12); }
+/* незамкнутые линии не заливаются: правило идёт ПОСЛЕ слоевых, иначе
+   проигрывает им по порядку при равной специфичности */
+.vw-shape.vw-open { fill: none; }
+
+.vw-tip {
+  position: absolute; z-index: 5; max-width: 320px; padding: 8px 10px;
+  background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-pop);
+  font-size: 12px; line-height: 1.45; color: var(--text);
+  white-space: pre-line; pointer-events: none;
+}
+.vw-warnings { margin: 0; padding-left: 18px; font-size: 12px; color: var(--orange); }
+.vw-warnings li { margin: 2px 0; }
+
+/* выделения и комментарии на плане */
+.vw-annotations .vw-shape {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+  stroke: var(--accent); stroke-width: 1.5px; stroke-dasharray: 6 4; cursor: pointer;
+}
+.vw-annotations .vw-shape:hover { fill: color-mix(in srgb, var(--accent) 22%, transparent); }
+.vw-pending {
+  fill: color-mix(in srgb, var(--accent) 10%, transparent);
+  stroke: var(--accent); stroke-width: 1.5px; stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke; pointer-events: none;
+}
+
+.vw-mini path { vector-effect: non-scaling-stroke; }
+
+@media (max-width: 800px) {
+  .pm-head, .pm-toolbar { padding-left: 12px; padding-right: 12px; }
+  .pm-stage, .pm-empty, .pm-warnings { margin-left: 12px; margin-right: 12px; }
+  .pc-sheet .vw-mini { height: 150px; }
+}
+
+/* --- карточка согласования как сообщение ленты --- */
+.msg-card { background: transparent; padding: 0; max-width: 100%; }
+.msg-card-title {
+  font-family: var(--font-display); font-size: 14px; font-weight: 600;
+  margin: 0 0 2px; color: var(--text);
+}
+
+/* ---------- карточка-раскрывашка (извлечённые факты) ----------
+   Тот же приём, что у разделов настроек: в свёрнутом виде видно только
+   заголовок и счётчик, развёрнутый список не оттесняет результаты вниз. */
+.card-fold { padding: 0; }
+.card-fold > .fold-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 16px 18px; cursor: pointer; user-select: none;
+  list-style: none; margin: 0;
+}
+.card-fold > .fold-summary::-webkit-details-marker { display: none; }
+.fold-title {
+  font-family: var(--font-display);
+  font-size: 16px; font-weight: 600; letter-spacing: .005em; color: var(--text);
+}
+.fold-count {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+  background: var(--fill); border-radius: 999px; padding: 2px 8px;
+}
+.card-fold[open] > .fold-summary .set-chev { transform: rotate(180deg); }
+.card-fold > .facts-list {
+  padding: 0 18px 16px;
+  max-height: 320px; overflow-y: auto;
+}
+
+/* ---------- вход на платформу ----------
+   Экран — «чистый лист» поверх приложения: та же бумага, тот же засечный
+   заголовок, та же двойная чертёжная рамка, что у живого индикатора.
+   Уход — «снятый лист»: карточка приподнимается и уходит вверх, подложка
+   растворяется, приложение проявляется под ней. Двигаются только transform
+   и opacity — всё остальное дёргает вёрстку. */
+.auth {
+  position: fixed; inset: 0; z-index: 200;
+  display: grid; place-items: center; padding: 24px;
+  background: var(--bg); background-image: var(--bg-gradient);
+}
+.auth[hidden] { display: none; }
+
+.auth-sheet {
+  position: relative;
+  width: min(400px, 100%);
+  padding: 34px 32px 28px;
+  text-align: center;
+  background: var(--panel-solid);
+  border: 1px solid var(--stroke-soft);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  animation: auth-in .4s cubic-bezier(.2, .8, .2, 1);
+}
+/* сигнатура приложения: вторая рамка внутри листа */
+.auth-sheet::before {
+  content: ''; position: absolute; inset: 6px; pointer-events: none;
+  border: 1px solid var(--stroke-soft);
+  border-radius: calc(var(--radius) - 6px);
+}
+@keyframes auth-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
+
+.auth-mark { width: 56px; height: 56px; margin: 0 auto 12px; color: var(--accent); }
+.auth-mark svg { width: 100%; height: 100%; }
+.auth-title { font-family: var(--font-display); font-size: 25px; font-weight: 600; letter-spacing: .01em; }
+.auth-sub {
+  margin-top: 3px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.auth-form { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; text-align: left; }
+.auth-field { display: flex; flex-direction: column; gap: 5px; }
+.auth-field span { font-size: 12px; font-weight: 590; color: var(--text-2); }
+.auth-field input {
+  font: inherit; font-size: 14px; color: var(--text);
+  padding: 10px 12px; border: 1px solid var(--stroke); border-radius: var(--radius-sm);
+  background: var(--fill); outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.auth-field input:focus {
+  border-color: var(--accent); background: var(--panel-solid);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.auth-submit { width: 100%; margin-top: 4px; padding: 11px 14px; }
+.auth-error {
+  margin: 0; font-size: 12.5px; color: var(--red);
+  animation: auth-shake .32s ease;
+}
+@keyframes auth-shake {
+  0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); }
+}
+.auth-note { margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); text-align: center; }
+
+.auth-pending, .auth-fail { margin-top: 22px; text-align: center; }
+.auth-pending h2, .auth-fail h2 { font-family: var(--font-display); font-size: 17px; margin-bottom: 8px; }
+.auth-pending p, .auth-fail p { font-size: 13px; line-height: 1.55; color: var(--text-2); }
+.auth-actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
+
+/* машина состояний: показываем ровно один блок */
+.auth[data-state="enter"] .auth-pending,
+.auth[data-state="enter"] .auth-fail,
+.auth[data-state="pending"] .auth-form,
+.auth[data-state="pending"] .auth-fail,
+.auth[data-state="fail"] .auth-form,
+.auth[data-state="fail"] .auth-pending { display: none; }
+.auth[data-busy="1"] .auth-sheet { pointer-events: none; opacity: .6; }
+
+/* уход экрана и приход приложения */
+.auth-leaving { animation: auth-out .5s cubic-bezier(.4, 0, .2, 1) forwards; }
+.auth-leaving .auth-sheet { animation: sheet-lift .5s cubic-bezier(.4, 0, .2, 1) forwards; }
+@keyframes auth-out { to { opacity: 0; } }
+@keyframes sheet-lift { to { opacity: 0; transform: translateY(-26px) scale(1.02); } }
+body.app-arriving .content > .screen.active { animation: app-rise .5s cubic-bezier(.2, .8, .2, 1); }
+body.app-arriving .sidebar { animation: rail-slide .5s cubic-bezier(.2, .8, .2, 1); }
+@keyframes app-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes rail-slide { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+
+/* пока не решено, что показывать, приложение не мигает под экраном входа */
+html[data-boot="auth"] .shell { visibility: hidden; }

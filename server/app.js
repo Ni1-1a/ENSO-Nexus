@@ -8,33 +8,63 @@ const { router: apiRouter, deleteSessionData } = require('./routes/api');
 
 /** Восстановление после рестарта: «зависшие» задачи помечаются ошибкой, сессии разблокируются. */
 function recoverInterruptedJobs() {
-  const stuck = db.prepare("SELECT id FROM sessions WHERE job_status IN ('queued','running')").all();
+  const stages = require('./services/stages');
+  // рабочий этап без задачи — тоже «зависшая» работа: клиент по нему опрашивает
+  // сервер вечно, даже когда job_status уже не queued/running
+  const stuck = db.prepare(
+    `SELECT id FROM sessions WHERE job_status IN ('queued','running')
+        OR stage IN (${stages.WORKING_STAGES.map(() => '?').join(',')})`,
+  ).all(...stages.WORKING_STAGES);
   for (const s of stuck) {
     db.prepare("UPDATE sessions SET job_status = 'failed', updated_at = ? WHERE id = ?").run(now(), s.id);
     db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
       .run(s.id, 'Произошла ошибка', 'Обработка была прервана перезапуском сервера — запустите её повторно.', 'error', now());
+    // этап возвращается к последней карточке согласования: работа не выполнена
+    stages.settle(s.id);
   }
   if (stuck.length) console.log(`[recovery] прерванных задач: ${stuck.length}`);
 }
 
 function createApp() {
+  require('./services/users').init();
   recoverInterruptedJobs();
+  // Вопрос, заданный перед падением процесса, остаётся в ленте без ответа —
+  // очередь для того и выведена из ленты, чтобы пережить перезапуск. Разбор
+  // откладываем на следующий тик: приложение должно сначала собраться.
+  setImmediate(() => {
+    try { require('./services/pipeline').drainPendingChats(); } catch (err) {
+      console.warn('[recovery] очередь диалога не разобрана:', err.message);
+    }
+  });
   const app = express();
-  app.set('trust proxy', 1); // behind Render/railway proxy: correct req.ip for rate limiting
+  // Кому верить в X-Forwarded-For. По умолчанию — только петлевому интерфейсу:
+  // сервер слушает 127.0.0.1 и стоит за cloudflared, других хопов нет.
+  // `trust proxy = 1` доверял ЛЮБОМУ, кто прислал заголовок, и ограничитель
+  // попыток входа обходился одной строкой (см. middleware/index.js).
+  app.set('trust proxy', config.trustProxy);
   app.disable('x-powered-by');
   app.use(securityHeaders);
   app.use(cors);
   app.use(express.json({ limit: '256kb' }));
   app.use('/api', logErrorResponses, apiRouter);
-  // без maxAge: браузер ревалидирует по ETag (304) — обновления интерфейса доходят сразу
-  app.use(express.static(path.join(__dirname, '..', 'public'), { index: 'index.html' }));
+  // Cache-Control: no-cache — браузер ОБЯЗАН ревалидировать по ETag (304); без
+  // заголовка вступает в силу эвристическое кэширование и правки фронта доходят с опозданием
+  app.use(express.static(path.join(__dirname, '..', 'public'), {
+    index: 'index.html',
+    setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+  }));
   app.use(notFound);
   app.use(errorHandler);
   return app;
 }
 
-/** TTL cleanup: expired sessions and their files are removed automatically. */
+/** TTL cleanup: expired sessions and their files are removed automatically.
+ *  SESSION_TTL_HOURS=0 (или меньше) — хранение бессрочное, очистка отключена. */
 function startCleanup() {
+  if (config.sessionTtlHours <= 0) {
+    console.log('[cleanup] TTL отключён — история хранится бессрочно');
+    return null;
+  }
   const sweep = () => {
     try {
       const cutoff = new Date(Date.now() - config.sessionTtlHours * 3600 * 1000).toISOString();

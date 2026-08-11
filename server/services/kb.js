@@ -151,7 +151,26 @@ function rowInBase(r, kbId) {
 }
 
 /* ---------------- эмбеддинги через LM Studio ---------------- */
+
+/**
+ * Очередь запросов к эмбеддингам: строго по одному.
+ *
+ * LM Studio загружает модель «по требованию» и на КАЖДЫЙ параллельный запрос
+ * поднимает ОТДЕЛЬНЫЙ экземпляр. Несколько проектов, ищущих по базе знаний
+ * одновременно, за час набивают память двумя десятками копий одной и той же
+ * модели (проверено: 20 экземпляров по 639 МБ — 12,8 ГБ), после чего рабочая
+ * модель уже не помещается и анализ падает с «insufficient system resources».
+ * Поиск по базе — операция быстрая, очередь на ней не заметна.
+ */
+let embedChain = Promise.resolve();
 async function embed(texts) {
+  const run = embedChain.then(() => embedOnce(texts), () => embedOnce(texts));
+  // цепочка не должна рваться от чужой ошибки — иначе следующий запрос уйдёт мимо очереди
+  embedChain = run.then(() => {}, () => {});
+  return run;
+}
+
+async function embedOnce(texts) {
   const res = await fetch(`${config.localAiBaseUrl}/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

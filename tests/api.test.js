@@ -5,8 +5,13 @@ const path = require('path');
 const fs = require('fs');
 process.env.DATA_DIR = path.join(os.tmpdir(), `pilot1-api-${process.pid}`);
 process.env.ANTHROPIC_API_KEY = '';
+process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-users-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 process.env.RATE_LIMIT_GENERAL = '1000';
 process.env.RATE_LIMIT_EXPENSIVE = '1000';
+// Здесь проверяется всё, кроме политики доступа к облаку: тесты работают с
+// проектами без хозяина, а им облако закрыто (services/ai/cloud-access.js).
+// Сама политика проверяется отдельно — tests/cloud-access.test.js.
+process.env.CLOUD_AI_OPEN = '1';
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -30,14 +35,28 @@ const api = async (p, opts = {}) => {
   try { body = await res.clone().json(); } catch { body = await res.text(); }
   return { status: res.status, body, res };
 };
-const auth = (s) => ({ Authorization: `Bearer ${s.token}` });
+// К проекту с хозяином посторонний не допускается даже с токеном проекта,
+// поэтому в запросах идут оба ключа: токен проекта и токен человека.
+const auth = (s) => ({ Authorization: `Bearer ${s.token}`, ...asUser() });
+
+/** Вход на платформу: проекты заводит только вошедший человек. */
+let userToken = '';
+async function login(lastName = 'Тестов', firstName = 'Пробный') {
+  const { body } = await api('/api/auth/enter', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lastName, firstName }),
+  });
+  return body.token || '';
+}
+const asUser = () => (userToken ? { 'X-User-Token': userToken } : {});
 const uploadForm = (files) => {
   const fd = new FormData();
   for (const [name, content, type] of files) fd.append('files', new File([content], name, { type }));
   return fd;
 };
 async function createSession() {
-  const { status, body } = await api('/api/sessions', { method: 'POST' });
+  if (!userToken) userToken = await login();
+  const { status, body } = await api('/api/sessions', { method: 'POST', headers: asUser() });
   assert.strictEqual(status, 201);
   return body;
 }
@@ -255,4 +274,344 @@ test('compare: валидация и прогон по двум моделям (
   assert.ok(view.body.messages.some((m) => m.content.includes('Сравнение моделей завершено')));
   // факты/вопросы сессии сравнением не затронуты
   assert.strictEqual(view.body.questions.length, 0);
+});
+
+test('чат: писать можно и во время работы — сообщение встаёт в очередь, а не отбивается', async () => {
+  const pipeline = require('../server/services/pipeline');
+  const s = await createSession();
+  const send = (text) => api(`/api/sessions/${s.id}/messages`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+
+  // занятость имитируем тем же множеством, которым её отмечает сам конвейер
+  pipeline.runningJobs.add(s.id);
+  try {
+    const busy = await send('а что с охранной зоной ЛЭП?');
+    assert.strictEqual(busy.status, 202, 'во время работы сообщение обязано приниматься, а не отбиваться 409');
+    assert.strictEqual(busy.body.queued, true, 'ответ придёт после освобождения слота');
+
+    const second = await send('и ещё про пожарный проезд');
+    assert.strictEqual(second.status, 202);
+
+    // обе реплики уже в ленте — человек видит, что его услышали
+    const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+    const mine = view.body.messages.filter((m) => m.role === 'user');
+    assert.strictEqual(mine.length, 2);
+
+    // и обе стоят в очереди на ответ
+    const pending = pipeline.pendingChatText(s.id);
+    assert.deepStrictEqual(pending, ['а что с охранной зоной ЛЭП?', 'и ещё про пожарный проезд']);
+  } finally {
+    pipeline.runningJobs.delete(s.id);
+  }
+});
+
+test('чат: до первого анализа написанное закрепляется как указание к данным', async () => {
+  const s = await createSession();
+  // указанием к данным считается написанное, когда данные уже загружены
+  await api(`/api/sessions/${s.id}/files`, {
+    method: 'POST', headers: auth(s),
+    body: uploadForm([['ГПЗУ.pdf', '%PDF-1.4', 'application/pdf']]),
+  });
+  await api(`/api/sessions/${s.id}/messages`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'этажность до 3, ТХ отсутствует' }),
+  });
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.match(view.body.comment, /этажность до 3/,
+    'до запуска анализа реплика обязана попасть в закреплённый комментарий к данным');
+
+  // повтор той же мысли комментарий не удваивает
+  await api(`/api/sessions/${s.id}/messages`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'этажность до 3, ТХ отсутствует' }),
+  });
+  const view2 = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(view2.body.comment.match(/этажность до 3/g).length, 1);
+});
+
+test('чат: карточка этапа и отчёт анализа НЕ считаются ответом на вопрос', async () => {
+  const pipeline = require('../server/services/pipeline');
+  const stages = require('../server/services/stages');
+  const s = await createSession();
+
+  pipeline.runningJobs.add(s.id);
+  await api(`/api/sessions/${s.id}/messages`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'а что с охранной зоной?' }),
+  });
+  // задача заканчивается своей выдачей: отчётом анализа и карточкой согласования.
+  // Ни то, ни другое не отвечает на заданный вопрос — очередь обязана уцелеть.
+  pipeline.addMessage(s.id, 'assistant', 'result', 'Анализ завершён');
+  stages.addCard(s.id, 'zones', { zones: [] });
+  try {
+    assert.deepStrictEqual(pipeline.pendingChatText(s.id), ['а что с охранной зоной?'],
+      'выдача задачи не должна съедать вопрос человека');
+  } finally {
+    pipeline.runningJobs.delete(s.id);
+  }
+});
+
+test('чат: реплика помощника закрывает очередь, ошибка — тоже', async () => {
+  const pipeline = require('../server/services/pipeline');
+  const s = await createSession();
+  pipeline.runningJobs.add(s.id);
+  try {
+    await api(`/api/sessions/${s.id}/messages`, {
+      method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'первый вопрос' }),
+    });
+    pipeline.addMessage(s.id, 'assistant', 'chat', 'вот ответ');
+    assert.deepStrictEqual(pipeline.pendingChatText(s.id), []);
+
+    await api(`/api/sessions/${s.id}/messages`, {
+      method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'второй вопрос' }),
+    });
+    assert.deepStrictEqual(pipeline.pendingChatText(s.id), ['второй вопрос']);
+    // ошибка тоже реплика: иначе очередь пыталась бы отвечать вечно
+    pipeline.addMessage(s.id, 'assistant', 'error', 'не получилось');
+    assert.deepStrictEqual(pipeline.pendingChatText(s.id), []);
+  } finally {
+    pipeline.runningJobs.delete(s.id);
+  }
+});
+
+test('чат: отложенные вопросы получают ответ после освобождения слота', async () => {
+  const pipeline = require('../server/services/pipeline');
+  const s = await createSession();
+  pipeline.runningJobs.add(s.id);
+  for (const text of ['вопрос один', 'вопрос два']) {
+    await api(`/api/sessions/${s.id}/messages`, {
+      method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  }
+  // так заканчивается настоящая задача — карточкой, а не ответом человеку
+  pipeline.addMessage(s.id, 'assistant', 'result', 'Анализ завершён');
+  assert.strictEqual(pipeline.pendingChatText(s.id).length, 2, 'оба вопроса ждут ответа');
+
+  pipeline.runningJobs.delete(s.id);
+  pipeline.drainPendingChats();
+  for (let i = 0; i < 80 && pipeline.pendingChatText(s.id).length; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.strictEqual(pipeline.pendingChatText(s.id).length, 0, 'вопросы остались без ответа');
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  const replies = view.body.messages.filter((m) => m.role === 'assistant' && m.kind === 'chat');
+  assert.strictEqual(replies.length, 1, 'два вопроса подряд закрываются одним ответом, а не двумя');
+});
+
+test('чат: очередь разбирается и когда слот держала ЧУЖАЯ сессия', async () => {
+  const pipeline = require('../server/services/pipeline');
+  const mine = await createSession();
+  const foreign = [];
+  // слоты общие на сервер: занимаем их все чужими проектами. Своей задачи
+  // у mine нет, значит и события «слот освободился» в этой сессии не будет
+  const config = require('../server/config');
+  for (let i = 0; i < config.maxConcurrentJobs; i++) foreign.push(await createSession());
+  for (const f of foreign) pipeline.runningJobs.add(f.id);
+  await api(`/api/sessions/${mine.id}/messages`, {
+    method: 'POST', headers: { ...auth(mine), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'вопрос при занятом чужой задачей слоте' }),
+  });
+  assert.strictEqual(pipeline.pendingChatText(mine.id).length, 1);
+
+  for (const f of foreign) pipeline.runningJobs.delete(f.id);
+  pipeline.drainPendingChats();
+  for (let i = 0; i < 80 && pipeline.pendingChatText(mine.id).length; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.strictEqual(pipeline.pendingChatText(mine.id).length, 0,
+    'разбор очереди обязан быть общим, а не только внутри своей сессии');
+});
+
+test('чат: ответ помощника не выдаёт себя за анализ и не гасит согласование', async () => {
+  const s = await createSession();
+  const before = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(before.body.chatBusy, false);
+  assert.strictEqual(before.body.pendingChats, 0);
+
+  await api(`/api/sessions/${s.id}/messages`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'привет' }),
+  });
+  // job_status чат не трогает: по нему живут карточка прогресса, виджет
+  // уточняющих вопросов и точка проекта в сайдбаре
+  for (let i = 0; i < 60; i++) {
+    const v = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+    assert.ok(!['queued', 'running'].includes(v.body.jobStatus),
+      `чат поднял job_status в ${v.body.jobStatus}`);
+    if (v.body.messages.some((m) => m.role === 'assistant')) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+});
+
+test('чат: «привет» до загрузки файлов не уходит в указания к данным', async () => {
+  const s = await createSession();
+  await api(`/api/sessions/${s.id}/messages`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'привет, как дела' }),
+  });
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(view.body.comment || '', '',
+    'болтовня до загрузки данных не должна попадать в промпт анализа');
+});
+
+test('чат: закреплённое указание режется по целым строкам, а не посреди слова', async () => {
+  const s = await createSession();
+  await api(`/api/sessions/${s.id}/files`, {
+    method: 'POST', headers: auth(s),
+    body: uploadForm([['ГПЗУ.pdf', '%PDF-1.4', 'application/pdf']]),
+  });
+  for (let i = 0; i < 6; i++) {
+    await api(`/api/sessions/${s.id}/messages`, {
+      method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `указание номер ${i} ` + 'ы'.repeat(900) }),
+    });
+  }
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  const lines = view.body.comment.split('\n');
+  assert.ok(view.body.comment.length <= 4000);
+  // уцелевшие строки целы: обрезка выбрасывает самые старые целиком
+  for (const l of lines) assert.match(l, /^указание номер \d /);
+  assert.ok(lines.length < 6, 'самые старые указания должны были вытесниться');
+});
+
+test('проект: удаление и переименование требуют оба ключа — проекта и человека', async () => {
+  const s = await createSession();
+
+  // без токена человека защищённый маршрут обязан отказать, а не сделать вид
+  const noUser = await api(`/api/sessions/${s.id}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${s.token}` },
+  });
+  assert.strictEqual(noUser.status, 403, 'без токена человека удаление недопустимо');
+  const alive = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(alive.status, 200, 'проект не должен исчезнуть после отказа');
+
+  // переименование с обоими ключами работает
+  const renamed = await api(`/api/sessions/${s.id}/settings`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Новое название' }),
+  });
+  assert.strictEqual(renamed.status, 200);
+  const view = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(view.body.title, 'Новое название');
+
+  // и удаление с обоими ключами действительно удаляет
+  const del = await api(`/api/sessions/${s.id}`, { method: 'DELETE', headers: auth(s) });
+  assert.strictEqual(del.status, 200);
+  const gone = await api(`/api/sessions/${s.id}`, { headers: auth(s) });
+  assert.strictEqual(gone.status, 404, 'проект обязан исчезнуть');
+});
+
+test('уточнения: после потолка кругов анализ обязан выпустить отчёт, а не спрашивать снова', async () => {
+  const config = require('../server/config');
+  const { db } = require('../server/db');
+  const s = await createSession();
+  await api(`/api/sessions/${s.id}/files`, {
+    method: 'POST', headers: auth(s),
+    body: uploadForm([['ГПЗУ.pdf', '%PDF-1.4', 'application/pdf']]),
+  });
+
+  // набиваем историю уточнений до потолка
+  const { randomUUID } = require('crypto');
+  for (let i = 0; i < config.maxClarificationAnswers; i++) {
+    db.prepare('INSERT INTO questions (id, session_id, text, why, status, answer, created_at, answered_at) VALUES (?,?,?,?,?,?,?,?)')
+      .run(randomUUID(), s.id, `старый вопрос ${i}`, '', 'answered', 'ответ', new Date().toISOString(), new Date().toISOString());
+  }
+  const qid = randomUUID();
+  db.prepare('INSERT INTO questions (id, session_id, text, why, status, created_at) VALUES (?,?,?,?,?,?)')
+    .run(qid, s.id, 'последний вопрос', '', 'pending', new Date().toISOString());
+
+  const res = await api(`/api/sessions/${s.id}/questions/${qid}/answer`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answer: 'последний ответ' }),
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.continued, true);
+
+  // в журнале должна остаться отметка, что уточнения исчерпаны
+  for (let i = 0; i < 40; i++) {
+    const ev = db.prepare("SELECT COUNT(*) AS c FROM events WHERE session_id = ? AND stage = 'Уточнения исчерпаны'").get(s.id).c;
+    if (ev > 0) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.fail('после потолка кругов не выставлено требование выпустить отчёт');
+});
+
+test('комментарий к области плана уходит репликой в ленту проекта', async () => {
+  const s = await createSession();
+  // чертёж нужен, чтобы у проекта появилась версия плана: аннотация к ней привязана
+  const dxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'LWPOLYLINE', '8', 'Границы ЗУ', '90', '4', '70', '1',
+    '10', '0', '20', '0', '10', '60', '20', '0', '10', '60', '20', '40', '10', '0', '20', '40',
+    '0', 'ENDSEC', '0', 'EOF'].join('\n');
+  await api(`/api/sessions/${s.id}/files`, { method: 'POST', headers: auth(s), body: uploadForm([['план.dxf', dxf, 'application/dxf']]) });
+  const plan = await api(`/api/sessions/${s.id}/plan`, { headers: auth(s) });
+  assert.strictEqual(plan.status, 200);
+
+  const before = await api(`/api/sessions/${s.id}/messages`, { headers: auth(s) });
+  const countBefore = (before.body.messages || before.body || []).length;
+
+  const created = await api(`/api/sessions/${s.id}/annotations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...auth(s) },
+    body: JSON.stringify({
+      planId: plan.body.planId, geometryType: 'rect',
+      geometry: { points: [[10, 10], [30, 10], [30, 25], [10, 25]] },
+      comment: 'Здесь углубление, строить нельзя', author: 'Никита',
+    }),
+  });
+  assert.strictEqual(created.status, 201);
+
+  const after = await api(`/api/sessions/${s.id}/messages`, { headers: auth(s) });
+  const list = after.body.messages || after.body || [];
+  assert.strictEqual(list.length, countBefore + 1, 'комментарий обязан появиться в ленте, а не только на плане');
+  const msg = list[list.length - 1];
+  assert.match(msg.content, /Здесь углубление, строить нельзя/);
+  assert.match(msg.content, /X 10…30/, 'место названо координатами — иначе через неделю не найти');
+  assert.match(msg.content, /Никита/);
+});
+
+test('чертёж по слоям выгружается сразу после разбора, с правками человека', async () => {
+  const s = await createSession();
+  // контур участка лежит на слое газопровода — разбор примет его за сеть,
+  // как в настоящем МСК-47_Горбунки
+  const dxf = ['0', 'SECTION', '2', 'ENTITIES',
+    '0', 'LWPOLYLINE', '8', '33_Газопровод', '90', '4', '70', '1',
+    '10', '0', '20', '0', '10', '70', '20', '0', '10', '70', '20', '55', '10', '0', '20', '55',
+    '0', 'LWPOLYLINE', '8', '20_Здания', '90', '4', '70', '1',
+    '10', '10', '20', '10', '10', '30', '20', '10', '10', '30', '20', '25', '10', '10', '20', '25',
+    '0', 'ENDSEC', '0', 'EOF'].join('\n');
+  await api(`/api/sessions/${s.id}/files`, {
+    method: 'POST', headers: auth(s), body: uploadForm([['топо.dxf', dxf, 'application/dxf']]),
+  });
+
+  // до правки: контур на слое газопровода — инженерная сеть
+  const plan = await api(`/api/sessions/${s.id}/plan`, { headers: auth(s) });
+  assert.strictEqual(plan.status, 200);
+  const line = plan.body.plan.utilities[0];
+  assert.ok(line, 'контур с газопровода разобран как сеть');
+
+  // бинарный ответ читаем напрямую: общий помощник api() уже прочитал бы тело текстом
+  const before = await fetch(`${base}/api/sessions/${s.id}/plan/drawing`, { headers: auth(s) });
+  assert.strictEqual(before.status, 200);
+  assert.ok(['dwg', 'dxf'].includes(before.headers.get('X-Drawing-Format')));
+  assert.ok((await before.arrayBuffer()).byteLength > 0, 'файл не пустой');
+
+  // человек говорит: это граница участка
+  const saved = await api(`/api/sessions/${s.id}/plan/objects/${encodeURIComponent(line.id)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...auth(s) },
+    body: JSON.stringify({ type: 'parcel', label: 'ЗУ по ГПЗУ' }),
+  });
+  assert.strictEqual(saved.status, 200);
+
+  // в чертеже контур обязан оказаться в слое границ участка, а не сетей
+  const after = await fetch(`${base}/api/sessions/${s.id}/plan/drawing?format=dxf`, { headers: auth(s) });
+  assert.strictEqual(after.status, 200);
+  // DXF пишется байтами в CP1251 — читать его UTF-8 значит получить мусор вместо имён слоёв
+  const text = new TextDecoder('windows-1251').decode(await after.arrayBuffer());
+  assert.match(text, /AI_ГРАНИЦЫ_ЗУ/, 'переназначенный контур ушёл в слой границ участка');
+  assert.match(text, /AI_ЗДАНИЯ_КАПИТАЛЬНЫЕ/, 'здание — в своём слое');
+  assert.ok(!/\n\s*8\nAI_СЕТИ\n/.test(text), 'в слое сетей контура больше нет — правка доехала до файла');
 });

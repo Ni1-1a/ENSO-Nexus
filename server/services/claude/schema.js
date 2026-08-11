@@ -1,6 +1,21 @@
 'use strict';
 
-/** JSON schema for structured model output. Validated server-side before use. */
+/**
+ * JSON Schema ответа анализа. Проверяется на сервере ещё раз, своим кодом.
+ *
+ * ВАЖНОЕ ОГРАНИЧЕНИЕ строгого структурного вывода (OpenAI-совместимые API,
+ * `response_format: json_schema, strict: true`): в каждом объекте `required`
+ * обязан перечислять ВСЕ ключи из `properties`. Необязательность выражается
+ * не отсутствием в `required`, а допуском null в типе.
+ *
+ * Нарушение этого правила отвергается провайдером целиком, ещё до генерации:
+ *   «Invalid schema … 'required' is required to be supplied and to be an array
+ *    including every key in properties. Missing 'closed'.»
+ * Снаружи это выглядело как «Модель вернула некорректный ответ»: запрос со
+ * схемой падал, повтор шёл без схемы, модель отвечала прозой, и проза не
+ * проходила проверку. Поэтому: добавляете свойство — добавляйте его и в
+ * `required`, а необязательность делайте через `['тип', 'null']`.
+ */
 const RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
@@ -10,8 +25,13 @@ const RESPONSE_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { text: { type: 'string' }, why: { type: 'string' } },
-        required: ['text', 'why'],
+        properties: {
+          text: { type: 'string' },
+          why: { type: 'string' },
+          // 2–3 коротких готовых варианта ответа (кнопки в UI); [] — только свой ответ
+          options: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['text', 'why', 'options'],
         additionalProperties: false,
       },
     },
@@ -34,11 +54,13 @@ const RESPONSE_SCHEMA = {
         type: 'object',
         properties: {
           layer: { type: 'string' },
-          color: { type: 'integer' },
-          closed: { type: 'boolean' },
+          // цвет и замкнутость необязательны по смыслу, но в строгом режиме
+          // это выражается допуском null, а не отсутствием в required
+          color: { type: ['integer', 'null'] },
+          closed: { type: ['boolean', 'null'] },
           points: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
         },
-        required: ['layer', 'points'],
+        required: ['layer', 'color', 'closed', 'points'],
         additionalProperties: false,
       },
     },
@@ -68,7 +90,11 @@ function validateResponse(raw) {
   v.message = raw.message;
   const arr = (x) => (Array.isArray(x) ? x : []);
   v.questions = arr(raw.questions).filter((q) => q && typeof q.text === 'string' && q.text.trim())
-    .map((q) => ({ text: q.text.trim(), why: typeof q.why === 'string' ? q.why : '' }));
+    .map((q) => ({
+      text: q.text.trim(),
+      why: typeof q.why === 'string' ? q.why : '',
+      options: arr(q.options).map((o) => String(o).trim()).filter(Boolean).slice(0, 3),
+    }));
   v.facts = arr(raw.facts).filter((f) => f && typeof f.key === 'string' && f.key.trim())
     .map((f) => ({ key: f.key.trim(), value: String(f.value ?? '').trim(), source: String(f.source ?? '').trim() }))
     .filter((f) => /[\p{L}\p{N}]/u.test(f.value)); // drop artifacts like "}, " from weaker models
