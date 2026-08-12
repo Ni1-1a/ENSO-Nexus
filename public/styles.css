@@ -1206,6 +1206,46 @@ body.modal-open { overflow: hidden; }
    (штриховка своего цвета на каждый объект-источник) */
 .vw-restrictions .vw-shape { stroke-width: 1.2px; }
 .vw-buildable .vw-shape { stroke-width: 1.2px; }
+
+/* ---------- свёрнутый показ ограничений: штриховка на правило ----------
+   Групповая штриховка курсор НЕ перехватывает: под ней лежат контуры
+   отдельных зон, и целиться надо в них — иначе пропал бы ответ «какой
+   объект мешает». */
+.vw-zone-group {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.4px; stroke-opacity: .75;
+  pointer-events: none;
+}
+/*
+ * Контур отдельной зоны поверх групповой штриховки.
+ *
+ * Заливка ПРОЗРАЧНАЯ, а не `none`: `none` означает «событий внутри фигуры нет»,
+ * и зона перестала бы открываться по клику — до неё удавалось бы дотянуться
+ * только по самой линии контура. Прозрачная заливка ловит курсор всюду внутри,
+ * а `shapeAt` по-прежнему выбирает наименьшую фигуру, то есть нужную зону.
+ *
+ * Бледный по умолчанию: сорок два контура в полную силу — это те же мотки
+ * окружностей, от которых мы и уходим. Под курсором и в выборе — в полную.
+ */
+.vw-zone-edge {
+  fill: transparent;
+  stroke-width: 1px; stroke-opacity: .3; stroke-dasharray: 4 4;
+}
+.vw-restrictions .vw-shape.vw-zone-edge.vw-hover,
+.vw-restrictions .vw-shape.vw-zone-edge.vw-picked { stroke-opacity: 1; stroke-dasharray: none; }
+/* наведение на строку легенды подсвечивает всю группу разом.
+   Своё правило: у групповой штриховки нет класса .vw-shape, и общее правило
+   подсветки (.vw-layer .vw-shape.vw-hover) её не ловит. */
+.vw-zone-group.vw-hover { stroke-width: 3px; stroke-opacity: 1; }
+
+/* переключатель вида ограничений в легенде: по правилам или поштучно */
+.vw-legend-seg { display: flex; gap: 4px; margin: 2px 0 6px; }
+.vw-legend-seg button {
+  flex: 1 1 0; padding: 4px 8px; font-size: 11.5px; cursor: pointer;
+  border: 1px solid var(--stroke-soft); border-radius: 7px;
+  background: var(--panel); color: var(--text-2);
+}
+.vw-legend-seg button.on { border-color: var(--accent); color: var(--accent); background: var(--panel-solid); }
 /* Запретная зона — подложка: она не должна перехватывать курсор у объектов,
    которые под ней лежат, иначе до линии ЛЭП мышью не добраться. */
 .vw-forbidden .vw-shape { stroke-width: 1px; stroke-dasharray: 6 4; pointer-events: none; }

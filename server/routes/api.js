@@ -612,13 +612,16 @@ router.post('/sessions/:id/plan/restrictions', sessionAuth, sessionOwner, expens
      */
     require('../services/geometry/zones').save(req.session.id, planId, { rules: extracted.rules, built });
     site.restrictions = built.restrictions;
+    site.zoneGroups = built.zoneGroups || [];
     site.buildable = built.buildable;
 
     pipeline.logEvent(req.session.id, 'Рассчитаны зоны ограничений',
-      `построено ${built.restrictions.length}, не построено ${built.unresolved.length}`);
+      `построено ${built.restrictions.length} по ${(built.zoneGroups || []).length} правилам, `
+      + `не построено ${built.unresolved.length}`);
     res.json({
       planId,
       restrictions: built.restrictions,
+      zoneGroups: built.zoneGroups || [],
       buildable: built.buildable,
       attributes: built.attributes,
       unresolved: built.unresolved.map((u) => ({ kind: u.kind, reason: u.reason })),

@@ -176,6 +176,91 @@
 
   const KIND_FALLBACK_LABEL = 'объект не назван';
 
+  /* ---------------- группы показа: одна штриховка на правило ---------------- */
+
+  /**
+   * С какого числа зон план сворачивается в группы.
+   *
+   * Ниже порога поштучный показ строго полезнее: у каждой зоны свой цвет, и
+   * сразу видно, какой объект её порождает. Выше — это перестаёт читаться:
+   * на боевом чертеже семь правил дают 42 зоны, из которых больше половины
+   * ложатся поверх уже запрещённого места, и план превращается в мотки
+   * окружностей. Порог, а не всегда: на плане из трёх зон сворачивать нечего.
+   */
+  const FOLD_FROM_ZONES = 12;
+
+  /**
+   * Цвет группы: оттенок от ТИПА ограничения, лесенка светлоты внутри типа.
+   *
+   * Цвет объекта (`assignColors`) здесь не годится: у группы объектов много.
+   * Но и один цвет на тип не годится тоже — четыре охранные зоны (тепло,
+   * вода, канализация, газ) слились бы в одну. Поэтому семья по типу, а
+   * внутри семьи — ступень светлоты по порядку группы.
+   */
+  function groupColor(kind, indexInKind) {
+    const base = zone(kind).color;
+    const i = Math.max(0, Math.floor(Number(indexInKind) || 0)) % 4;
+    if (!i) return base;
+    // цвет типа задан в hex; светлота гуляет ступенями, тон остаётся своим
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(base);
+    if (!m) return base;
+    const [r, g, b] = [1, 2, 3].map((k) => parseInt(m[k], 16));
+    const k = 1 + i * 0.22;                       // светлее на каждую ступень
+    const mix = (c) => Math.max(0, Math.min(255, Math.round(255 - (255 - c) / k)));
+    return `rgb(${mix(r)} ${mix(g)} ${mix(b)})`;
+  }
+
+  /**
+   * Готовые группы движка → то, чем рисуют: цвет, угол, шаг, подпись.
+   *
+   * Групп нет (запись сделана прежней версией платформы) — возвращается
+   * пустой список, и показ откатывается на поштучный. Молча рисовать пусто
+   * нельзя: слой ограничений на старых проектах опустел бы целиком.
+   */
+  function assignGroupStyles(groups) {
+    const list = (groups || []).filter((g) => g && g.geometry);
+    const seenInKind = new Map();
+    return list.map((g) => {
+      const kind = g.kind || 'other';
+      const i = seenInKind.get(kind) || 0;
+      seenInKind.set(kind, i + 1);
+      const z = zone(kind);
+      return {
+        ...g,
+        color: groupColor(kind, i),
+        angle: z.angle,
+        // шаг чуть разный внутри типа: две группы одного типа под одним углом
+        // и с одним шагом дают неотличимую сетку
+        spacing: z.spacing + (i % 3),
+        kindLabel: z.label,
+      };
+    });
+  }
+
+  /** Стоит ли сворачивать план в группы: групп меньше зон и зон уже много. */
+  function shouldFold(zoneCount, groupCount) {
+    return groupCount > 0 && zoneCount >= FOLD_FROM_ZONES && groupCount < zoneCount;
+  }
+
+  function groupPatternId(prefix, groupId) {
+    return `${prefix}g-${String(groupId).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  }
+
+  function groupPatternSvg(g, prefix, scale = 1) {
+    const k = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const s = r4((g.spacing || 7) * k);
+    const w = r4(HATCH_STROKE * k);
+    return `<pattern id="${groupPatternId(prefix, g.id)}" width="${s}" height="${s}" ` +
+      `data-spacing="${g.spacing || 7}" ` +
+      `patternTransform="rotate(${g.angle || 0})" patternUnits="userSpaceOnUse">` +
+      `<line x1="0" y1="0" x2="0" y2="${s}" stroke="${g.color}" stroke-width="${w}" opacity=".9"/>` +
+      '</pattern>';
+  }
+
+  function groupFillById(groupId, prefix = 'zh-') {
+    return `url(#${groupPatternId(prefix, groupId)})`;
+  }
+
   /** Идентификатор образца штриховки конкретной зоны — по зоне, а не по типу. */
   function zonePatternId(prefix, zoneId) {
     return `${prefix}z-${String(zoneId).replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -238,14 +323,18 @@
    * Образцы по ТИПАМ остаются: ими рисуются легенда и всё, что не привязано
    * к конкретной зоне. Образцы по ЗОНАМ добавляются, когда список зон известен.
    */
-  function defs(prefix = 'zh-', scale = 1, restrictions = null) {
+  function defs(prefix = 'zh-', scale = 1, restrictions = null, groups = null) {
     const byKind = KINDS.map((k) => patternSvg(k, prefix, scale)).join('');
-    if (!restrictions || !restrictions.length) return `<defs>${byKind}</defs>`;
+    // Образцы групп добавляются четвёртым доводом. Первые три не тронуты:
+    // вызовы без него — серверный рендер, миниатюры — работают как раньше.
+    const byGroup = (groups && groups.length ? assignGroupStyles(groups) : [])
+      .map((g) => groupPatternSvg(g, prefix, scale)).join('');
+    if (!restrictions || !restrictions.length) return `<defs>${byKind}${byGroup}</defs>`;
     const { byZone } = assignColors(restrictions);
     const byId = restrictions
       .map((z) => (byZone[z.id] ? zonePatternSvg(z.id, byZone[z.id], prefix, scale) : ''))
       .join('');
-    return `<defs>${byKind}${byId}</defs>`;
+    return `<defs>${byKind}${byId}${byGroup}</defs>`;
   }
 
   /** Заливка конкретной зоны — ссылка на её собственный образец. */
@@ -275,8 +364,9 @@
       const p = svgEl.querySelector(`#${prefix}${kind}`);
       if (p) apply(p, zone(kind).spacing);
     }
-    // образцы отдельных зон: их шаг задан тем же типом ограничения
-    for (const p of svgEl.querySelectorAll(`pattern[id^="${prefix}z-"]`)) {
+    // образцы отдельных зон И групп: шаг у каждого записан в data-spacing,
+    // поэтому один селектор обслуживает оба вида — забыть новый нельзя
+    for (const p of svgEl.querySelectorAll('pattern[data-spacing]')) {
       const line = p.firstElementChild;
       const spacing = Number(p.dataset && p.dataset.spacing) || 7;
       if (line) apply(p, spacing);
@@ -302,8 +392,9 @@
   }
 
   return {
-    ZONES, KINDS, BUILDABLE, FOOTPRINT, FORBIDDEN,
+    ZONES, KINDS, BUILDABLE, FOOTPRINT, FORBIDDEN, FOLD_FROM_ZONES,
     zone, defs, fill, zoneStyle, patternSvg, rescaleDefs, unitsPerPixel,
     assignColors, paletteColor, zonePatternId, zonePatternSvg, zoneFillById, zoneStyleById,
+    assignGroupStyles, shouldFold, groupColor, groupPatternId, groupPatternSvg, groupFillById,
   };
 }));

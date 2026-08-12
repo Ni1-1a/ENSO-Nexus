@@ -1798,6 +1798,242 @@ test('зоны: одна зона на объект, свой цвет и общ
     `${f.areaM2} + ${built.buildable.areaM2} должно давать 40000 м²`);
 });
 
+/**
+ * Участок с ПЕРЕСЕКАЮЩИМИСЯ зонами одного правила — сторож площади.
+ *
+ * Зона строится на каждый объект отсчёта, и на слое из десяти строений зоны
+ * заведомо накладываются друг на друга. Именно здесь ошибиться проще всего:
+ * сложить площади зон вместо объединения — и допустимая территория окажется
+ * меньше настоящей, а «здание не помещается» прозвучит там, где место есть.
+ *
+ * Прежние тесты этот случай не покрывали: они шли на РАЗНЕСЁННЫХ объектах
+ * (корпуса в 100 м друг от друга) и с допуском в целый квадратный метр.
+ * Здесь допуска нет — сравнение до сотых, как обещано в ТЗ.
+ */
+function siteWithOverlappingZones() {
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [300, 0], [300, 200], [0, 200]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: 'Границы ЗУ', sourceEntity: 'полилиния', confidence: 0.8 },
+  });
+  // десять строений с шагом 15 м при разрыве 12 м — буферы гарантированно сливаются
+  for (let i = 0; i < 10; i++) {
+    const x = 30 + i * 15;
+    site.buildings.push(G.makeObject({
+      type: 'building', points: [[x, 90], [x + 6, 90], [x + 6, 100], [x, 100]], closed: true,
+      provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: '03_Здания и строения', sourceEntity: 'полилиния', confidence: 0.8 },
+    }));
+  }
+  const rule = RR.normalizeRule({
+    kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building', targetHint: '',
+    value: 12, unit: 'м', basis: 'СП 4.13130.2013, табл. 3', sourceDocument: 'НТД',
+    sourceClause: 'табл. 3', quote: '12 м', confidence: 0.85,
+  }, 0).rule;
+  return { site, rule };
+}
+
+test('зоны: пересекающиеся зоны одного правила считаются объединением, а не суммой', () => {
+  const jts = require('../server/services/geometry/jts');
+  const { site, rule } = siteWithOverlappingZones();
+  const built = engine.build(site, [rule]);
+
+  assert.strictEqual(built.restrictions.length, 10, 'зона на каждое строение');
+
+  const parcelJts = jts.toJts(site.parcel.geometry);
+
+  /*
+   * Главное утверждение: допустимая территория — это участок минус
+   * ОБЪЕДИНЕНИЕ зон, а не участок минус их СУММА.
+   *
+   * Сравнение идёт с геометрией зон в том виде, в каком она уходит в базу и
+   * во все расчёты дальше. Это не тавтология: реализация «вычесть по очереди»
+   * или «сложить площади» разошлась бы здесь на сотни метров, что и видно по
+   * второму утверждению теста.
+   */
+  const union = jts.union(built.restrictions.map((r) => jts.toJts(r.geometry)));
+  assert.strictEqual(built.buildable.areaM2,
+    G.round(jts.area(jts.difference(parcelJts, union)), 2),
+    'допустимая территория обязана совпасть с участком минус объединение зон');
+
+  /*
+   * И то же самое против идеальной геометрии — с допуском, и вот почему он тут
+   * законен, а в утверждении выше его нет.
+   *
+   * `jts.fromJts` квантует координаты до миллиметра (`r6` в jts.js округляет
+   * до трёх знаков, вопреки имени). Зона хранится и считается уже квантованной,
+   * поэтому идеальный буфер и сохранённый расходятся на доли сантиметра на
+   * зону: на этой фикстуре 5430,401 против 5430,381 м² — 0,02 м² на десять зон.
+   * Требовать здесь совпадения до сотых значит требовать от хранения точности,
+   * которой у него нет; допуск взят с четырёхкратным запасом к замеру.
+   */
+  const ideal = jts.area(jts.difference(parcelJts,
+    jts.union(site.buildings.map((b) => jts.bufferOutward(b.geometry, 12)))));
+  assert.ok(Math.abs(built.buildable.areaM2 - ideal) < 0.08,
+    `расхождение с идеальной геометрией ${G.round(Math.abs(built.buildable.areaM2 - ideal), 4)} м² `
+    + 'больше миллиметрового квантования — значит дело не в округлении');
+
+  // сумма площадей зон заведомо БОЛЬШЕ объединения — иначе тест ничего не стережёт
+  const sum = built.restrictions.reduce((s, r) => s + r.properties.areaM2, 0);
+  assert.ok(sum > built.buildable.forbidden.areaM2 + 100,
+    `зоны обязаны пересекаться: сумма ${G.round(sum, 2)}, объединение ${built.buildable.forbidden.areaM2}`);
+});
+
+test('зоны: запретная и допустимая в сумме дают участок — до сотых', () => {
+  const { site, rule } = siteWithOverlappingZones();
+  const built = engine.build(site, [rule]);
+  const f = built.buildable.forbidden;
+  assert.strictEqual(G.round(f.areaM2 + built.buildable.areaM2, 2), 60000,
+    `${f.areaM2} + ${built.buildable.areaM2} обязано дать площадь участка 60000 м²`);
+});
+
+/**
+ * Группы показа: одна штриховка на правило вместо зоны на каждый объект.
+ *
+ * Жалоба владельца была «слишком много кругов одному и тому же»: на боевом
+ * чертеже семь правил давали 42 зоны, и слой из семнадцати колодцев рисовал
+ * семнадцать почти совпадающих окружностей. Группа — надстройка НАД расчётом:
+ * она обязана менять только краску и не сдвигать ни одного числа.
+ */
+test('зоны: группа показа — одна на правило, и ни одна зона не потеряна', () => {
+  const { site, rule } = siteWithOverlappingZones();
+  const built = engine.build(site, [rule]);
+
+  assert.strictEqual(built.restrictions.length, 10, 'зоны остаются поштучными');
+  assert.strictEqual(built.zoneGroups.length, 1, 'одно правило — одна группа');
+
+  const g = built.zoneGroups[0];
+  assert.strictEqual(g.zoneCount, 10);
+  assert.deepStrictEqual([...g.zoneIds].sort(), built.restrictions.map((r) => r.id).sort(),
+    'в группе перечислены ровно все зоны правила');
+  assert.ok(built.restrictions.every((r) => r.properties.groupId === g.id),
+    'каждая зона знает свою группу');
+  // площадь группы — ОБЪЕДИНЕНИЕ, а не сумма: на пересекающихся зонах разница кратная
+  assert.ok(g.areaM2 < g.sumAreaM2 * 0.8,
+    `объединение ${g.areaM2} обязано быть заметно меньше суммы ${g.sumAreaM2}`);
+  assert.ok(g.label.includes('противопожарный разрыв') && g.label.includes('12 м'),
+    `у группы человеческое имя, а не идентификатор: «${g.label}»`);
+});
+
+test('зоны: группы не меняют ни допустимую территорию, ни запретную зону', () => {
+  const jts = require('../server/services/geometry/jts');
+  const { site, rule } = siteWithOverlappingZones();
+  const built = engine.build(site, [rule]);
+
+  // объединение групп совпадает с объединением зон: краска накрывает
+  // ровно то же место, что и раньше
+  const byZones = jts.area(jts.union(built.restrictions.map((r) => jts.toJts(r.geometry))));
+  const byGroups = jts.area(jts.union(built.zoneGroups.map((g) => jts.toJts(g.geometry))));
+  assert.ok(Math.abs(byZones - byGroups) < 0.05,
+    `объединение групп ${G.round(byGroups, 2)} обязано совпасть с объединением зон ${G.round(byZones, 2)}`);
+
+  // а числа расчёта считаются по зонам и от групп не зависят вовсе
+  assert.strictEqual(built.buildable.forbidden.zoneCount, 10,
+    'счётчик контуров запретной зоны считает ЗОНЫ, а не группы');
+  assert.strictEqual(built.buildable.areaM2,
+    G.round(jts.area(jts.difference(jts.toJts(site.parcel.geometry),
+      jts.union(built.restrictions.map((r) => jts.toJts(r.geometry))))), 2));
+});
+
+/**
+ * Идентификаторы правил в боевой базе НЕ уникальны: `rulesFromFacts` нумерует
+ * свой список с нуля, `mergeRules` складывает его с извлечённым. В записи
+ * проекта «Вариант 4» под `rule-1` лежат охранная зона 10 м от ЛЭП и отступ
+ * 3 м от границы участка. Группировка по `id` слила бы их в одну штриховку
+ * с чужим основанием — поэтому ключ группы это ПОДПИСЬ правила.
+ */
+test('зоны: два разных правила с одним id дают две группы', () => {
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: 'Границы ЗУ', sourceEntity: 'полилиния', confidence: 0.8 },
+  });
+  site.buildings.push(G.makeObject({
+    type: 'building', points: [[40, 40], [60, 40], [60, 60], [40, 60]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: '03_Здания и строения', sourceEntity: 'полилиния', confidence: 0.8 },
+  }));
+  const mk = (kind, selector, value) => {
+    const r = RR.normalizeRule({
+      kind, operation: kind === 'setback' ? 'bufferInward' : 'bufferOutward',
+      targetSelector: selector, targetHint: '', value, unit: 'м',
+      basis: 'СП 4.13130.2013, табл. 3', sourceDocument: 'НТД', sourceClause: 'табл. 3',
+      quote: `${value} м`, confidence: 0.85,
+    }, 0).rule;
+    r.id = 'rule-1';           // ровно то, что лежит в боевой записи plan_zones
+    return r;
+  };
+  const built = engine.build(site, [mk('fireBreak', 'building', 12), mk('setback', 'parcelBoundary', 3)]);
+
+  assert.strictEqual(built.zoneGroups.length, 2,
+    'разные правила под одним id обязаны остаться разными группами');
+  assert.strictEqual(new Set(built.zoneGroups.map((g) => g.id)).size, 2);
+  assert.deepStrictEqual(built.zoneGroups.map((g) => g.kind).sort(), ['fireBreak', 'setback']);
+});
+
+test('зоны: статус группы — худший из статусов её зон', () => {
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: 'Границы ЗУ', sourceEntity: 'полилиния', confidence: 0.8 },
+  });
+  for (const x of [20, 120]) {
+    site.buildings.push(G.makeObject({
+      type: 'building', points: [[x, 20], [x + 20, 20], [x + 20, 40], [x, 40]], closed: true,
+      provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: '03_Здания и строения', sourceEntity: 'полилиния', confidence: 0.8 },
+    }));
+  }
+  const rule = RR.normalizeRule({
+    kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building', targetHint: '',
+    value: 10, unit: 'м', basis: 'СП 4.13130.2013, табл. 1', sourceDocument: 'НТД',
+    sourceClause: 'табл. 1', quote: '10 м', confidence: 0.85,
+  }, 0).rule;
+  rule.status = RR.STATUSES.NEEDS_REVIEW;
+
+  const built = engine.build(site, [rule]);
+  assert.strictEqual(built.zoneGroups[0].status, RR.STATUSES.NEEDS_REVIEW,
+    'непроверенное правило не имеет права выглядеть подтверждённым под общей штриховкой');
+});
+
+/**
+ * Зона — не объект отсчёта: правило не строится ОТ ЗОНЫ прошлого расчёта.
+ *
+ * `G.allObjects(site)` перечисляет и `site.restrictions`, а маршрут
+ * «Рассчитать ограничения» берёт участок через `ensurePlan`, который зоны
+ * прошлого прогона в него уже приложил (zones.attach). Правило с селектором
+ * `layer` или `objectId` БЕЗ уточнения получало в цель весь этот список
+ * вместе с зонами — и обводило буфером вчерашнюю охранную зону. Каждое
+ * следующее нажатие кнопки добавляло кольцо вокруг предыдущего кольца.
+ */
+test('зоны: правило не строится от зоны прошлого расчёта', () => {
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: 'Границы ЗУ', sourceEntity: 'полилиния', confidence: 0.8 },
+  });
+  site.buildings.push(G.makeObject({
+    type: 'building', points: [[40, 40], [60, 40], [60, 60], [40, 60]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: '03_Здания и строения', sourceEntity: 'полилиния', confidence: 0.8 },
+  }));
+  // правило по слою БЕЗ уточнения — целью становится всё, что есть на участке
+  const rule = RR.normalizeRule({
+    kind: 'protectionZone', operation: 'bufferOutward', targetSelector: 'layer', targetHint: '',
+    value: 5, unit: 'м', basis: 'ПП РФ № 160, п. 8', sourceDocument: 'НТД',
+    sourceClause: 'п. 8', quote: '5 м', confidence: 0.85,
+  }, 0).rule;
+
+  const first = engine.build(site, [rule]);
+  const n = first.restrictions.length;
+  assert.ok(n > 0, 'первый расчёт даёт зоны');
+
+  // ровно то, что делает ensurePlan перед повторным нажатием кнопки
+  site.restrictions = first.restrictions;
+  const second = engine.build(site, [rule]);
+
+  assert.strictEqual(second.restrictions.length, n,
+    `повторный расчёт обязан дать те же ${n} зон, а не строить зоны вокруг зон`);
+  assert.ok(second.restrictions.every((r) => r.properties.sourceType !== 'restriction'),
+    'ни одна зона не отсчитана от другой зоны');
+});
+
 test('посадка: здание под снос не считается воздействием варианта, но остаётся в ТЭП', () => {
   const G = require('../server/services/geometry/site-geometry');
   const P = require('../server/services/geometry/placement-engine');

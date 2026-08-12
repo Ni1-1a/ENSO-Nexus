@@ -241,9 +241,25 @@ function build(site, { variant = null, buildable = null, title = '', subtitle = 
     }
   }
 
-  // ── зоны ограничений: штриховка своего угла и цвета на своём слое ─────
-  for (const zone of site.restrictions || []) {
-    const kind = (zone.properties && zone.properties.kind) || 'other';
+  /*
+   * ── зоны ограничений: штриховка своего угла и цвета на своём слое ─────
+   *
+   * Когда зон много, в чертёж идут ОБЪЕДИНЕНИЯ по правилу, а не каждая зона
+   * отдельно. Причина та же, что на экране: слой из семнадцати колодцев
+   * канализации давал семнадцать почти совпадающих окружностей и столько же
+   * штриховок поверх друг друга. Слой чертежа при этом не меняется — он
+   * выбирается по типу ограничения, а тип у всей группы один.
+   *
+   * Экспликация и ведомость перечисляют зоны ПОШТУЧНО по-прежнему: свернулась
+   * краска, а не перечень.
+   */
+  const zoneGroups = site.zoneGroups || [];
+  const foldZones = ZoneStyle.shouldFold((site.restrictions || []).length, zoneGroups.length);
+  const zoneShapes = foldZones
+    ? zoneGroups.map((g) => ({ kind: g.kind, geometry: g.geometry }))
+    : (site.restrictions || []).map((z) => ({ kind: (z.properties && z.properties.kind) || 'other', geometry: z.geometry }));
+  for (const zone of zoneShapes) {
+    const kind = zone.kind || 'other';
     const style = ZoneStyle.zone(kind);
     const name = addLayer(zoneLayer(kind));
     for (const ring of ringsOf(zone.geometry)) {

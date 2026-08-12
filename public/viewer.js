@@ -51,6 +51,17 @@
     svg: null,
     root: null,
     drag: null,
+    /*
+     * Как показаны ограничения: 'groups' — одна штриховка на правило,
+     * 'zones' — прежняя, поштучная.
+     *
+     * Своё поле, а не элемент `visible`: это не слой, и в списке переключателей
+     * слоёв ему не место. Значение выбирается само по числу зон (ZoneStyle.
+     * shouldFold), но человек может переключить руками — и тогда его выбор
+     * держится до перезагрузки.
+     */
+    zoneView: 'groups',
+    zoneViewPinned: false,
   };
 
   const el = (id) => document.getElementById(id);
@@ -113,8 +124,15 @@
     // Список зон передаётся сюда, потому что цвет штриховки принадлежит
     // не типу ограничения, а ОБЪЕКТУ, от которого зона отсчитана.
     const zones = (state.plan && state.plan.restrictions) || [];
+    const groups = (state.plan && state.plan.zoneGroups) || [];
     state.zoneColors = window.ZoneStyle.assignColors(zones);
-    svg.innerHTML = window.ZoneStyle.defs('zh-', hatchScale(), zones);
+    state.zoneGroupStyles = window.ZoneStyle.assignGroupStyles(groups);
+    // пока человек не выбрал сам — решает число зон: полсотни окружностей
+    // читать нельзя, а три зоны сворачивать незачем
+    if (!state.zoneViewPinned) {
+      state.zoneView = window.ZoneStyle.shouldFold(zones.length, groups.length) ? 'groups' : 'zones';
+    }
+    svg.innerHTML = window.ZoneStyle.defs('zh-', hatchScale(), zones, groups);
     const root = document.createElementNS(NS, 'g');
     root.setAttribute('transform', 'scale(1,-1)'); // ось Y чертежа смотрит вверх
     svg.appendChild(root);
@@ -125,6 +143,48 @@
       g.setAttribute('class', `vw-layer vw-${layer.id}`);
       g.dataset.layer = layer.id;
       if (!state.visible.has(layer.id)) g.setAttribute('display', 'none');
+
+      /*
+       * Ограничения в свёрнутом виде: одна штриховка на ПРАВИЛО.
+       *
+       * Зона по-прежнему строится на каждый объект отсчёта, и все они на месте —
+       * меняется только краска. На боевом чертеже семь правил дают 42 зоны, и
+       * поштучная штриховка превращала план в мотки окружностей: слой из
+       * семнадцати колодцев канализации рисовал семнадцать почти совпадающих
+       * кругов, больше половины которых лежат поверх уже запрещённого места.
+       *
+       * Поверх групповой штриховки идут контуры отдельных зон — бледные, но
+       * с прозрачной заливкой: по ним работают клик, подсказка и панель свойств,
+       * то есть ответ «какой объект мешает и что снести» никуда не делся.
+       */
+      if (layer.id === 'restrictions' && state.zoneView === 'groups' && state.zoneGroupStyles.length) {
+        for (const grp of state.zoneGroupStyles) {
+          const path = document.createElementNS(NS, 'path');
+          path.setAttribute('d', geometryToPath(grp.geometry));
+          path.setAttribute('class', 'vw-zone-group');
+          path.dataset.groupId = grp.id;
+          path.style.fill = window.ZoneStyle.groupFillById(grp.id, 'zh-');
+          path.style.stroke = grp.color;
+          g.appendChild(path);
+        }
+        for (const obj of objectsOfLayer(state.plan, layer.id)) {
+          const a = state.zoneColors && state.zoneColors.byZone[obj.id];
+          const path = document.createElementNS(NS, 'path');
+          path.setAttribute('d', geometryToPath(obj.geometry));
+          path.setAttribute('class', 'vw-shape vw-zone-edge');
+          path.dataset.objectId = obj.id;
+          path.dataset.layer = layer.id;
+          if (obj.properties && obj.properties.kind) path.dataset.kind = obj.properties.kind;
+          if (obj.properties && obj.properties.groupId) path.dataset.groupId = obj.properties.groupId;
+          if ((state.picked && state.picked.id === obj.id)
+            || state.multi.some((m) => m.id === obj.id)) path.classList.add('vw-picked');
+          path.style.stroke = a ? a.color : window.ZoneStyle.zone(obj.properties && obj.properties.kind).color;
+          g.appendChild(path);
+        }
+        root.appendChild(g);
+        continue;
+      }
+
       for (const obj of objectsOfLayer(state.plan, layer.id)) {
         const path = document.createElementNS(NS, 'path');
         path.setAttribute('d', geometryToPath(obj.geometry));
@@ -435,9 +495,16 @@
       const swatch = layer.id === 'restrictions'
         ? hatchSwatch(restrictionKinds().keys().next().value || 'other')
         : Object.assign(document.createElement('span'), { className: `vw-swatch vw-sw-${layer.id}` });
+      // Подпись обязана называть то, что человек ВИДИТ. Пока стояло просто
+      // «Ограничения (42)», а штриховок на плане семь, расхождение читалось
+      // как ошибка платформы.
+      const folded = layer.id === 'restrictions' && state.zoneView === 'groups'
+        && state.zoneGroupStyles.length;
       const title = layer.id === 'forbidden' && count
         ? `${layer.label} (${forbiddenSummary()})`
-        : `${layer.label} (${count})`;
+        : (folded
+          ? `${layer.label} (${state.zoneGroupStyles.length} правил · ${count} зон)`
+          : `${layer.label} (${count})`);
       label.append(cb, swatch, document.createTextNode(title));
       box.appendChild(label);
 
@@ -451,6 +518,53 @@
       if (layer.id === 'restrictions' && count) {
         const sub = document.createElement('div');
         sub.className = 'vw-legend-sub';
+
+        // переключатель вида: свёрнуто по правилам или прежним поштучным
+        if (state.zoneGroupStyles.length && state.zoneGroupStyles.length < count) {
+          const seg = document.createElement('div');
+          seg.className = 'vw-legend-seg';
+          for (const [mode, text] of [['groups', 'по правилам'], ['zones', 'поштучно']]) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = text;
+            b.className = state.zoneView === mode ? 'on' : '';
+            b.addEventListener('click', () => {
+              // выбор человека сильнее умолчания по числу зон и держится до перезагрузки
+              state.zoneView = mode;
+              state.zoneViewPinned = true;
+              draw();
+              renderLayerToggles();
+            });
+            seg.appendChild(b);
+          }
+          sub.appendChild(seg);
+        }
+
+        /*
+         * Свёрнутый показ — легенда по ПРАВИЛАМ: сколько метров запрещает
+         * каждое и от скольких объектов считается. Семь строк вместо двадцати
+         * с хвостом «и ещё 24».
+         */
+        if (folded) {
+          for (const grp of state.zoneGroupStyles) {
+            const row = document.createElement('span');
+            row.className = 'vw-legend-item';
+            const status = grp.status && grp.status !== 'confirmed' ? ' · требует проверки' : '';
+            row.title = `${grp.label}\n${grp.bases.length ? `основание: ${grp.bases.join('; ')}\n` : ''}`
+              + `запрещает ${Math.round(grp.areaM2)} м² (сумма площадей зон с наложениями ${Math.round(grp.sumAreaM2)} м²)`
+              + `${status ? '\nстатус: требует проверки' : ''}`;
+            row.append(
+              hatchSwatch(grp.kind, grp.color),
+              document.createTextNode(`${grp.label} — ${Math.round(grp.areaM2)} м²${status}`),
+            );
+            row.addEventListener('mouseenter', () => highlightGroup(grp.id, true));
+            row.addEventListener('mouseleave', () => highlightGroup(grp.id, false));
+            sub.appendChild(row);
+          }
+          box.appendChild(sub);
+          continue;
+        }
+
         // На боевой площадке ограничения даёт семь десятков объектов, и полный
         // список превращает меню слоёв в бесконечную ленту. Показываются те,
         // что отнимают больше всего; остальные пересчитаны строкой ниже и
@@ -488,6 +602,14 @@
     const f = state.plan && state.plan.buildable && state.plan.buildable.forbidden;
     if (!f) return '0';
     return `${Math.round(f.areaM2)} м², ${f.sharePercent}% участка`;
+  }
+
+  /** Подсветить на плане все зоны одного правила — по строке легенды групп. */
+  function highlightGroup(groupId, on) {
+    if (!state.root) return;
+    for (const p of state.root.querySelectorAll(`[data-group-id="${CSS.escape(groupId)}"]`)) {
+      p.classList.toggle('vw-hover', on);
+    }
   }
 
   /** Подсветить на плане зоны одного объекта-источника. */
@@ -631,11 +753,23 @@
     }
     if (bu && bu.geometry) add(bu.geometry, `fill:${ZS.BUILDABLE.fill};stroke:${ZS.BUILDABLE.color};stroke-width:1`);
     const zones = plan.restrictions || [];
+    const groups = plan.zoneGroups || [];
     const assign = ZS.assignColors(zones);
-    for (const z of zones) {
-      add(z.geometry, assign.byZone[z.id]
-        ? ZS.zoneStyleById(z.id, assign, prefix)
-        : ZS.zoneStyle(z.properties && z.properties.kind, prefix));
+    // миниатюра в ленте сворачивается по тем же правилам, что и сам план:
+    // иначе карточка показывает мотки окружностей, а план под ней — семь
+    // штриховок, и человек решает, что открыл не тот проект
+    const foldZones = ZS.shouldFold(zones.length, groups.length);
+    const groupStyles = foldZones ? ZS.assignGroupStyles(groups) : [];
+    if (foldZones) {
+      for (const grp of groupStyles) {
+        add(grp.geometry, `fill:${ZS.groupFillById(grp.id, prefix)};stroke:${grp.color};stroke-width:1.2`);
+      }
+    } else {
+      for (const z of zones) {
+        add(z.geometry, assign.byZone[z.id]
+          ? ZS.zoneStyleById(z.id, assign, prefix)
+          : ZS.zoneStyle(z.properties && z.properties.kind, prefix));
+      }
     }
     if (plan.parcel) add(plan.parcel.geometry, 'fill:none;stroke:currentColor;stroke-width:1.6');
     for (const u of plan.utilities || []) add(u.geometry, 'fill:none;stroke:#a8802c;stroke-width:1');
@@ -644,7 +778,8 @@
 
     return `<svg class="${o.className || 'vw-mini'}" viewBox="${b.minX - pad} ${-(b.maxY + pad)} ${span} ${h + pad * 2}" ` +
       'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Схема участка">' +
-      ZS.defs(prefix, scale, zones) + `<g transform="scale(1,-1)">${parts.join('')}</g></svg>`;
+      ZS.defs(prefix, scale, zones, groupStyles.length ? groups : null)
+      + `<g transform="scale(1,-1)">${parts.join('')}</g></svg>`;
   }
 
   /* ---------------- инициализация ---------------- */
@@ -1249,13 +1384,19 @@
     try {
       const res = await state.api(`/sessions/${state.session.id}/plan/restrictions`, { method: 'POST', json: {} });
       state.plan.restrictions = res.restrictions || [];
+      state.plan.zoneGroups = res.zoneGroups || [];
       state.plan.buildable = res.buildable || null;
       draw();
       renderLayerToggles();
       const b = res.buildable;
-      el('vw-status').textContent = `Зон построено: ${res.restrictions.length}` +
-        (res.unresolved.length ? `, не построено: ${res.unresolved.length}` : '') +
-        (b ? ` · допустимо ${b.areaM2} м² (${b.sharePercent}%)` : '');
+      // число правил проговаривается рядом с числом зон: на плане штриховок
+      // столько же, сколько правил, и молчаливое расхождение с «зон построено»
+      // читается как ошибка платформы
+      const rules = (res.zoneGroups || []).length;
+      el('vw-status').textContent = `Зон построено: ${res.restrictions.length}`
+        + (rules && rules < res.restrictions.length ? ` по ${rules} правилам` : '')
+        + (res.unresolved.length ? `, не построено: ${res.unresolved.length}` : '')
+        + (b ? ` · допустимо ${b.areaM2} м² (${b.sharePercent}%)` : '');
       const extra = [
         ...res.unresolved.map((u) => `Не построено «${u.kind}»: ${u.reason}`),
         ...res.conflicts.map((c) => c.message),

@@ -178,8 +178,19 @@ function sourceDataSection({ site, files }) {
 }
 
 /** Раздел 3. Схема планировочных ограничений: рисунок, легенда, ведомость. */
-function restrictionsSection({ svg, restrictions, buildable, attributes, unresolved }) {
+function restrictionsSection({ svg, restrictions, zoneGroups = [], buildable, attributes, unresolved }) {
   const sources = sourcesOf(restrictions);
+  /*
+   * Легенда обязана совпадать со СХЕМОЙ.
+   *
+   * Когда зон много, схема рисуется свёрнутой — одна штриховка на правило
+   * (та же `ZoneStyle.shouldFold`, что на экране и в чертеже). Легенда по
+   * объектам в этом случае врала бы цветом: под схемой семь штриховок,
+   * а в подписи десять объектов с другими оттенками. Перечень объектов
+   * никуда не девается — он в ведомости 3.2, полный.
+   */
+  const folded = ZoneStyle.shouldFold((restrictions || []).length, (zoneGroups || []).length);
+  const groupStyles = folded ? ZoneStyle.assignGroupStyles(zoneGroups) : [];
 
   /*
    * В легенду идут не все объекты, а десять самых дорогих по отнятой площади.
@@ -190,17 +201,27 @@ function restrictionsSection({ svg, restrictions, buildable, attributes, unresol
    * схемой отвечает на вопрос «что здесь главное».
    */
   const LEGEND_LIMIT = 10;
-  const shown = sources.slice(0, LEGEND_LIMIT);
-  const rest = sources.length - shown.length;
-  const legend = sources.length ? `<div class="legend">${
-    shown.map((s) => `<span class="legend-item">${chip(s.color)}<span>${esc(s.label)} — ${
-      esc(s.kinds.map(([k, v]) => `${k}${v.valueM ? ` ${num(v.valueM, 1)} м` : ''}`).join(', '))
-    }, ${num(s.areaM2)} м²</span></span>`).join('')
-  }${rest > 0
-    ? `<span class="legend-item"><span class="chip chip-more"></span><span>и ещё ${rest} объект(ов) — полностью в ведомости 3.2</span></span>`
-    : ''}<span class="legend-item"><span class="chip chip-forbidden"></span><span>запретная зона — сплошная подложка под штриховкой</span></span>` +
-    '<span class="legend-item"><span class="chip chip-buildable"></span><span>потенциально допустимая территория</span></span></div>'
-    : '';
+  const tail = '<span class="legend-item"><span class="chip chip-forbidden"></span>'
+    + '<span>запретная зона — сплошная подложка под штриховкой</span></span>'
+    + '<span class="legend-item"><span class="chip chip-buildable"></span>'
+    + '<span>потенциально допустимая территория</span></span></div>';
+  let legend = '';
+  if (folded && groupStyles.length) {
+    legend = `<div class="legend">${groupStyles.map((g) => `<span class="legend-item">${chip(g.color)}<span>${
+      esc(g.label)} — ${num(g.areaM2)} м²${g.status && g.status !== 'confirmed' ? ' (требует проверки)' : ''
+    }</span></span>`).join('')}<span class="legend-item"><span class="chip chip-more"></span><span>всего зон ${
+      (restrictions || []).length}, по объектам — ведомость 3.2</span></span>${tail}`;
+  } else if (sources.length) {
+    const shown = sources.slice(0, LEGEND_LIMIT);
+    const rest = sources.length - shown.length;
+    legend = `<div class="legend">${
+      shown.map((s) => `<span class="legend-item">${chip(s.color)}<span>${esc(s.label)} — ${
+        esc(s.kinds.map(([k, v]) => `${k}${v.valueM ? ` ${num(v.valueM, 1)} м` : ''}`).join(', '))
+      }, ${num(s.areaM2)} м²</span></span>`).join('')
+    }${rest > 0
+      ? `<span class="legend-item"><span class="chip chip-more"></span><span>и ещё ${rest} объект(ов) — полностью в ведомости 3.2</span></span>`
+      : ''}${tail}`;
+  }
 
   // сводка по типам: сколько зон каждого вида и на какую площадь
   const byKind = new Map();
@@ -551,7 +572,7 @@ function footerTemplate(session, date) {
  */
 function buildHtml(opts) {
   const {
-    session, site, variant, restrictions = [], buildable = null,
+    session, site, variant, restrictions = [], zoneGroups = [], buildable = null,
     annotations = [], files = [], attributes = [], unresolved = [],
     zonesSvg = '', variantSvg = '', date,
   } = opts;
@@ -571,7 +592,7 @@ function buildHtml(opts) {
 <style>${STYLE}</style></head><body>
 ${titleBlock({ session, site, variant, date })}
 ${sourceDataSection({ site, files })}
-${restrictionsSection({ svg: zonesSvg, restrictions, buildable, attributes, unresolved })}
+${restrictionsSection({ svg: zonesSvg, restrictions, zoneGroups, buildable, attributes, unresolved })}
 ${decisions}
 ${variantHtml}
 ${actionsHtml}

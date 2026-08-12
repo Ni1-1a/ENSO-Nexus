@@ -10,9 +10,31 @@
  * те же правила на одной и той же геометрии дают тот же результат до миллиметра.
  * В этом и смысл разделения — правило формулирует модель, зону строит код.
  */
+const crypto = require('crypto');
 const G = require('./site-geometry');
 const jts = require('./jts');
 const RR = require('./restriction-rules');
+
+/**
+ * Подпись правила — ключ, по которому зоны собираются в группу для показа.
+ *
+ * Берётся ПОДПИСЬ, а не `rule.id`. В боевой базе идентификаторы не уникальны:
+ * `rulesFromFacts` нумерует свой список с нуля, `mergeRules` складывает его
+ * с извлечённым, и в записи проекта «Вариант 4» под `rule-1` лежат ДВА разных
+ * правила — охранная зона 10 м от ЛЭП и отступ 3 м от границы участка.
+ * Группировка по `id` слила бы их в одну штриховку с чужим основанием.
+ *
+ * Два одинаковых по смыслу правила (модель вернула дубль) подпись, наоборот,
+ * сводит вместе — и человек видит одну штриховку вместо двух совпадающих.
+ */
+function groupKeyOf(rule) {
+  const t = (rule && rule.target) || {};
+  return [rule.kind, rule.operation, rule.valueM, t.selector, String(t.hint || '')].join('|');
+}
+
+function groupIdOf(key) {
+  return `grp-${crypto.createHash('sha1').update(key).digest('hex').slice(0, 8)}`;
+}
 
 /**
  * Объект, которого на площадке не будет, ограничений не даёт.
@@ -47,7 +69,18 @@ function resolveTargets(site, rule) {
     objectId: G.allObjects(site),
     unknown: [],
   }[selector] || [];
-  const byType = all.filter((o) => !willBeGone(o));
+  /*
+   * Зона ограничения — не объект отсчёта, и целью правила быть не может.
+   *
+   * `G.allObjects` перечисляет и `site.restrictions`, а маршрут «Рассчитать
+   * ограничения» берёт участок через `ensurePlan`, который зоны прошлого
+   * прогона в него уже приложил. Правило с селектором `layer` или `objectId`
+   * без уточнения получало их в цель наравне со зданиями и обводило буфером
+   * вчерашнюю охранную зону: два нажатия кнопки — два кольца вокруг кольца.
+   * Ограничение отсчитывается от того, что стоит на земле, а не от разметки,
+   * которую сама же платформа и нарисовала.
+   */
+  const byType = all.filter((o) => !willBeGone(o) && o.type !== 'restriction');
 
   if (!hint) return { targets: byType, narrowed: false };
 
@@ -268,6 +301,9 @@ function build(site, rules) {
         properties: {
           kind: rule.kind,
           ruleId: rule.id,
+          // группа показа: все зоны одного правила рисуются одной штриховкой,
+          // иначе слой из сорока шести строений даёт сорок шесть окружностей
+          groupId: groupIdOf(groupKeyOf(rule)),
           valueM: rule.valueM,
           status: rule.status,
           statusLabel: RR.STATUS_LABELS[rule.status] || rule.status,
@@ -323,6 +359,19 @@ function build(site, rules) {
 
   const buildable = computeBuildable(site, parcelJts, restrictions, warnings);
 
+  /*
+   * Группы считаются ПОСЛЕ допустимой территории и в неё не возвращаются.
+   *
+   * Порядок здесь принципиален. `computeBuildable` разбирает зоны на режущие
+   * и накрывающие участок целиком (WHOLE_PARCEL_SHARE): накрывающая — это
+   * режим (СЗЗ, приаэродромная территория), она из вычитания исключается.
+   * Слей мы зоны заранее — две зоны по 65 % участка дали бы одну на 100 %,
+   * она ушла бы в «режим», и допустимая территория подскочила бы с нуля
+   * до целого участка. Поэтому группы — надстройка над готовым расчётом:
+   * ни одно число `buildable` от них не зависит.
+   */
+  const zoneGroups = buildGroups(restrictions, rules);
+
   // site мутируется по-прежнему: в основном потоке этим пользуются экспорт и
   // карточки. Слияние без дублей — чтобы повторный расчёт не размножал текст.
   if (!Array.isArray(site.warnings)) site.warnings = [];
@@ -330,12 +379,14 @@ function build(site, rules) {
 
   return {
     restrictions,
+    zoneGroups,
     buildable,
     attributes,
     unresolved,
     warnings,
     stats: {
       зонПостроено: restrictions.length,
+      группПоказа: zoneGroups.length,
       неПостроено: unresolved.length,
       атрибутивныхОграничений: attributes.length,
       допустимаяПлощадь: buildable ? buildable.areaM2 : null,
@@ -344,6 +395,130 @@ function build(site, rules) {
       доляОтУчастка: buildable && buildable.sharePercent !== null ? `${buildable.sharePercent}%` : null,
     },
   };
+}
+
+/**
+ * Зоны, собранные в группы показа: одна группа — одно правило.
+ *
+ * Зачем понадобилось. Зона строится на КАЖДЫЙ объект отсчёта — это решение
+ * Версии 4, и оно остаётся: без него не видно, какой именно объект мешает и
+ * что можно снести. Но на боевом чертеже слой «03_Здания и строения» несёт
+ * 46 объектов, а инженерных слоёв семь, и правило «охранная зона 5 м от
+ * канализации» рисует 21 почти совпадающую окружность. Замер на «Горбунках»:
+ * 7 правил → 55 зон, из них 29 не добавляют к запрету НИ МЕТРА — они ложатся
+ * поверх уже запрещённого места. План читать нельзя.
+ *
+ * Группа не заменяет зоны и ничего не удаляет: в `restrictions` остаётся всё
+ * до одной, с основанием, статусом и объектом отсчёта. Группа — это готовое
+ * объединение их геометрии, чтобы показ (экран, отчёт, чертёж) рисовал одну
+ * штриховку вместо полусотни, а не пересобирал её у себя трижды по-разному.
+ *
+ * Геометрия считается ЗДЕСЬ, а не на клиенте, по двум причинам: объединение
+ * нужно и чертежу с отчётом, которые живут на сервере, и потому что булева
+ * операция в браузере на полусотне полигонов — это заметная пауза на каждой
+ * перерисовке плана.
+ */
+function buildGroups(restrictions, rules) {
+  if (!restrictions.length) return [];
+
+  const byRuleId = new Map((rules || []).map((r) => [r.id, r]));
+  const groups = new Map();
+
+  for (const z of restrictions) {
+    const p = z.properties || {};
+    const id = p.groupId;
+    if (!id) continue;
+    if (!groups.has(id)) {
+      groups.set(id, {
+        id,
+        kind: p.kind,
+        valueM: p.valueM,
+        ruleIds: new Set(),
+        bases: new Set(),
+        layers: new Set(),
+        statuses: new Set(),
+        zoneIds: [],
+        sources: [],
+        geoms: [],
+        sumAreaM2: 0,
+      });
+    }
+    const g = groups.get(id);
+    g.ruleIds.add(p.ruleId);
+    if (z.provenance && z.provenance.basis) g.bases.add(String(z.provenance.basis));
+    if (p.sourceLayer) g.layers.add(p.sourceLayer);
+    g.statuses.add(p.status);
+    g.zoneIds.push(z.id);
+    g.sources.push({ id: p.sourceObjectId, label: p.sourceLabel, layer: p.sourceLayer });
+    g.sumAreaM2 += Number(p.areaM2) || 0;
+    const jg = jts.toJts(z.geometry);
+    if (jg) g.geoms.push(jg);
+  }
+
+  const out = [];
+  for (const g of groups.values()) {
+    const union = g.geoms.length ? jts.union(g.geoms) : null;
+    const geometry = union ? jts.fromJts(union) : null;
+    if (!geometry) continue;
+    const rule = byRuleId.get([...g.ruleIds][0]) || null;
+    const hint = rule && rule.target ? rule.target.hint : '';
+    out.push({
+      id: g.id,
+      kind: g.kind,
+      valueM: g.valueM,
+      geometry,
+      // площадь ОБЪЕДИНЕНИЯ — то, что зона запрещает на самом деле;
+      // сумма площадей зон отдаётся отдельно и подписывается как сумма
+      // с наложениями: на 21 колодце канализации она втрое больше
+      areaM2: G.round(jts.area(union), 2),
+      sumAreaM2: G.round(g.sumAreaM2, 2),
+      zoneCount: g.zoneIds.length,
+      zoneIds: g.zoneIds,
+      ruleIds: [...g.ruleIds],
+      bases: [...g.bases],
+      layers: [...g.layers],
+      // статус группы — ХУДШИЙ из статусов её зон: одна непроверенная зона
+      // делает непроверенной всю штриховку, иначе объединение выдало бы
+      // неподтверждённое правило за подтверждённое
+      status: worstStatus([...g.statuses]),
+      sources: g.sources,
+      label: groupLabel(g, hint),
+    });
+  }
+  // порядок устойчив: по типу, затем по величине — чтобы цвета групп
+  // не переезжали от пересчёта к пересчёту
+  return out.sort((a, b) => String(a.kind).localeCompare(String(b.kind))
+    || (b.valueM || 0) - (a.valueM || 0)
+    || String(a.id).localeCompare(String(b.id)));
+}
+
+/** Худший статус из набора: непроверенное сильнее подтверждённого. */
+function worstStatus(list) {
+  const order = [RR.STATUSES.CONFIRMED, RR.STATUSES.NEEDS_REVIEW, RR.STATUSES.CONFLICT, RR.STATUSES.INSUFFICIENT];
+  let worst = null;
+  for (const s of list) {
+    if (!s) continue;
+    if (worst === null || order.indexOf(s) > order.indexOf(worst)) worst = s;
+  }
+  return worst;
+}
+
+/**
+ * Имя группы: что за ограничение, сколько метров и от чего считается.
+ *
+ * От чего — это уточнение правила, если оно есть («ВЛ-10 кВ»), иначе имена
+ * слоёв, на которых лежат объекты отсчёта. Без внятного имени легенда по
+ * группам покажет «объект не назван» семь раз подряд.
+ */
+function groupLabel(g, hint) {
+  const kind = RR.KIND_LABELS[g.kind] || g.kind || 'ограничение';
+  const value = g.valueM ? ` ${g.valueM} м` : '';
+  const layers = [...g.layers];
+  const from = String(hint || '').trim()
+    || (layers.length === 1 ? layers[0] : (layers.length ? `${layers.length} слоёв` : ''));
+  const n = g.zoneIds.length;
+  const count = n > 1 ? `, ${n} объект${n % 10 === 1 && n % 100 !== 11 ? '' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'а' : 'ов')}` : '';
+  return `${kind}${value}${from ? ` от «${from}»` : ''}${count}`.slice(0, 160);
 }
 
 /**
@@ -468,4 +643,7 @@ function computeBuildable(site, parcelJts, restrictions, warnings = []) {
   };
 }
 
-module.exports = { build, buildZone, resolveTargets, computeBuildable, targetLabel, willBeGone };
+module.exports = {
+  build, buildZone, resolveTargets, computeBuildable, targetLabel, willBeGone,
+  buildGroups, groupKeyOf, groupIdOf,
+};

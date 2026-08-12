@@ -169,14 +169,31 @@ function cropSvg(site, rectPoints, { width = 900, height = 640, marginRatio = 0.
   const minY = cy - vh / 2;
 
   const zones = site.restrictions || [];
+  const groups = site.zoneGroups || [];
   const assignment = ZoneStyle.assignColors(zones);
+  /*
+   * Ограничения сворачиваются в штриховку на ПРАВИЛО ровно там же, где это
+   * делает экран. Иначе в отчёте и в PNG останутся прежние сорок две
+   * окружности, и человек увидит на бумаге не то, что согласовывал на экране.
+   * Порог тот же (ZoneStyle.shouldFold) и та же причина.
+   */
+  const foldZones = ZoneStyle.shouldFold(zones.length, groups.length);
+  const groupStyles = foldZones ? ZoneStyle.assignGroupStyles(groups) : [];
   const parts = [];
   for (const { layer, obj } of allWithLayer(site)) {
+    // свёрнутый показ: сами зоны не штрихуются, их рисует группа
+    if (foldZones && layer === 'restrictions') continue;
     const d = geometryPath(obj.geometry);
     if (!d) continue;
     const open = obj.geometry.type === 'polyline';
     const style = open ? `${styleOf(layer, obj, assignment)};fill:none` : styleOf(layer, obj, assignment);
     parts.push(`<path d="${d}" style="${style}" vector-effect="non-scaling-stroke"/>`);
+  }
+  for (const grp of groupStyles) {
+    const d = geometryPath(grp.geometry);
+    if (!d) continue;
+    parts.push(`<path d="${d}" style="fill:${ZoneStyle.groupFillById(grp.id, 'cs-')};`
+      + `stroke:${grp.color};stroke-width:1.4;stroke-opacity:.75" vector-effect="non-scaling-stroke"/>`);
   }
   // поверх всего — то, о чём идёт речь: рамка вопроса или пятно застройки.
   // `highlight: 'none'` рисует чистую схему: на схеме ограничений в отчёте
@@ -193,7 +210,7 @@ function cropSvg(site, rectPoints, { width = 900, height = 640, marginRatio = 0.
     // Шаг штриховки задан в единицах чертежа, а рисуем мы участок целиком:
     // без пересчёта под размер картинки полосы на участке в 74 м выходят
     // толщиной в метр и закрывают собой подложку. Тот же пересчёт делает вьювер.
-    ZoneStyle.defs('cs-', ZoneStyle.unitsPerPixel(vw, width), zones) +
+    ZoneStyle.defs('cs-', ZoneStyle.unitsPerPixel(vw, width), zones, groupStyles.length ? groups : null) +
     `<g transform="scale(1,-1)">${parts.join('')}</g></svg>`;
 }
 

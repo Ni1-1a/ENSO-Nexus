@@ -108,6 +108,9 @@ async function buildPackage(sessionId, { session, site, variant, restrictions, b
 
   const html = report.buildHtml({
     session, site, variant, restrictions: restrictions || [], buildable,
+    // группы показа: легенда под схемой обязана совпадать с самой схемой,
+    // а она рисуется свёрнутой, когда зон много
+    zoneGroups: site.zoneGroups || zoneData.zoneGroups || [],
     annotations: annotations || [], files, date,
     attributes: zoneData.attributes || [],
     unresolved: zoneData.unresolved || [],

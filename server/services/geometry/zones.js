@@ -78,6 +78,10 @@ function save(sessionId, planId, { rules, built }) {
   const hash = editsFingerprint(sessionId);
   const zones = JSON.stringify({
     restrictions: built.restrictions || [],
+    // группы показа: объединение зон одного правила. Хранятся рядом с зонами,
+    // а не пересобираются при каждом показе — их читают и экран, и отчёт,
+    // и чертёж, а булева операция на полусотне полигонов не бесплатна.
+    zoneGroups: built.zoneGroups || [],
     buildable: built.buildable || null,
     attributes: built.attributes || [],
     unresolved: built.unresolved || [],
@@ -128,6 +132,7 @@ function attach(sessionId, planId, site) {
   // Источник правды теперь один, поэтому всё, что пришло из `plans.geometry`,
   // сбрасывается: иначе на плане висели бы зоны, посчитанные неизвестно когда.
   site.restrictions = [];
+  site.zoneGroups = [];
   site.buildable = null;
 
   const rec = get(planId);
@@ -136,6 +141,9 @@ function attach(sessionId, planId, site) {
   const hash = editsFingerprint(sessionId);
   if (hash === rec.editsHash) {
     site.restrictions = rec.zones.restrictions || [];
+    // группы могли не сохраниться: запись сделана прежней версией платформы.
+    // Пустой массив — законное состояние, показ откатывается на поштучный.
+    site.zoneGroups = rec.zones.zoneGroups || [];
     site.buildable = rec.zones.buildable || null;
     return { attached: true, recomputed: false, built: rec.zones };
   }
@@ -156,6 +164,7 @@ function attach(sessionId, planId, site) {
         + 'Нажмите «Рассчитать ограничения» ещё раз — иначе пятно застройки считается по устаревшей схеме.',
     });
     site.restrictions = rec.zones.restrictions || [];
+    site.zoneGroups = rec.zones.zoneGroups || [];
     site.buildable = rec.zones.buildable || null;
     return { attached: true, recomputed: false, stale: true, built: rec.zones };
   }
@@ -171,12 +180,14 @@ function attach(sessionId, planId, site) {
         + 'Показаны зоны предыдущего расчёта — пятно застройки по ним считать нельзя.',
     });
     site.restrictions = rec.zones.restrictions || [];
+    site.zoneGroups = rec.zones.zoneGroups || [];
     site.buildable = rec.zones.buildable || null;
     return { attached: true, recomputed: false, stale: true, built: rec.zones };
   }
 
   save(sessionId, planId, { rules: rec.rules, built });
   site.restrictions = built.restrictions;
+  site.zoneGroups = built.zoneGroups || [];
   site.buildable = built.buildable;
 
   const wasArea = rec.zones.buildable ? rec.zones.buildable.areaM2 : null;
