@@ -1,54 +1,114 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ENSO Nexus · Pilot 1 — переход к приложению</title>
-  <style>
-    body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 90vh; background: #f3efe6; color: #33302a; }
-    .card { text-align: center; padding: 2rem; max-width: 440px; }
-    a { color: #b95740; font-weight: 600; }
-    .muted { color: #8a8474; font-size: .85rem; }
-    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #d8d0c0; border-top-color: #b95740; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -2px; margin-right: 6px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #offline { display: none; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enso-nexus — переход к платформе</title>
+<!--
+  Приёмная на GitHub Pages: работает, даже когда сервер выключен.
+  Оформление то же, что у платформы. Токенов Cloudflare здесь нет — это
+  обычная страница, а не подмена страницы ошибки.
+-->
+<style>
+  :root {
+    --bg: #f3efe6; --panel: #fdfbf4; --text: #26211b; --text-2: #6f665a;
+    --text-3: #857b6e; --accent: #b95740; --stroke: rgba(62,50,35,.16);
+    --stroke-soft: rgba(62,50,35,.09);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #201c17; --panel: #292420; --text: #eee7db; --text-2: #a89c8c;
+      --text-3: #9a8f80; --accent: #d0715a; --stroke: rgba(235,220,195,.15);
+      --stroke-soft: rgba(235,220,195,.08);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh; display: grid; place-items: center; padding: 24px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text); background: var(--bg);
+    background-image:
+      radial-gradient(1100px 650px at 85% -10%, rgba(185,87,64,.05), transparent 60%),
+      radial-gradient(850px 550px at -10% 110%, rgba(74,107,138,.05), transparent 55%);
+    -webkit-font-smoothing: antialiased;
+  }
+  .sheet {
+    position: relative; width: min(460px, 100%); padding: 34px 32px 26px;
+    text-align: center; background: var(--panel);
+    border: 1px solid var(--stroke-soft); border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(70,55,35,.12), 0 16px 40px rgba(70,55,35,.16);
+  }
+  /* сигнатура платформы: вторая, «чертёжная» рамка внутри листа */
+  .sheet::before {
+    content: ''; position: absolute; inset: 6px; pointer-events: none;
+    border: 1px solid var(--stroke-soft); border-radius: 6px;
+  }
+  .mark { width: 54px; height: 54px; margin: 0 auto 12px; color: var(--accent); }
+  h1 {
+    font-family: "New York", ui-serif, Georgia, serif;
+    font-size: 23px; font-weight: 600; letter-spacing: .01em;
+  }
+  .sub { margin-top: 3px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); }
+  h2 { font-family: "New York", ui-serif, Georgia, serif; font-size: 16px; font-weight: 600; margin-top: 22px; }
+  p { margin-top: 8px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+  .status {
+    display: inline-flex; align-items: center; gap: 7px; margin-top: 18px;
+    padding: 7px 13px; border-radius: 999px;
+    background: rgba(176,126,54,.12); color: #8f6420; font-size: 12.5px;
+  }
+  @media (prefers-color-scheme: dark) { .status { color: #e0a95f; } }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 2.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .cf { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--stroke-soft); }
+  .cf-box { font-size: 12px; color: var(--text-3); }
+  .cf-box a { color: var(--accent); }
+  .ray { margin-top: 10px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; color: var(--text-3); }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+</style>
 </head>
 <body>
-  <div class="card">
-    <h1>ENSO Nexus · Pilot 1</h1>
-    <p id="checking"><span class="spinner"></span>Проверяем доступность сервера…</p>
-    <div id="offline">
-      <p><strong>Сервер сейчас недоступен.</strong></p>
-      <p class="muted">Скорее всего, компьютер с приложением выключен или нет связи.
-         Страница проверяет доступность каждые 15 секунд и откроет приложение автоматически,
-         как только сервер появится. Можно просто оставить вкладку открытой.</p>
-      <p class="muted" id="tries"></p>
+  <main class="sheet">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 100 100" fill="none" width="54" height="54">
+        <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+        <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+        <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+      </svg>
     </div>
-    <p><a href="https://enso-nexus.com">https://enso-nexus.com</a></p>
-  </div>
-  <script>
-    var URL_APP = 'https://enso-nexus.com';
+    <h1>Enso-nexus</h1>
+    <p class="sub">Платформа автоматического проектирования</p>
+
+    <h2>Проверяем доступность платформы</h2>
+    <p>Эта страница живёт отдельно от сервера и работает всегда. Как только платформа
+       поднимется, она откроется здесь автоматически.</p>
+
+    <div class="status"><span class="dot"></span><span id="state">Проверяем связь каждые 10 секунд…</span></div>
+    <p style="margin-top:12px;font-size:12px">Страницу можно оставить открытой: она сама откроет платформу, как только та поднимется.</p>
+
+    <div class="cf">
+      <p class="cf-box">Постоянный адрес платформы:
+        <a href="https://enso-nexus.com">enso-nexus.com</a></p>
+    </div>
+  </main>
+<script>
+  // Ждём возвращения приложения и уходим на него сами. Интервал нарастает,
+  // чтобы вкладка, забытая на ночь, не долбила сервер каждые 10 секунд.
+  (function () {
     var tries = 0;
+    var el = document.getElementById('state');
     function check() {
       tries++;
-      var ctrl = new AbortController();
-      var t = setTimeout(function () { ctrl.abort(); }, 7000);
-      fetch(URL_APP + '/api/health', { cache: 'no-store', signal: ctrl.signal })
-        .then(function (r) {
-          clearTimeout(t);
-          if (r.ok) { location.replace(URL_APP); return; }
-          offline();
-        })
-        .catch(function () { clearTimeout(t); offline(); });
+      fetch('https://enso-nexus.com/api/health', { cache: 'no-store', mode: 'cors' })
+        .then(function (r) { if (r.ok) location.href = 'https://enso-nexus.com/'; else schedule(); })
+        .catch(schedule);
     }
-    function offline() {
-      document.getElementById('checking').style.display = 'none';
-      document.getElementById('offline').style.display = 'block';
-      document.getElementById('tries').textContent = 'Проверок выполнено: ' + tries;
-      setTimeout(check, 15000);
+    function schedule() {
+      var wait = Math.min(60, 10 + tries * 5);
+      el.textContent = 'Платформа ещё не поднялась · попыток: ' + tries + ' · следующая через ' + wait + ' с';
+      setTimeout(check, wait * 1000);
     }
     check();
-  </script>
+  }());
+</script>
 </body>
 </html>

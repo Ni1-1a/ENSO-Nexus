@@ -101,8 +101,8 @@
     var el = document.getElementById('state');
     function check() {
       tries++;
-      fetch('https://app.enso-nexus.ru/api/health', { cache: 'no-store', mode: 'cors' })
-        .then(function (r) { if (r.ok) location.href = 'https://app.enso-nexus.ru/'; else schedule(); })
+      fetch('https://enso-nexus.com/api/health', { cache: 'no-store', mode: 'cors' })
+        .then(function (r) { if (r.ok) location.href = 'https://enso-nexus.com/'; else schedule(); })
         .catch(schedule);
     }
     function schedule() {
