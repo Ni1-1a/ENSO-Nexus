@@ -235,6 +235,34 @@ async function feasibility(modelId) {
   return { feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want, modelMaxContext: modelMax, note: '' };
 }
 
+/**
+ * Выгрузить модель, когда её работа закончена.
+ *
+ * Вторая половина поочерёдной работы: мало загрузить одну модель за раз, надо
+ * ещё и освободить память сразу после её этапа, а не держать 30 ГБ занятыми до
+ * следующей загрузки. Распознавание сканов кончилось — vision-модель уходит,
+ * и чат-модель грузится в пустую память, а не выталкивает соседку.
+ *
+ * Занятую модель НЕ трогаем: параллельная задача получила бы «Model unloaded»
+ * на середине ответа. Отказ выгрузки — не ошибка этапа: работа уже сделана.
+ */
+async function unload(modelId, { onProgress = () => {} } = {}) {
+  if (!findLms() || !modelId) return { ok: false, reason: 'нет CLI lms' };
+  let loaded;
+  try { loaded = await listLoaded(); } catch { return { ok: false, reason: 'состояние LM Studio недоступно' }; }
+  const target = loaded.find((m) => m.modelKey === modelId && m.type !== 'embedding');
+  if (!target) return { ok: true, alreadyFree: true };
+  if (isBusy(target)) return { ok: false, reason: 'модель обслуживает запрос' };
+  try {
+    await lms(['unload', target.identifier], 60000);
+    onProgress(`Модель ${modelId} выгружена — память свободна`);
+    return { ok: true, unloaded: true };
+  } catch (err) {
+    console.warn('[model-manager] unload failed:', err.message);
+    return { ok: false, reason: err.message };
+  }
+}
+
 /** Сериализация ensureLoaded: параллельные вызовы не должны спорить за память. */
 let ensureChain = Promise.resolve();
 
@@ -283,17 +311,38 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
     // embedding-модели KV-кэш почти не тратят — не завышаем их вес при вытеснении
     const residentCost = (m) => m.sizeBytes + (m.type === 'embedding' ? 0 : kvBytes(m.modelKey, m.contextLength || 4096));
 
-    // освобождаем память: выгружаем самые крупные ПРОСТАИВАЮЩИЕ LLM, пока не поместимся.
-    // Модель, которая прямо сейчас обслуживает запрос (наш счётчик или live-статус
-    // LM Studio), вытеснять нельзя — иначе чужая задача получит «Model unloaded».
+    /*
+     * ПООЧЕРЁДНАЯ РАБОТА: перед загрузкой выгружается всё остальное.
+     *
+     * Раньше модели вытеснялись только по нехватке памяти — «пока не поместимся».
+     * Держать их рядом имело смысл, пока чат-модель была на 16 ГБ, а распознавание
+     * вела 5-гигабайтная vl-8b: обе жили в бюджете и переключаться было незачем.
+     * С переходом на qwen3.5-35b-a3b (20,6 ГБ весов плюс 9 ГБ KV) свободных
+     * остаётся 5 ГБ, и любое соседство означает работу впритык: система начинает
+     * сжимать память, а часть весов уходит в подкачку — ответы замедляются в разы.
+     *
+     * Поэтому теперь одна модель за раз: загрузилась → отработала → выгрузилась.
+     * Каждой достаётся ВЕСЬ бюджет, а не остаток от соседа, и контекст считается
+     * честно (fittingContext и так считает «в одиночку»). Плата — перезагрузка
+     * на переключении, но она случается дважды за анализ, а не на каждой странице:
+     * распознавание идёт одним блоком по всем страницам, потом работает чат-модель.
+     *
+     * Модель, обслуживающую ЧУЖОЙ запрос прямо сейчас (наш счётчик или live-статус
+     * LM Studio), не трогаем ни при каких условиях — иначе та задача получит
+     * «Model unloaded» на середине. Embedding-модели тоже: они нужны вперемежку
+     * с чатом для поиска по базе знаний и почти не занимают память.
+     */
+    const exclusive = config.localAiExclusive;
     const evictable = loaded
       .filter((m) => m.type !== 'embedding' && !isBusy(m))
       .sort((a, b) => residentCost(b) - residentCost(a));
     let residentTotal = loaded.reduce((s, m) => s + residentCost(m), 0);
     for (const m of evictable) {
-      if (residentTotal + need <= MEMORY_BUDGET_BYTES) break;
+      if (!exclusive && residentTotal + need <= MEMORY_BUDGET_BYTES) break;
       if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
-      onProgress(`Выгружается модель ${m.modelKey} — освобождаю память`);
+      onProgress(exclusive
+        ? `Выгружается модель ${m.modelKey} — работаем по одной`
+        : `Выгружается модель ${m.modelKey} — освобождаю память`);
       try { await lms(['unload', m.identifier], 60000); residentTotal -= residentCost(m); } catch (err) {
         console.warn('[model-manager] unload failed:', err.message);
       }
@@ -328,6 +377,6 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
 }
 
 module.exports = {
-  ensureLoaded, feasibility, desiredContext, fittingContext, listLoaded, sizeOf, modelMaxContext,
+  ensureLoaded, unload, feasibility, desiredContext, fittingContext, listLoaded, sizeOf, modelMaxContext,
   acquireUse, releaseUse, MEMORY_BUDGET_BYTES, MIN_CONTEXT,
 };

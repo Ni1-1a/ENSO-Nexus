@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ENSO Nexus Pilot 1 — публичный запуск с этого компьютера (самовосстанавливающийся).
 # Сервер приложения + ИМЕННОЙ туннель Cloudflare (enso-nexus, постоянный адрес
-# https://app.enso-nexus.ru) + watchdog: при падении сервера или туннеля всё
+# https://enso-nexus.com) + watchdog: при падении сервера или туннеля всё
 # перезапускается само. Конфиг туннеля: ~/.cloudflared/config.yml.
 #
 # Запуск:    bash scripts/serve-public.sh
@@ -10,7 +10,7 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p logs
 
-PUBLIC_URL="https://app.enso-nexus.ru"
+PUBLIC_URL="https://enso-nexus.com"
 
 start_server() {
   # caffeinate -i: Mac не уходит в сон, пока работает сервер (крышку не закрывать)
@@ -49,7 +49,7 @@ if [ "${1:-start}" = "stop" ]; then
 fi
 
 if [ -f logs/server.pid ] && kill -0 "$(cat logs/server.pid)" 2>/dev/null; then
-  echo "Уже запущено. Адрес: $PUBLIC_URL (также enso-nexus.ru)"
+  echo "Уже запущено. Адрес: $PUBLIC_URL (старый enso-nexus.ru редиректит сюда)"
   exit 0
 fi
 
@@ -59,7 +59,7 @@ if [ -z "$URL" ]; then
   echo "Не удалось подключить туннель — см. logs/tunnel.log"
   exit 1
 fi
-echo "Приложение опубликовано: $URL (также https://enso-nexus.ru)"
+echo "Приложение опубликовано: $URL (старый https://enso-nexus.ru редиректит сюда)"
 echo "Старая ссылка https://ni1-1a.github.io/ENSO-Nexus/ перенаправляет туда же"
 
 # watchdog: каждую минуту проверяет сервер и туннель, чинит упавшее

@@ -909,6 +909,32 @@ async function ensureDocumentsStudied(sessionId, { route, signal = null, docMode
         `не удалось: ${done.failed.join(', ')} — эти файлы уйдут модели без распознанного содержимого`,
         'warn');
     }
+
+    /*
+     * Распознавание кончилось — модель распознавания уходит из памяти.
+     *
+     * Это вторая половина поочерёдной работы: мало грузить по одной, надо ещё и
+     * освобождать сразу, а не держать занятыми 15 ГБ до следующей загрузки.
+     * Чат-модель тогда грузится в пустую память, а не выталкивает соседку —
+     * на 48 ГБ разница между «загрузилось» и «ушло в подкачку».
+     *
+     * Выгружаем ТОЛЬКО ту модель, что действительно вела распознавание, и только
+     * если следующей работать не ей: doc-vision возвращает поимённый список в
+     * `by` («lmstudio/qwen/qwen3-vl-8b»). Занятую модель model-manager.unload
+     * не тронет сам — параллельная задача иначе получит «Model unloaded».
+     */
+    if (config.localAiExclusive) {
+      const next = route.provider === 'lmstudio' ? resolveModel(route) : '';
+      const used = [...new Set((done.by || [])
+        .filter((s) => String(s).startsWith('lmstudio/'))
+        .map((s) => String(s).slice('lmstudio/'.length)))];
+      for (const m of used) {
+        if (!m || m === next) continue;
+        await modelManager.unload(m, {
+          onProgress: (text) => progress.set(sessionId, { phase: 'reading_docs', label: text, role: 'ocr' }),
+        }).catch(() => {});
+      }
+    }
     return done;
   } catch (err) {
     // исчерпанный бюджет обязан дойти до человека своим текстом, а не превратиться

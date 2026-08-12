@@ -87,7 +87,7 @@
 
     <div class="cf">
       <p class="cf-box">Постоянный адрес платформы:
-        <a href="https://app.enso-nexus.ru">app.enso-nexus.ru</a></p>
+        <a href="https://enso-nexus.com">enso-nexus.com</a></p>
     </div>
   </main>
 <script>
@@ -98,8 +98,8 @@
     var el = document.getElementById('state');
     function check() {
       tries++;
-      fetch('https://app.enso-nexus.ru/api/health', { cache: 'no-store', mode: 'cors' })
-        .then(function (r) { if (r.ok) location.href = 'https://app.enso-nexus.ru/'; else schedule(); })
+      fetch('https://enso-nexus.com/api/health', { cache: 'no-store', mode: 'cors' })
+        .then(function (r) { if (r.ok) location.href = 'https://enso-nexus.com/'; else schedule(); })
         .catch(schedule);
     }
     function schedule() {
