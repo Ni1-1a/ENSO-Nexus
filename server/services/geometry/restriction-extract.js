@@ -17,8 +17,25 @@ const rules = require('./restriction-rules');
 const progress = require('../progress');
 const { db } = require('../../db');
 
-const SYSTEM = `Ты — инженер-градостроитель. Твоя задача — извлечь из документов и нормативов
-ОГРАНИЧЕНИЯ, действующие на земельном участке.
+const SYSTEM = `Ты — инженер-градостроитель. Твоя задача — СОПОСТАВИТЬ то, что нарисовано
+на топосъёмке, с тем, что названо ограничением в документах, и выдать правило на каждую пару.
+
+Работа устроена так. В блоке <site_inventory> перечислено, что РЕАЛЬНО есть на чертеже:
+слои, их состав, длины и площади, а также подписи, которые дал объектам человек, — они
+точнее имён слоёв и важнее их. В документах (ГПЗУ, ТЗ) названо, какие охранные зоны,
+ЗОУИТ и разрывы на этом участке действуют. Твоё дело — связать одно с другим:
+
+  слой «07_Объекты электропередачи» + «охранная зона ВЛ 10 кВ» из ГПЗУ
+      → правило: 10 м от объектов этого слоя, основание ПП РФ № 160 п. 8
+
+Иди по КАЖДОМУ инженерному слою из описи и спрашивай себя: какая охранная зона у этой
+сети? Названа ли она в документах? Есть ли она в выдержках нормативной базы? Газопровод,
+теплосеть, водопровод, канализация, кабель связи, ЛЭП — у каждого своя зона и свой
+норматив, и одинаковой ширины у них не бывает. Слой, для которого зону найти не удалось,
+запиши в missingData поимённо: «для слоя X охранная зона в документах не названа».
+
+targetHint пиши так, чтобы приложение нашло объект: точное имя слоя из описи либо точную
+подпись человека. Выдуманное уточнение не найдёт ничего, и ограничение потеряется.
 
 ГЛАВНОЕ ПРАВИЛО: ты формулируешь ПРАВИЛО, а не рисуешь зону.
 Правильно: «охранная зона 10 м от оси ЛЭП, основание — ПП РФ № 160, п. 8».
@@ -181,27 +198,59 @@ function inventory(site) {
   if (!site) return 'Геометрия участка не разобрана.';
   const lines = [];
   if (site.parcel) {
+    // границы могут прийти не из чертежа, а из таблицы координат ГПЗУ — тогда
+    // слоя у них нет, и «слой null» в описи только сбивает модель с толку
+    const src = site.parcel.provenance.sourceLayer
+      ? `слой «${site.parcel.provenance.sourceLayer}»`
+      : `из документа «${site.parcel.provenance.sourceFile || 'ГПЗУ'}» по координатам характерных точек`;
     lines.push(`- Границы участка: площадь ${site.parcel.properties.areaM2} м², ` +
-      `периметр ${site.parcel.properties.perimeterM} м (слой «${site.parcel.provenance.sourceLayer}», ` +
+      `периметр ${site.parcel.properties.perimeterM} м (${src}, ` +
       `уверенность ${Math.round(site.parcel.provenance.confidence * 100)}%)`);
   } else {
     lines.push('- Границы участка: НЕ ОПРЕДЕЛЕНЫ');
   }
-  const group = (title, arr, fmt) => {
+  /*
+   * Опись объектов ОДНОГО СЛОЯ сворачивается в строку, а имя от человека
+   * показывается отдельно и первым.
+   *
+   * Две причины. Первая: на настоящей топосъёмке 54 сети и 46 строений, и
+   * перечисление их по одному съедало половину промпта одинаковыми строками
+   * («слой 30_Канализация, длина 12 м» пятнадцать раз подряд) — модели от этого
+   * ни холодно ни жарко, а место кончалось. Вторая и главная: слой чертежа
+   * называется «07_Объекты электропередачи», и по нему не понять, десять там
+   * киловольт или сто десять. Человек, глядя на план, подписывает линию
+   * «ВЛ-10 кВ» — и именно эта подпись позволяет связать её с охранной зоной
+   * из ГПЗУ. Раньше подписи в опись не попадали вовсе.
+   */
+  const group = (title, arr, unit) => {
     if (!arr.length) return;
+    const named = arr.filter((o) => o.properties && o.properties.userLabel);
+    const byLayer = new Map();
+    for (const o of arr) {
+      if (o.properties && o.properties.userLabel) continue; // названные идут отдельным списком
+      const key = o.provenance.sourceLayer || 'без слоя';
+      const cur = byLayer.get(key) || { n: 0, total: 0 };
+      cur.n += 1;
+      cur.total += Number(unit === 'м²' ? o.properties.areaM2 : o.properties.lengthM) || 0;
+      byLayer.set(key, cur);
+    }
     lines.push(`- ${title} (${arr.length}):`);
-    for (const o of arr.slice(0, 40)) lines.push(`  · ${fmt(o)}`);
-    if (arr.length > 40) lines.push(`  · …ещё ${arr.length - 40}`);
+    for (const o of named) {
+      const p = o.properties;
+      const size = unit === 'м²' ? `${p.areaM2} м²` : `${p.lengthM} м`;
+      lines.push(`  · НАЗВАНО ЧЕЛОВЕКОМ: «${p.userLabel}» — слой чертежа «${o.provenance.sourceLayer}», ${size}`
+        + `${p.relocation === 'demolish' ? ', под снос' : ''}${p.relocation === 'move' ? ', под перенос' : ''}`
+        + `${p.userComment ? `; комментарий: ${p.userComment}` : ''}`);
+    }
+    for (const [layer, v] of [...byLayer.entries()].sort((a, b) => b[1].total - a[1].total).slice(0, 25)) {
+      lines.push(`  · слой «${layer}» — ${v.n} шт., всего ${Math.round(v.total)} ${unit}`);
+    }
+    if (byLayer.size > 25) lines.push(`  · …ещё слоёв: ${byLayer.size - 25}`);
   };
-  group('Здания и сооружения', site.buildings,
-    (o) => `слой «${o.provenance.sourceLayer}», площадь ${o.properties.areaM2} м²`);
-  group('Красные линии', site.redLines,
-    (o) => `слой «${o.provenance.sourceLayer}», длина ${o.properties.lengthM} м`);
-  group('Инженерные сети', site.utilities,
-    (o) => `слой «${o.provenance.sourceLayer}», длина ${o.properties.lengthM} м`);
-  group('Прочие существующие объекты', site.existingObjects,
-    (o) => `слой «${o.provenance.sourceLayer}»${o.properties.areaM2 ? `, площадь ${o.properties.areaM2} м²` : ''}` +
-      `${o.properties.typeResolved === false ? ' — тип не определён' : ''}`);
+  group('Здания и сооружения', site.buildings, 'м²');
+  group('Красные линии', site.redLines, 'м');
+  group('Инженерные сети', site.utilities, 'м');
+  group('Прочие существующие объекты', site.existingObjects, 'м²');
 
   if (site.warnings.length) {
     lines.push('- Предупреждения разбора чертежа:');
@@ -274,10 +323,29 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
     console.warn('[restrictions] выдержки базы знаний пропущены:', err.message);
   }
 
+  /*
+   * Задание формулируется ОТ ОПИСИ, а не «извлеки всё».
+   *
+   * Перечисленные поимённо слои превращают расплывчатое «найди ограничения» в
+   * конечный список вопросов: для этого слоя зона есть? а для этого? Локальные
+   * модели на общей формулировке возвращали пустой список даже там, где в ГПЗУ
+   * зоны названы прямым текстом.
+   */
+  const utilityLayers = [...new Set((site && site.utilities || [])
+    .map((o) => (o.properties && o.properties.userLabel) || o.provenance.sourceLayer)
+    .filter(Boolean))];
+  const checklist = utilityLayers.length
+    ? '\n\nПройди по КАЖДОМУ инженерному слою участка и реши, какая у него охранная зона:\n'
+      + utilityLayers.slice(0, 30).map((l) => `- ${l}`).join('\n')
+      + '\nПо слою, для которого зону найти не удалось, напиши это в missingData поимённо.'
+    : '';
+
   messages.push({
     role: 'user',
-    content: 'Извлеки все ограничения, действующие на этом участке. Верни строго JSON по схеме. ' +
-      'Помни: правило, а не координаты. Чего не хватает — в missingData.' + extraInstruction,
+    content: 'Сопоставь объекты участка из описи с ограничениями, названными в документах, '
+      + 'и выдай правило на каждую пару. Верни строго JSON по схеме. '
+      + 'Помни: правило, а не координаты. Чего не хватает — в missingData.'
+      + checklist + extraInstruction,
   });
 
   progress.set(sessionId, {

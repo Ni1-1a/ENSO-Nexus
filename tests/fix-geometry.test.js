@@ -1335,3 +1335,182 @@ test('границы ЗУ из документа: повторное налож
 
   PS.remove(SID);
 });
+
+/* ============ имя, данное человеком линии, доходит до зон ============ */
+
+test('ограничения: зона строится от линии, НАЗВАННОЙ человеком, а не только по слою', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.9,
+    },
+  });
+  // на топосъёмке слой называется обезличенно — киловольты в нём не указаны
+  const mkLine = (y, label) => {
+    const o = G.makeObject({
+      type: 'utility', points: [[0, y], [200, y]], closed: false,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'т.dwg',
+        sourceLayer: '07_Объекты электропередачи', sourceEntity: 'полилиния', confidence: 0.8,
+      },
+    });
+    if (label) o.properties = { ...o.properties, userLabel: label, userEdited: true };
+    return o;
+  };
+  const vl10 = mkLine(50, 'ВЛ-10 кВ');
+  const svyaz = mkLine(150, 'Кабель связи');
+  site.utilities.push(vl10, svyaz);
+
+  const rule = RR.normalizeRule({
+    kind: 'protectionZone', operation: 'bufferOutward', targetSelector: 'utility',
+    targetHint: 'ВЛ-10 кВ', value: 10, unit: 'м', basis: 'ПП РФ № 160, п. 8',
+    sourceDocument: 'ГПЗУ.pdf', sourceClause: 'п. 8', quote: '10 м', confidence: 0.9,
+  }, 0).rule;
+
+  const built = RE.build(site, [rule]);
+  assert.strictEqual(built.restrictions.length, 1);
+  // зона обязана быть ОТ ОДНОЙ линии: 200 м × 20 м = 4000 м², а не от обеих
+  assert.ok(Math.abs(built.restrictions[0].properties.areaM2 - 4000) < 50,
+    `зона ${built.restrictions[0].properties.areaM2} м² — должна быть ~4000 м² от одной названной линии`);
+  assert.ok(!built.warnings.some((w) => w.code === 'target-hint-missed'),
+    'уточнение совпало с подписью человека — «построено от всех объектов типа» тут неуместно');
+
+  // без подписи то же правило не различает линии и строит зону от обеих
+  const bare = G.createSiteGeometry();
+  bare.parcel = site.parcel;
+  bare.utilities.push(mkLine(50), mkLine(150));
+  const wide = RE.build(bare, [rule]);
+  assert.ok(wide.restrictions[0].properties.areaM2 > 7000,
+    'без подписи различить линии одного слоя нечем — зона шире, и это видно');
+});
+
+test('ограничения: имя линии переживает переразбор чертежа и пересчёт зон', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const OE = require('../server/services/geometry/object-edits');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+
+  /** Тот же чертёж, разобранный заново: идентификаторы объектов выданы другие. */
+  const parse = (idSuffix) => {
+    const site = G.createSiteGeometry();
+    site.parcel = G.makeObject({
+      type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: 'Границы ЗУ',
+        sourceEntity: 'замкнутая полилиния', confidence: 0.85,
+      },
+    });
+    for (const [y, n] of [[50, 'a'], [150, 'b']]) {
+      const o = G.makeObject({
+        type: 'utility', points: [[0, y], [200, y]], closed: false,
+        provenance: {
+          extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceFileId: 'f1',
+          sourceLayer: '07_Объекты электропередачи', sourceEntity: 'полилиния', confidence: 0.8,
+        },
+      });
+      o.id = `utility-${n}-${idSuffix}`; // разбор нумерует по порядку и меняет id
+      site.utilities.push(o);
+    }
+    return site;
+  };
+
+  const first = parse('run1');
+  const edit = { objectKey: OE.keyOf(first.utilities[0], 'utilities'), patch: { label: 'ВЛ-10 кВ' } };
+
+  // ПЕРЕРАЗБОР: другой экземпляр плана, другие id
+  const second = parse('run2');
+  assert.notStrictEqual(second.utilities[0].id, first.utilities[0].id);
+  const applied = OE.applyTo(second, [edit]);
+  assert.strictEqual(applied.applied, 1, 'имя нашло свою линию после переразбора');
+  assert.strictEqual(second.utilities[0].properties.userLabel, 'ВЛ-10 кВ');
+  assert.strictEqual(second.utilities[1].properties.userLabel, undefined,
+    'соседняя линия того же слоя осталась безымянной');
+
+  // ПЕРЕСЧЁТ ЗОН по этому же плану: правило находит линию по имени
+  const rule = RR.normalizeRule({
+    kind: 'protectionZone', operation: 'bufferOutward', targetSelector: 'utility',
+    targetHint: 'ВЛ-10 кВ', value: 10, unit: 'м', basis: 'ПП РФ № 160, п. 8',
+    sourceDocument: 'ГПЗУ.pdf', sourceClause: 'п. 8', quote: '10 м', confidence: 0.9,
+  }, 0).rule;
+  const built = RE.build(second, [rule]);
+  assert.ok(Math.abs(built.restrictions[0].properties.areaM2 - 4000) < 50,
+    'после переразбора и пересчёта зона по-прежнему от одной названной линии');
+});
+
+test('слои: сети настоящей топосъёмки опознаются, а не падают в «прочее»', () => {
+  const L = require('../server/services/geometry/layers');
+  /*
+   * Слои взяты из МСК-47_Горбунки по классификатору топосъёмки. «07_Объекты
+   * электропередачи» не опознавался НИКАК и уходил в «прочие объекты» — а это
+   * ЛЭП, охранная зона которой на этой площадке решает всё: правило с
+   * targetSelector «utility» её просто не находило.
+   */
+  const ожидание = {
+    '07_Объекты электропередачи': 'utility',
+    '34_Трубопроводы спецназначения': 'utility',
+    '43_Футляры и каналы': 'utility',
+    '35_Телефон': 'utility',
+    '30_Канализация': 'utility',
+    '33_Газопровод': 'utility',
+    '11_Гидрография': 'water',
+    '08_Поребрики': 'road',
+    '13_Растительность': 'landscaping',
+    '03_Здания и строения': 'building',
+    '12_Рельеф': 'relief',
+    '14_Ограждения': 'fence',
+    '45_Номера колодцев': 'utilityStructure',
+  };
+  for (const [layer, type] of Object.entries(ожидание)) {
+    const c = L.classify(layer);
+    assert.ok(c, `слой «${layer}» обязан опознаваться, иначе его геометрия не участвует в ограничениях`);
+    assert.strictEqual(c.type, type, `«${layer}» → ${c.type}, ожидалось ${type}`);
+  }
+  // рамка листа остаётся неопознанной намеренно: это оформление, а не местность
+  assert.strictEqual(L.classify('18_Зарамочное оформление'), null);
+});
+
+test('опись участка: слои сворачиваются, а подписи человека идут первыми', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-extract');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.9,
+    },
+  });
+  for (let i = 0; i < 20; i++) {
+    site.utilities.push(G.makeObject({
+      type: 'utility', points: [[0, i], [50, i]], closed: false,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'т.dwg',
+        sourceLayer: '30_Канализация', sourceEntity: 'полилиния', confidence: 0.8,
+      },
+    }));
+  }
+  const named = G.makeObject({
+    type: 'utility', points: [[0, 80], [100, 80]], closed: false,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg',
+      sourceLayer: '07_Объекты электропередачи', sourceEntity: 'полилиния', confidence: 0.8,
+    },
+  });
+  named.properties = { ...named.properties, userLabel: 'ВЛ-10 кВ' };
+  site.utilities.push(named);
+
+  const inv = RE.inventory(site);
+  assert.match(inv, /НАЗВАНО ЧЕЛОВЕКОМ: «ВЛ-10 кВ»/, 'подпись человека обязана быть видна модели');
+  assert.match(inv, /слой «30_Канализация» — 20 шт/, 'однотипные объекты слоя сворачиваются в строку');
+  assert.ok(inv.length < 1200, `опись ${inv.length} символов — двадцать одинаковых строк съедали бы промпт`);
+  // границы из документа не должны выглядеть как «слой null»
+  assert.ok(!/слой «null»/.test(inv));
+  assert.match(inv, /из документа «ГПЗУ.pdf»/);
+});

@@ -56,6 +56,25 @@ function resolveTargets(site, rule) {
     const exact = byType.filter((o) => o.id === hint);
     if (exact.length) return { targets: exact, narrowed: true };
   }
+
+  /*
+   * Уточнение ищется и по ИМЕНИ, КОТОРОЕ ДАЛ ЧЕЛОВЕК, а не только по слою чертежа.
+   *
+   * На топосъёмке слои называются «07_Объекты электропередачи» — по такому имени
+   * не разобрать, десять там киловольт или сто десять, а от этого зависит ширина
+   * охранной зоны. Человек, глядя на план, подписывает линию «ВЛ-10 кВ» — и это
+   * ровно то уточнение, которое стоит в правиле. Пока сопоставление шло только по
+   * слою, подпись никуда не влияла: правило «10 м от ВЛ-10 кВ» не находило
+   * названную линию и строило зону от ВСЕХ сетей участка либо не строило вовсе.
+   *
+   * Имя человека проверяется ПЕРВЫМ: он видел чертёж, разбор — только имя слоя.
+   */
+  const named = byType.filter((o) => {
+    const label = String((o.properties && (o.properties.userLabel || o.properties.label)) || '').toLowerCase();
+    return label && (label.includes(needle) || needle.includes(label));
+  });
+  if (named.length) return { targets: named, narrowed: true, byUserLabel: true };
+
   // уточнение по имени слоя: «Сети ЛЭП 10кВ» должно найти именно свой слой,
   // а не все сети участка
   const matched = byType.filter((o) => String(o.provenance.sourceLayer || '').toLowerCase().includes(needle)
