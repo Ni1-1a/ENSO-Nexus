@@ -198,8 +198,29 @@ function requirementsFromFacts(sessionId) {
   const facts = db.prepare('SELECT key, value FROM facts WHERE session_id = ?').all(sessionId);
   const found = { areaM2: null, floors: null, width: null, length: null, sources: [] };
 
+  /*
+   * Факты о СУЩЕСТВУЮЩЕЙ застройке в требования к новому зданию не годятся.
+   *
+   * Живой прогон 2026-08-12: модель выдала и `object.total_area_m2 = ≤3580`
+   * (проектируемый объект), и `existing_buildings_total_area_m2 = ≈529.62`
+   * (то, что уже стоит на участке). Второй факт попался раньше по порядку —
+   * и посадка считалась для здания 265 м² вместо 1790. Оба ключа честны;
+   * различает их слово «existing», а не порядок в таблице.
+   *
+   * Поэтому: сначала отбрасываем всё про существующее, а среди оставшегося
+   * предпочитаем факты, прямо названные объектом проектирования.
+   */
+  const EXISTING_RE = /existing|сущест|имеющ|снос|demolish|под\s*снос|соседн/;
+  const OBJECT_RE = /^(object|объект|building|здани)/;
+  const usable = facts.filter((f) => !EXISTING_RE.test(`${f.key} ${f.value}`.toLowerCase()));
+  // факты об объекте проектирования идут первыми, остальные — следом
+  const ordered = [
+    ...usable.filter((f) => OBJECT_RE.test(String(f.key).toLowerCase())),
+    ...usable.filter((f) => !OBJECT_RE.test(String(f.key).toLowerCase())),
+  ];
+
   const pick = (test, cast) => {
-    for (const f of facts) {
+    for (const f of ordered) {
       const hay = `${f.key} ${f.value}`.toLowerCase();
       if (!test(f.key.toLowerCase(), hay)) continue;
       const n = cast(f.value);

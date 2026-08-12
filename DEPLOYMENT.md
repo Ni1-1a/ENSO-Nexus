@@ -30,7 +30,9 @@ cloudflared tunnel route dns --overwrite-dns enso-nexus <имя>.enso-nexus.com
 cloudflared tunnel ingress validate
 ```
 
-> **Статус на 2026-08-12:** `enso-nexus.com` делегирован на NS Cloudflare, но апекс и `www` ещё отдают парковочный `208.91.112.55` вместо туннеля: зона, куда пишет `cloudflared`, и зона, отвечающая на запросы, расходятся. Пока это не устранено, рабочим адресом остаётся `https://app.enso-nexus.ru`, а редирект `.ru` → `.com` не включён.
+> **Статус на 2026-08-12:** переезд на `.com` завершён. Апекс и `www` — проксируемые CNAME на туннель, снаружи `https://enso-nexus.com/api/health` отдаёт `ok:true`. Осталось одно: правило-редирект `.ru` → `.com` (Rules → Redirect Rules в зоне `enso-nexus.ru`) ещё не включено, поэтому `.ru` пока отдаёт приложение напрямую, а не редиректит.
+
+> **Адрес проверять только снаружи.** В сети этого Mac стоит FortiGate с SSL-инспекцией: он подменяет DNS-ответы (любые A/CNAME по `enso-nexus.com` → `208.91.112.55`) и сертификат (издатель `Fortinet`, а не Google Trust Services). Локальные `dig` и `curl` показывают «парковку регистратора» на полностью живом домене — на это уже один раз потратили полдня. Достоверная проверка: DoH (`curl 'https://dns.google/resolve?name=enso-nexus.com&type=A'` — должны быть адреса Cloudflare `104.21.*`/`172.67.*`) и HTTP-запрос с внешнего хоста, а не с этой машины.
 
 ### Запасной вход на GitHub Pages
 

@@ -1451,3 +1451,28 @@ test('контекст локальной модели: паспорт моде�
   assert.strictEqual(mm.fittingContext('meta/llama-3.3-70b', budget + 1, 131072), 0,
     'веса больше бюджета — влезающего контекста нет вовсе');
 });
+
+test('этапы: площадь существующей застройки не выдаётся за требование к новому зданию', () => {
+  const id = makeSession('stage-req-existing');
+  const addFact = (key, value) => stagesDb
+    .prepare('INSERT INTO facts (id, session_id, key, value, source, created_at) VALUES (?,?,?,?,?,?)')
+    .run(`${id}-${key}`, id, key, value, 'ТЗ', stagesNow());
+
+  /*
+   * Факты ровно из живого прогона 2026-08-12. Модель выдала оба честно: что уже
+   * стоит на участке и что проектируется. Первый попался раньше по порядку, и
+   * посадка считалась для здания 265 м² вместо 1790 — то есть для чужого объекта.
+   * Различает их слово «existing», а не порядок строк в таблице.
+   */
+  addFact('existing_buildings_count', '4');
+  addFact('existing_buildings_total_area_m2', '≈529.62');
+  addFact('gpzu.area_m2', '3700 +/- 43');
+  addFact('object.floors', '2');
+  addFact('object.total_area_m2', '≤3580');
+
+  const req = stages.requirementsFromFacts(id);
+  assert.strictEqual(req.areaM2, 1790, 'пятно считается от площади ПРОЕКТИРУЕМОГО объекта');
+  assert.strictEqual(req.floors, 2);
+  assert.ok(req.sources.some((s) => /object\.total_area_m2/.test(s)), 'источник — факт об объекте');
+  assert.ok(!req.sources.some((s) => /existing/.test(s)), 'существующая застройка в источники не попадает');
+});
