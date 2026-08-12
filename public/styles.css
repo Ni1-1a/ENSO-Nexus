@@ -919,12 +919,50 @@ details summary {
     border-right: 0; border-bottom: 1px solid var(--stroke-soft);
   }
   .brand-text { display: none; }
-  .nav { flex-direction: row; flex: 1; flex-wrap: wrap; }
+
+  /*
+   * Навигация — ОДНОЙ прокручиваемой строкой, а не переносами.
+   *
+   * На 375 px четыре пункта не помещались в строку и разваливались на две
+   * рваные: «Этап 1 / Нормоконтроль», под ними «Настройки / Новая сессия»,
+   * причём первый пункт налезал на кнопку-переключатель. Перенос здесь и не
+   * нужен: навигация из четырёх пунктов листается пальцем привычнее, чем
+   * занимает две строки высоты.
+   */
+  .nav { flex-direction: row; flex: 1 1 auto; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-item { flex: 0 0 auto; padding: 7px 10px; font-size: 12.5px; }
   /* в строку разделитель не нужен — кнопка просто ещё один пункт */
   .nav-action { margin-top: 0; padding-top: 7px; border-top: 0; }
-  .nav-item { padding: 7px 10px; font-size: 12.5px; }
-  .sidebar-foot { margin: 0; flex-direction: row; align-items: center; }
-  .ai-badge { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* кнопка-переключатель стоит поверх полосы — освобождаем ей место слева */
+  .sidebar { padding-left: 52px; }
+
+  /*
+   * Проекты — горизонтальная лента чипов вместо вертикального списка.
+   *
+   * Вертикальным списком на телефоне сайдбар съедал больше половины экрана:
+   * два проекта — и «Этап 1» уезжал за сгиб. Проекты переключают редко,
+   * поэтому им хватает одной прокручиваемой строки; дата в чипе не нужна,
+   * а «⋮» и так проявляется свайпом влево.
+   */
+  .sessions-nav { flex: 1 1 100%; min-width: 0; margin-top: 2px; }
+  .sessions-head { display: none; }
+  .sessions-list { flex-direction: row; gap: 6px; overflow-x: auto; padding: 0 0 2px; scrollbar-width: none; }
+  .sessions-list::-webkit-scrollbar { display: none; }
+  .sess-item {
+    flex: 0 0 auto; max-width: 58vw; padding: 6px 10px;
+    border: 1px solid var(--stroke-soft); background: var(--panel);
+  }
+  .sess-item.active { border-color: var(--accent); }
+  .sess-meta, .sess-more { display: none; }
+
+  /* бейдж модели во всю ширину: имя модели длинное, и обрезать его незачем */
+  /* padding: 0 — иначе бейдж уезжает правее чипов проектов на четыре пикселя
+     и полоса перестаёт читаться как ровный столбец */
+  .sidebar-foot { flex: 1 1 100%; margin: 0; padding: 0; flex-direction: row; align-items: center; }
+  .ai-badge { max-width: 100%; min-width: 0; }
+  #ai-badge-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .content { padding: 18px 14px 30px; }
   .columns { grid-template-columns: 1fr; }
   .toolbar h1 { font-size: 26px; }
