@@ -396,8 +396,18 @@ async function startZonesStage(sessionId) {
         if (text && !dataWarnings.includes(text)) dataWarnings.push(text);
       }
 
+      // Что человек может указать сам и сколько метров это вернёт. Всё это есть
+      // и в причинах непостроенных зон, но россыпью — а разница между «286 м²
+      // свободно» и «1582 м²» пряталась в одной строке про несовпавшее уточнение.
+      const hints = stages.manualHints(site, built);
+      if (hints.length) {
+        logEvent(sessionId, 'Схеме нужны указания человека',
+          hints.map((h) => h.kind).join(', '));
+      }
+
       stages.addCard(sessionId, 'zones', {
         planId,
+        manualHints: hints,
         zones: stages.zonesSummary(site),
         buildable: built.buildable
           ? { areaM2: built.buildable.areaM2, sharePercent: built.buildable.sharePercent }

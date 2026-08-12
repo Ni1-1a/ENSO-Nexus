@@ -1185,12 +1185,79 @@
    * нулевые, поэтому вписывание участка делается ПОСЛЕ показа — иначе
    * первый кадр приезжает с пустым viewBox.
    */
-  async function open(api, session) {
+  /**
+   * Открыть план, при необходимости подведя к нужным объектам.
+   *
+   * `focus` — идентификаторы из подсказки «что стоит указать вручную». Без этого
+   * кнопка «показать на плане» открывала общий вид, и человек искал ту самую
+   * линию среди шестидесяти девяти сетей глазами — то есть ровно ту работу,
+   * ради избавления от которой подсказка и писалась.
+   *
+   * Один объект — открываем его свойства сразу: указание делается там же.
+   * Несколько — подсвечиваем все и вписываем в экран их общий габарит.
+   */
+  async function open(api, session, { focus = [] } = {}) {
     const modal = el('plan-modal');
     modal.hidden = false;
     document.body.classList.add('modal-open');
     if (api) await load(api, session);
-    requestAnimationFrame(() => { fit(); updateStrokeScale(); });
+    requestAnimationFrame(() => {
+      const ids = (focus || []).filter(Boolean);
+      const found = ids.map((id) => findAnyObject(id)).filter(Boolean);
+      if (!found.length) { fit(); updateStrokeScale(); return; }
+      state.multi = found.length > 1 ? found.map((f) => ({ id: f.obj.id, layer: f.layer })) : [];
+      zoomToObjects(found.map((f) => f.obj));
+      if (found.length === 1) openProps(found[0].obj.id, found[0].layer);
+      else { openBatchProps(); draw(); }
+      updateStrokeScale();
+    });
+  }
+
+  /** Объект плана по id — в каком бы слое он ни лежал. */
+  function findAnyObject(objectId) {
+    for (const layer of LAYERS) {
+      const obj = objectsOfLayer(state.plan, layer.id).find((o) => o.id === objectId);
+      if (obj) return { obj, layer: layer.id };
+    }
+    return null;
+  }
+
+  /**
+   * Вписать в экран габарит перечисленных объектов с запасом в четверть.
+   * Пропорции экрана сохраняются так же, как в fit(): иначе одиночная линия
+   * растягивает план в ленту.
+   */
+  function zoomToObjects(objects) {
+    const pts = [];
+    for (const o of objects) pts.push(...pointsOfGeometry(o.geometry));
+    if (!pts.length) { fit(); return; }
+    const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
+    const w = Math.max(Math.max(...xs) - Math.min(...xs), 1);
+    const h = Math.max(Math.max(...ys) - Math.min(...ys), 1);
+    const pad = Math.max(8, Math.max(w, h) * 0.25);
+    const box = state.svg.getBoundingClientRect();
+    const aspect = (box.width || 800) / (box.height || 500);
+    let width = w + pad * 2;
+    let height = h + pad * 2;
+    if (width / height > aspect) height = width / aspect;
+    else width = height * aspect;
+    state.view = {
+      minX: (Math.min(...xs) + Math.max(...xs)) / 2 - width / 2,
+      minY: (Math.min(...ys) + Math.max(...ys)) / 2 - height / 2,
+      width, height,
+    };
+    applyView();
+  }
+
+  /** Все вершины геометрии любого вида — для габарита. */
+  function pointsOfGeometry(g) {
+    if (!g) return [];
+    const out = [];
+    const ring = (r) => { for (const p of r || []) if (Array.isArray(p)) out.push(p); };
+    const poly = (p) => { ring(p.points); for (const h of p.holes || []) ring(h); };
+    if (g.type === 'multipolygon') for (const p of g.polygons || []) poly(p);
+    else poly(g);
+    return out;
   }
 
   function close() {

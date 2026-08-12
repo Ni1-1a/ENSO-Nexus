@@ -1476,3 +1476,66 @@ test('этапы: площадь существующей застройки н�
   assert.ok(req.sources.some((s) => /object\.total_area_m2/.test(s)), 'источник — факт об объекте');
   assert.ok(!req.sources.some((s) => /existing/.test(s)), 'существующая застройка в источники не попадает');
 });
+
+test('карточка зон: подсказка называет, что указать вручную, и сколько это вернёт', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: '10_Границы покрытий',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.6, // слабая догадка разбора
+    },
+  });
+  site.utilities.push(G.makeObject({
+    type: 'utility', points: [[0, 100], [200, 100]], closed: false,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: '07_Объекты электропередачи',
+      sourceEntity: 'полилиния', confidence: 0.8,
+    },
+  }));
+  site.buildings.push(G.makeObject({
+    type: 'building', points: [[20, 20], [40, 20], [40, 40], [20, 40]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: '03_Здания и строения',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+    },
+  }));
+
+  const rules = [
+    // уточнение из живого прогона: слоя с таким именем на чертеже нет
+    { kind: 'protectionZone', operation: 'bufferOutward', targetSelector: 'utility', targetHint: 'Сети ЛЭП 10кВ',
+      value: 10, unit: 'м', basis: 'ПП РФ № 160, п. 8', sourceDocument: 'НТД', sourceClause: 'п.8', quote: '10 м', confidence: 0.9 },
+    { kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building', targetHint: '03_Здания',
+      value: 12, unit: 'м', basis: 'СП 4.13130, табл. 3', sourceDocument: 'НТД', sourceClause: 'табл.3', quote: '12 м', confidence: 0.9 },
+  ].map((r, i) => RR.normalizeRule(r, i).rule).filter(Boolean);
+
+  const built = RE.build(site, rules);
+  const hints = stages.manualHints(site, built);
+  const kinds = hints.map((h) => h.kind);
+
+  assert.ok(kinds.includes('label-object'), 'неопознанный объект правила — первое, что стоит указать');
+  assert.match(hints.find((h) => h.kind === 'label-object').text, /Сети ЛЭП 10кВ/);
+
+  const demo = hints.find((h) => h.kind === 'demolish-or-keep');
+  assert.ok(demo, 'решение о сносе меняет разрывы — про него обязано быть сказано');
+  assert.ok(demo.gainM2 > 0, 'у совета есть цена в метрах: совет без цены пролистывают');
+  assert.ok(demo.objectIds.length, 'объекты переданы — кнопка «показать на плане» подводит к ним');
+
+  assert.ok(kinds.includes('confirm-parcel'), 'границы с уверенностью 60% просят подтверждения');
+  assert.match(hints.find((h) => h.kind === 'confirm-parcel').text, /все площади, зоны и посадка/);
+
+  // на здоровом плане подсказок нет: пустой блок в карточке не рисуется
+  const clean = G.createSiteGeometry();
+  clean.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.95,
+    },
+  });
+  assert.deepStrictEqual(stages.manualHints(clean, { restrictions: [] }), []);
+});

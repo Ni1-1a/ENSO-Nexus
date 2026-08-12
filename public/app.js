@@ -796,6 +796,30 @@ function cardActionsHtml(fresh, buttons) {
   return `<div class="pc-actions">${buttons}</div>`;
 }
 
+/**
+ * «Что стоит указать вручную» — отдельный блок карточки согласования.
+ *
+ * Это не предупреждения и не ошибки: это работа, которую платформа сделать не
+ * может, а человек делает двумя кликами по плану. Раньше всё это лежало
+ * россыпью среди причин непостроенных зон, и разница между «свободно 286 м²»
+ * и «свободно 1582 м²» пряталась в строке «уточнение не совпало ни с одним
+ * слоем». У каждого пункта своя цена в метрах — совет без цены пролистывают.
+ */
+function manualHintsHtml(hints) {
+  if (!hints || !hints.length) return '';
+  const items = hints.slice(0, 4).map((h) => {
+    const gain = h.gainM2 ? `<b class="mh-gain">${h.gainM2} м²</b> ` : '';
+    const open = h.objectIds && h.objectIds.length
+      ? ` <button class="mh-open" type="button" data-open-plan="1" data-focus="${esc(h.objectIds.join(','))}">показать на плане</button>`
+      : ' <button class="mh-open" type="button" data-open-plan="1">открыть план</button>';
+    return `<li>${gain}${esc(h.text)}${open}</li>`;
+  }).join('');
+  return `<div class="pc-hints">
+    <p class="pc-hints-head">Что стоит указать вручную — платформа этого знать не может</p>
+    <ul class="pc-hints-list">${items}</ul>
+  </div>`;
+}
+
 function zonesCardHtml(data, fresh) {
   const zones = data.zones || [];
   const legend = zones.map((z) =>
@@ -816,6 +840,7 @@ function zonesCardHtml(data, fresh) {
       ${b ? `<span>Допустимо под застройку: <b>${b.areaM2} м²</b> (${b.sharePercent}% участка)</span>` : '<span>Допустимая территория не рассчитана</span>'}
       <span>Зон построено: <b>${zones.reduce((s, z) => s + z.count, 0)}</b></span>
     </div>
+    ${manualHintsHtml(data.manualHints)}
     ${problems.length ? `<p class="pc-note">${problems.slice(0, 5).join('<br>')}</p>` : ''}
     ${done
       ? '<div class="pc-done">✓ Схема согласована</div>'
@@ -2195,7 +2220,13 @@ async function init() {
   document.body.addEventListener('click', async (e) => {
     // карточки согласования в ленте
     const openPlan = e.target.closest('[data-open-plan]');
-    if (openPlan) { window.PlanViewer.open(api, state.session); return; }
+    if (openPlan) {
+      // «показать на плане» из подсказки несёт идентификаторы объектов —
+      // без них человек искал бы нужную линию среди шестидесяти девяти глазами
+      const focus = (openPlan.dataset.focus || '').split(',').filter(Boolean);
+      window.PlanViewer.open(api, state.session, { focus });
+      return;
+    }
     const stageBtn = e.target.closest('[data-stage-act]');
     if (stageBtn) {
       stageBtn.disabled = true;

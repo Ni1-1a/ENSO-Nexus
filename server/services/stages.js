@@ -22,6 +22,7 @@
  */
 const crypto = require('crypto');
 const { db, now } = require('../db');
+const RR = require('./geometry/restriction-rules');
 
 /** Порядок этапов. Возврат назад возможен: замечания откатывают этап. */
 const STAGES = [
@@ -354,9 +355,115 @@ function parcelAreaMismatch(sessionId, site) {
     'проверьте схему до согласования — иначе зоны и посадка посчитаны для чужой территории.';
 }
 
+/* ---------------- что стоит указать вручную ---------------- */
+
+/**
+ * Подсказка в карточку согласования: чего платформа знать не может и что
+ * закрывается одним указанием человека на плане.
+ *
+ * Зачем отдельным списком. Всё это и раньше было в карточке — но россыпью:
+ * причина непостроенной зоны в «не построено», решение о сносе не написано
+ * нигде, а последствие видно только числом допустимой территории. Живой прогон
+ * 2026-08-12: без двух указаний территория выходила 286,6 м² (7,7 % участка),
+ * с ними — 1581,66 м² (42,7 %). Разница в пять с половиной раз пряталась в
+ * строчке «Не построено «protectionZone»: уточнение не совпало».
+ *
+ * Каждый пункт несёт ЧИСЛО: сколько метров вернёт указание. Совет без цены
+ * человек пролистывает, совет с ценой — выполняет.
+ *
+ * @param {object} site   план с уже построенными зонами
+ * @param {object} built  результат restriction-engine.build
+ * @returns {Array<{kind, text, objectIds, gainM2}>}
+ */
+function manualHints(site, built = {}) {
+  const hints = [];
+  if (!site) return hints;
+  const round = (n) => Math.round(n * 100) / 100;
+  // зоны берём из СВЕЖЕГО расчёта: в site могут лежать зоны прошлого прогона,
+  // и подсказка считала бы цену по устаревшим числам
+  const zones = built.restrictions || site.restrictions || [];
+
+  /*
+   * 1. Правило, объект отсчёта которого не опознан. Модель пишет уточнение
+   * вроде «Сети ЛЭП 10кВ», а слой на чертеже зовётся «07_Объекты
+   * электропередачи» — зона не строится вовсе, и ограничение просто теряется.
+   */
+  for (const u of built.unresolved || []) {
+    if (!/не совпало ни с одним слоем/.test(String(u.reason))) continue;
+    const hint = (u.rule && u.rule.target && u.rule.target.hint) || '';
+    hints.push({
+      kind: 'label-object',
+      text: `Подпишите на плане объект, к которому относится «${hint}» — правило «`
+        + `${RR.KIND_LABELS[u.kind] || u.kind}» его не нашло, и зона не построена. `
+        + 'Клик по линии на плане → «Что это на самом деле» и название.',
+      objectIds: [],
+      gainM2: null,
+    });
+  }
+
+  /*
+   * 2. Существующие строения без решения о сносе. Пока решения нет, они
+   * считаются существующими и дают противопожарные разрывы — а разрыв от
+   * здания, которое сносят, съедает то самое место, которое снос освобождает.
+   */
+  const undecided = (site.buildings || []).filter((b) => {
+    const rel = b.properties && b.properties.relocation;
+    return !rel || rel === 'undecided';
+  });
+  const fireZones = zones.filter((z) => z.properties.kind === 'fireBreak');
+  if (undecided.length && fireZones.length) {
+    const areaM2 = round(fireZones.reduce((s, z) => s + (z.properties.areaM2 || 0), 0));
+    hints.push({
+      kind: 'demolish-or-keep',
+      text: `Решите по существующим строениям: снос или сохранение (${undecided.length} шт. без решения). `
+        + `Сейчас они считаются существующими и дают противопожарные разрывы на ${areaM2} м² — `
+        + 'разрыв от здания, которое сносят, съедает место, которое снос и освобождает. '
+        + 'Клик по строению на плане → «Что с ним делать».',
+      objectIds: undecided.slice(0, 40).map((b) => b.id),
+      gainM2: areaM2,
+    });
+  }
+
+  /*
+   * 3. Зона, построенная от ВСЕХ объектов слоя, когда их там много. Формально
+   * правило исполнено, но охранная зона «от всех сетей» почти всегда означает,
+   * что различить их было нечем: у канализации и ЛЭП разная ширина зоны.
+   */
+  for (const z of zones) {
+    const layers = [...new Set((z.properties.targets || []).map((t) => t.layer).filter(Boolean))];
+    if (layers.length < 3) continue;
+    hints.push({
+      kind: 'narrow-target',
+      text: `Зона «${RR.KIND_LABELS[z.properties.kind] || z.properties.kind}» ${z.properties.valueM} м `
+        + `построена сразу от ${layers.length} слоёв (${layers.slice(0, 3).join(', ')}…) на ${z.properties.areaM2} м². `
+        + 'У разных сетей ширина зоны разная — подпишите те линии, к которым правило относится на самом деле.',
+      objectIds: [],
+      gainM2: z.properties.areaM2,
+    });
+  }
+
+  /*
+   * 4. Границы участка, взятые разбором чертежа с низкой уверенностью. На этом
+   * стоит вся арифметика: площади, зоны, посадка.
+   */
+  const p = site.parcel;
+  if (p && p.provenance && p.provenance.extractionMethod === 'cad-vector'
+      && (p.provenance.confidence || 0) < 0.7) {
+    hints.push({
+      kind: 'confirm-parcel',
+      text: `Подтвердите границы участка: контур ${p.properties.areaM2} м² взят со слоя `
+        + `«${p.provenance.sourceLayer}» с уверенностью ${Math.round((p.provenance.confidence || 0) * 100)} %. `
+        + 'На нём стоят все площади, зоны и посадка. Если контур не тот — назначьте участком нужный на плане.',
+      objectIds: [p.id],
+      gainM2: null,
+    });
+  }
+
+  return hints;
+}
+
 /* ---------------- сводки для карточек ---------------- */
 
-const RR = require('./geometry/restriction-rules');
 
 /** Короткая сводка по зонам: что построено, сколько и на каком основании. */
 function zonesSummary(site) {
@@ -378,5 +485,5 @@ function zonesSummary(site) {
 module.exports = {
   STAGES, STAGE_LABELS, WORKING_STAGES,
   get, set, settle, lastCardStage, addNote, notes, notesInstruction,
-  addCard, parseCard, requirementsFromFacts, zonesSummary, parcelAreaMismatch,
+  addCard, parseCard, requirementsFromFacts, zonesSummary, parcelAreaMismatch, manualHints,
 };
