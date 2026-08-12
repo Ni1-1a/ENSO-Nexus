@@ -108,6 +108,9 @@ async function listProviders() {
         // а не желаемый по профилю: иначе подпись обещает то, чего не будет
         context: f.fitContext || mm.desiredContext(id),
         wantContext: f.wantContext || mm.desiredContext(id),
+        // паспортный максимум самой модели: в LM Studio человек видит именно его,
+        // и расхождение с нашим числом надо объяснять, а не прятать
+        modelMaxContext: f.modelMaxContext || 0,
         sizeGb: f.sizeBytes ? +(f.sizeBytes / 1024 ** 3).toFixed(1) : null,
         about: registry.describe('lmstudio', id),
       };

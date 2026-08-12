@@ -1465,8 +1465,25 @@ function updateModelNoteBase() {
     // Если он урезан против желаемого, об этом сказано прямо: иначе подпись
     // обещает 32 тыс. токенов там, где будет 8 тыс., и «документ не поместился»
     // выглядит необъяснимым.
-    const parts = [`контекст ${(info.context || 0).toLocaleString('ru-RU')} токенов`
-      + (info.wantContext && info.wantContext > info.context ? ` (вместо ${info.wantContext.toLocaleString('ru-RU')} — не хватает памяти)` : '')];
+    /*
+     * Контекст показывается ВМЕСТЕ с паспортным максимумом модели.
+     *
+     * В LM Studio владелец видит «Модель поддерживает до 262 144 токенов», а
+     * здесь стояло голое «контекст 98 304» — и число выглядело занижённым без
+     * причины. Причин две, и они разные: не хватает памяти под KV-кэш либо
+     * упёрлись в осознанный потолок машины (LOCAL_AI_CONTEXT: при полном окне
+     * prefill идёт больше девяти минут). Обе называются вслух.
+     */
+    const ctx = info.context || 0;
+    const max = info.modelMaxContext || 0;
+    let why = '';
+    if (max && ctx < max) {
+      why = info.wantContext && ctx < info.wantContext
+        ? ' — урезан: не хватает памяти под KV-кэш'
+        : ' — ограничение платформы LOCAL_AI_CONTEXT, чтобы ответ не ждать минутами';
+    }
+    const parts = [`контекст ${ctx.toLocaleString('ru-RU')}`
+      + (max ? ` из ${max.toLocaleString('ru-RU')} токенов модели` : ' токенов') + why];
     if (info.sizeGb) parts.push(`${info.sizeGb} ГБ`);
     parts.push(info.loaded ? 'сейчас загружена в память' : 'загрузится при первом запросе (1–2 мин)');
     if (info.note) parts.push(info.note);

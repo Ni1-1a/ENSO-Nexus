@@ -23,27 +23,52 @@ const LMS_CANDIDATES = [
 const MEMORY_BUDGET_BYTES = Math.round(os.totalmem() * 0.72);
 
 /**
- * Профили моделей: желаемый контекст и цена KV-кэша (КиБ на токен, f16).
- * Контекст подобран так, чтобы модель + KV гарантированно помещались в бюджет
- * в одиночку; см. отчёт по настройке контекста.
+ * Профили моделей: цена KV-кэша (КиБ на токен, f16) и — только там, где нужен
+ * СВОЙ потолок — желаемый контекст.
+ *
+ * Цену KV приходится держать здесь: её никто не отдаёт, она считается из
+ * архитектуры (слои × KV-головы × размерность × 2 × f16). А вот максимум
+ * контекста больше НЕ выдумывается: его знает сама LM Studio, и профиль,
+ * который его дублировал, врал. qwen3-coder-30b держит 262 144 токена,
+ * gemma-4-31b столько же, llama-3.3-70b — 131 072; в рукописном списке у них
+ * стояло 16 384 и 8 192, а модель без профиля вообще получала «по умолчанию»
+ * 16 384 независимо от своих возможностей.
+ *
+ * Общий практический потолок — `LOCAL_AI_CONTEXT`. Он не про возможности
+ * модели, а про эту машину: замер владельца от 2026-08-05 (M3 Max, 48 ГБ) —
+ * при 131 072 модель грузится и работает, но prefill полного окна больше
+ * девяти минут, а свободная память сжимается до мегабайтов. Поэтому окно
+ * зажимается сознательно, и в интерфейсе теперь видно, чем именно.
  */
 const MODEL_PROFILES = [
-  { match: /qwen3-coder-30b/i, context: () => config.localAiContext, kvPerTokenKiB: 96 },
+  { match: /qwen3-coder-30b/i, kvPerTokenKiB: 96 },
   { match: /qwen3-vl-30b/i, context: () => config.localAiOcrContext, kvPerTokenKiB: 96 },
   // 8B dense: 36 слоёв × 8 KV-голов × 128 dim × 2 (K+V) × f16 = 144 КиБ/ток
   { match: /qwen3-vl-8b/i, context: () => config.localAiOcrContext, kvPerTokenKiB: 144 },
-  { match: /qwen3\.5-35b/i, context: () => 32768, kvPerTokenKiB: 96 },
-  { match: /gemma-4-31b/i, context: () => 16384, kvPerTokenKiB: 128 },
-  { match: /llama-3\.3-70b/i, context: () => 8192, kvPerTokenKiB: 320 },
-  { match: /llama-3\.1-8b/i, context: () => 32768, kvPerTokenKiB: 128 },
+  { match: /qwen3\.5-35b/i, kvPerTokenKiB: 96 },
+  { match: /gemma-4-31b/i, kvPerTokenKiB: 128 },
+  { match: /llama-3\.3-70b/i, kvPerTokenKiB: 320 },
+  { match: /llama-3\.1-8b/i, kvPerTokenKiB: 128 },
 ];
-const DEFAULT_PROFILE = { context: () => 16384, kvPerTokenKiB: 96 };
+const DEFAULT_PROFILE = { kvPerTokenKiB: 96 };
 
 function profileFor(modelId) {
   return MODEL_PROFILES.find((p) => p.match.test(modelId)) || DEFAULT_PROFILE;
 }
 
-function desiredContext(modelId) { return profileFor(modelId).context(); }
+/**
+ * Желаемый контекст: свой потолок профиля (vision-модели), иначе максимум самой
+ * модели, зажатый практическим потолком машины.
+ *
+ * @param {number} modelMax  паспортный максимум из LM Studio (0 — неизвестен)
+ */
+function desiredContext(modelId, modelMax = 0) {
+  const p = profileFor(modelId);
+  if (p.context) return p.context();
+  const ceiling = config.localAiContext;
+  if (!modelMax) return ceiling;          // паспорт неизвестен — держимся потолка машины
+  return Math.min(modelMax, ceiling);
+}
 
 function kvBytes(modelId, contextTokens) {
   return profileFor(modelId).kvPerTokenKiB * 1024 * contextTokens;
@@ -98,14 +123,36 @@ async function listLoaded() {
 }
 
 let dlCache = null, dlCacheAt = 0;
-/** Скачанные модели: Map(modelKey -> sizeBytes). Кэш 5 мин. */
+/**
+ * Скачанные модели (кэш 5 мин): размер весов и СОБСТВЕННЫЙ максимум контекста модели.
+ *
+ * `maxContextLength` берётся у самой LM Studio, а не из нашего списка: qwen3-coder-30b
+ * держит 262 144 токена, gemma-4-31b столько же, llama-3.3-70b — 131 072. Пока это
+ * знание жило в рукописных профилях, модель без профиля получала 16 384 «по
+ * умолчанию» независимо от того, что она умеет, а в интерфейсе стояло голое число
+ * без пояснения, откуда оно и почему меньше заявленного в LM Studio.
+ */
 async function listDownloaded() {
   if (dlCache && Date.now() - dlCacheAt < 300000) return dlCache;
   const out = await lms(['ls', '--json']);
   const rows = JSON.parse(out || '[]');
-  dlCache = new Map(rows.map((r) => [r.modelKey || r.path, r.sizeBytes || 0]));
+  dlCache = new Map(rows.map((r) => [r.modelKey || r.path, {
+    sizeBytes: r.sizeBytes || 0,
+    maxContextLength: r.maxContextLength || 0,
+    vision: !!r.vision,
+  }]));
   dlCacheAt = Date.now();
   return dlCache;
+}
+
+/** Размер весов модели в байтах (0 — модель не скачана или lms недоступен). */
+async function sizeOf(modelId) {
+  try { return ((await listDownloaded()).get(modelId) || {}).sizeBytes || 0; } catch { return 0; }
+}
+
+/** Максимум контекста, который держит сама модель (0 — неизвестно). */
+async function modelMaxContext(modelId) {
+  try { return ((await listDownloaded()).get(modelId) || {}).maxContextLength || 0; } catch { return 0; }
 }
 
 /**
@@ -117,9 +164,12 @@ const MIN_CONTEXT = 4096;
 /**
  * Наибольший контекст, при котором модель ещё укладывается в бюджет памяти.
  * Возвращает 0, если не укладывается даже при минимальном.
+ *
+ * `modelMax` — то, что модель держит по паспорту LM Studio. Просить больше
+ * бессмысленно: загрузка просто не удастся.
  */
-function fittingContext(modelId, sizeBytes) {
-  const want = desiredContext(modelId);
+function fittingContext(modelId, sizeBytes, modelMax = 0) {
+  const want = desiredContext(modelId, modelMax);
   const perToken = profileFor(modelId).kvPerTokenKiB * 1024;
   const free = MEMORY_BUDGET_BYTES - sizeBytes;
   if (free <= 0) return 0;
@@ -146,18 +196,23 @@ function fittingContext(modelId, sizeBytes) {
  */
 async function feasibility(modelId) {
   let size = 0;
-  try { size = (await listDownloaded()).get(modelId) || 0; } catch { /* нет lms — не оцениваем */ }
-  const want = desiredContext(modelId);
-  if (!size) return { feasible: true, heavy: false, note: '', sizeBytes: 0, fitContext: want, wantContext: want };
+  let modelMax = 0;
+  try {
+    const info = (await listDownloaded()).get(modelId) || {};
+    size = info.sizeBytes || 0;
+    modelMax = info.maxContextLength || 0;
+  } catch { /* нет lms — не оцениваем */ }
+  const want = desiredContext(modelId, modelMax);
+  if (!size) return { feasible: true, heavy: false, note: '', sizeBytes: 0, fitContext: want, wantContext: want, modelMaxContext: modelMax };
 
   const gb = (n) => (n / 1024 ** 3).toFixed(1);
   const need = size + kvBytes(modelId, want);
-  const fit = fittingContext(modelId, size);
+  const fit = fittingContext(modelId, size, modelMax);
 
   if (fit === 0) {
     // веса сами по себе больше бюджета — контекстом делу не помочь
     return {
-      feasible: true, heavy: true, sizeBytes: size, fitContext: MIN_CONTEXT, wantContext: want,
+      feasible: true, heavy: true, sizeBytes: size, fitContext: MIN_CONTEXT, wantContext: want, modelMaxContext: modelMax,
       note: `тяжёлая для этой машины: одни веса ~${gb(size)} ГБ при бюджете ~${gb(MEMORY_BUDGET_BYTES)} ГБ. `
         + 'Загрузка будет долгой, а часть весов уйдёт в подкачку — ответы замедлятся в разы. '
         + 'Запустить можно, но для работы лучше взять модель поменьше',
@@ -165,7 +220,7 @@ async function feasibility(modelId) {
   }
   if (fit < want) {
     return {
-      feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want,
+      feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want, modelMaxContext: modelMax,
       note: `контекст будет уменьшен до ${fit.toLocaleString('ru-RU')} токенов вместо ${want.toLocaleString('ru-RU')}: `
         + `с полным нужно ~${gb(need)} ГБ при доступных ~${gb(MEMORY_BUDGET_BYTES)} ГБ. `
         + 'Длинные документы придётся резать на части',
@@ -173,11 +228,11 @@ async function feasibility(modelId) {
   }
   if (need > MEMORY_BUDGET_BYTES * 0.85) {
     return {
-      feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want,
+      feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want, modelMaxContext: modelMax,
       note: `займёт почти всю память (~${gb(need)} ГБ) — другие модели будут выгружены`,
     };
   }
-  return { feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want, note: '' };
+  return { feasible: true, heavy: false, sizeBytes: size, fitContext: fit, wantContext: want, modelMaxContext: modelMax, note: '' };
 }
 
 /** Сериализация ensureLoaded: параллельные вызовы не должны спорить за память. */
@@ -223,8 +278,7 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
       loaded = loaded.filter((m) => m !== target);
     }
 
-    let size = 0;
-    try { size = (await listDownloaded()).get(modelId) || 0; } catch {}
+    const size = await sizeOf(modelId);
     const need = size + kvBytes(modelId, wantCtx);
     // embedding-модели KV-кэш почти не тратят — не завышаем их вес при вытеснении
     const residentCost = (m) => m.sizeBytes + (m.type === 'embedding' ? 0 : kvBytes(m.modelKey, m.contextLength || 4096));
@@ -274,6 +328,6 @@ function ensureLoaded(modelId, { onProgress = () => {}, signal = null } = {}) {
 }
 
 module.exports = {
-  ensureLoaded, feasibility, desiredContext, fittingContext, listLoaded,
+  ensureLoaded, feasibility, desiredContext, fittingContext, listLoaded, sizeOf, modelMaxContext,
   acquireUse, releaseUse, MEMORY_BUDGET_BYTES, MIN_CONTEXT,
 };

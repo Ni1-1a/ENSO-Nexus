@@ -1426,3 +1426,28 @@ test('порядок работы: список из настроек уходи
   assert.ok(text.includes(wp.steps[0].title), 'шаги перечислены поимённо');
   assert.ok(text.includes(wp.steps[wp.steps.length - 1].title));
 });
+
+test('контекст локальной модели: паспорт модели важнее рукописного профиля', () => {
+  const mm = require('../server/services/model-manager');
+  const config = require('../server/config');
+
+  // Паспортный максимум приходит от LM Studio. Пока он дублировался профилями,
+  // gemma-4-31b получала 16 384 и llama-3.3-70b — 8 192 при паспорте 262 144
+  // и 131 072, а модель без профиля вообще 16 384 независимо от возможностей.
+  assert.strictEqual(mm.desiredContext('какая-угодно-новая-модель', 262144), config.localAiContext,
+    'незнакомая модель получает потолок машины, а не «по умолчанию 16 384»');
+  assert.strictEqual(mm.desiredContext('какая-угодно-новая-модель', 8192), 8192,
+    'просить больше паспорта нельзя — загрузка просто не удастся');
+  assert.strictEqual(mm.desiredContext('какая-угодно-новая-модель', 0), config.localAiContext,
+    'паспорт неизвестен — держимся потолка машины');
+
+  // vision-модель сохраняет СВОЙ потолок: она обязана жить в памяти рядом с чат-моделью
+  assert.strictEqual(mm.desiredContext('qwen/qwen3-vl-8b', 262144), config.localAiOcrContext);
+
+  // память режет сильнее потолка, когда весов много
+  const budget = mm.MEMORY_BUDGET_BYTES;
+  const heavy = mm.fittingContext('meta/llama-3.3-70b', budget - 1024 ** 3, 131072);
+  assert.ok(heavy < config.localAiContext, `при 1 ГБ свободных контекст обязан быть урезан, получено ${heavy}`);
+  assert.strictEqual(mm.fittingContext('meta/llama-3.3-70b', budget + 1, 131072), 0,
+    'веса больше бюджета — влезающего контекста нет вовсе');
+});
