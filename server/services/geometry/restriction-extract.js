@@ -34,6 +34,21 @@ const SYSTEM = `Ты — инженер-градостроитель. Твоя �
 норматив, и одинаковой ширины у них не бывает. Слой, для которого зону найти не удалось,
 запиши в missingData поимённо: «для слоя X охранная зона в документах не названа».
 
+ОТДЕЛЬНО — ПРОТИВОПОЖАРНЫЕ РАССТОЯНИЯ (шаг 5). Это НЕ охранная зона и по слою их не
+угадать: расстояние берётся из таблицы по двум признакам сразу — степени огнестойкости
+и классу конструктивной пожарной опасности ОБОИХ зданий, проектируемого и соседнего.
+Порядок действий:
+1. возьми степень огнестойкости и класс проектируемого объекта из блока <fire_safety>;
+2. найди в выдержках нормативной базы таблицу расстояний (СП 4.13130) и КЛЕТКУ на
+   пересечении строки и столбца — это и есть искомые метры;
+3. выдай правило kind="fireBreak", operation="bufferOutward", targetSelector="building",
+   в targetHint — имя слоя существующих строений из описи, в basis — шифр и номер
+   таблицы, в quote — строку таблицы, из которой взято число.
+Если степень огнестойкости соседних зданий неизвестна (а так почти всегда и бывает),
+принимай наихудший случай и скажи об этом в note правила: это допущение в запас, а не
+выдумка. Если расстояние по нормативу не нормируется — так и напиши в missingData,
+правило при этом не выдавай.
+
 targetHint пиши так, чтобы приложение нашло объект: точное имя слоя из описи либо точную
 подпись человека. Выдуманное уточнение не найдёт ничего, и ограничение потеряется.
 
@@ -132,6 +147,59 @@ const DERIVABLE = [
     }),
   },
 ];
+
+/**
+ * Пожарные характеристики объекта из фактов: степень огнестойкости, класс
+ * конструктивной опасности, класс функциональной опасности, категория.
+ *
+ * Без них противопожарное расстояние не назначается: в таблице 3 СП 4.13130
+ * степень огнестойкости — это строка, класс С0/С1/С2/С3 — столбец, а категория
+ * (А, Б, В против Г, Д) решает, нормируется расстояние вообще или нет. Модели
+ * эти четыре величины нужны и в запросе к базе знаний, и в самом задании.
+ */
+function fireFactsOf(facts) {
+  /*
+   * Ищем по ВИДУ ЗНАЧЕНИЯ, а не по имени ключа.
+   *
+   * Имена ключей модель придумывает сама и путает: на боевом прогоне
+   * `object.fire_class = Ф5.1` — это класс ФУНКЦИОНАЛЬНОЙ опасности, а по имени
+   * он неотличим от конструктивного, и «Ф5.1» уезжало в столбец таблицы, где
+   * стоят С0…С3. А вот сами обозначения ни с чем не спутать: степень
+   * огнестойкости — римские I…V, конструктивный класс — С0…С3, функциональный —
+   * Ф1…Ф5, категория — А, Б, В, Г, Д.
+   */
+  /**
+   * Возвращает САМО ОБОЗНАЧЕНИЕ, а не всё значение факта: модель нередко кладёт
+   * всё в одну строку («IV степень огнестойкости, класс С0, категория В, Ф5.1»),
+   * и без выделения токена в каждое поле уезжала бы вся фраза целиком.
+   */
+  const byValue = (re, keyRe = null) => {
+    for (const f of facts) {
+      const value = String(f.value).trim();
+      const m = value.match(re);
+      if (!m) continue;
+      if (keyRe && !keyRe.test(`${f.key} ${value}`.toLowerCase())) continue;
+      return (m[1] || m[0]).trim();
+    }
+    return '';
+  };
+  // С и C — кириллица и латиница выглядят одинаково, модель пишет и так и так
+  const structural = byValue(/(?:^|[^А-ЯA-Z])([СC]\s?[0-3])(?![\d.])/);
+  const functional = byValue(/(?:^|[^А-ЯA-Z])(Ф\s?[1-5](?:\.\d+)?)/);
+  const degree = byValue(/(?:^|[^A-ZА-Я])(I{1,3}|IV|V)(?![A-ZА-Я\d])/,
+    /огнестойк|fire[_\s-]?(degree|resistance)|степен/);
+  const category = byValue(/категори[яи]?\s*[«"]?([АБВГД])(?![А-Яа-я])|^([АБВГД])$/, /категор|category/);
+  const bits = [degree, structural, functional, category].filter(Boolean);
+  return {
+    degree, structural, functional, category,
+    query: bits.length ? ` ${bits.join(' ')}` : '',
+    text: bits.length
+      ? `степень огнестойкости: ${degree || 'не названа'}; класс конструктивной пожарной опасности: `
+        + `${structural || 'не назван'}; класс функциональной опасности: ${functional || 'не назван'}; `
+        + `категория: ${category || 'не названа'}`
+      : '',
+  };
+}
 
 /** Число из значения факта: «3 м» → 3. Неправдоподобное отбрасывается движком правил. */
 function factNumber(raw) {
@@ -308,17 +376,47 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   }
   if (blocks.length) messages.push({ role: 'user', content: blocks });
 
-  // выдержки из базы знаний по фактически найденным объектам
+  /*
+   * Выдержки из базы знаний — ДВУМЯ запросами, и имена слоёв в них не повторяются.
+   *
+   * Прежний запрос был один и собирался конкатенацией имён слоёв по каждому
+   * объекту: 69 сетей и 46 строений давали 1500 символов, где «07_Объекты
+   * электропередачи» стояло одиннадцать раз подряд, а слова «противопожарное
+   * расстояние» занимали двадцать шесть символов из полутора тысяч. Вектор
+   * запроса определялся повторами имён слоёв, и таблица 3 СП 4.13130 в выдержки
+   * не попадала НИКОГДА — хотя в базе она есть целиком, с матрицей расстояний.
+   * Оттого шаг 5 методики и не работал: модели неоткуда было взять число.
+   *
+   * Теперь слои дедуплицируются, а противопожарные расстояния спрашиваются
+   * отдельным запросом, собранным из пожарных характеристик объекта: степень
+   * огнестойкости и класс конструктивной опасности — это строка и столбец
+   * таблицы, без них нужную клетку не найти.
+   */
+  const fire = fireFactsOf(factRows);
   try {
     progress.set(sessionId, { phase: 'retrieving', label: 'Поиск нормативов по найденным объектам…' });
     const kb = require('../kb');
-    const query = [
-      'охранная зона санитарный разрыв противопожарное расстояние отступ от границы',
+    const base = (session && session.kb_choice) || 'main';
+    const layers = [...new Set([
       ...(site ? site.utilities.map((u) => u.provenance.sourceLayer) : []),
       ...(site ? site.buildings.map((b) => b.provenance.sourceLayer) : []),
-    ].join(' ').slice(0, 1500);
-    const excerpts = await kb.excerptsFor(query, (session && session.kb_choice) || 'main');
-    if (excerpts) messages.push({ role: 'user', content: `<knowledge_base>\n${excerpts}\n</knowledge_base>` });
+    ].filter(Boolean))];
+
+    const queries = [
+      ['зоны', ['охранная зона инженерных сетей санитарный разрыв отступ от границ участка', ...layers].join(' ').slice(0, 1200)],
+      ['разрывы', 'противопожарные расстояния между зданиями и сооружениями, таблица расстояний по степени '
+        + `огнестойкости и классу конструктивной пожарной опасности${fire.query}`],
+    ];
+    const parts = [];
+    for (const [, q] of queries) {
+      const ex = await kb.excerptsFor(q, base).catch(() => '');
+      if (ex) parts.push(ex);
+    }
+    if (parts.length) {
+      // шапка «Выдержки из базы…» повторяется в каждом ответе — оставляем одну
+      const merged = parts.map((p, i) => (i ? p.replace(/^##[^\n]*\n/, '') : p)).join('\n');
+      messages.push({ role: 'user', content: `<knowledge_base>\n${merged}\n</knowledge_base>` });
+    }
   } catch (err) {
     console.warn('[restrictions] выдержки базы знаний пропущены:', err.message);
   }
@@ -331,13 +429,31 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
    * модели на общей формулировке возвращали пустой список даже там, где в ГПЗУ
    * зоны названы прямым текстом.
    */
-  const utilityLayers = [...new Set((site && site.utilities || [])
+  const layersOf = (arr) => [...new Set((arr || [])
     .map((o) => (o.properties && o.properties.userLabel) || o.provenance.sourceLayer)
     .filter(Boolean))];
+  const utilityLayers = layersOf(site && site.utilities);
+  const buildingLayers = layersOf(site && site.buildings);
+
   const checklist = utilityLayers.length
     ? '\n\nПройди по КАЖДОМУ инженерному слою участка и реши, какая у него охранная зона:\n'
       + utilityLayers.slice(0, 30).map((l) => `- ${l}`).join('\n')
       + '\nПо слою, для которого зону найти не удалось, напиши это в missingData поимённо.'
+    : '';
+
+  /*
+   * Пожарные характеристики выносятся ОТДЕЛЬНЫМ блоком, а не тонут среди
+   * тридцати фактов. Без степени огнестойкости и класса С в таблице 3
+   * СП 4.13130 не найти ни строки, ни столбца — а значит, и расстояния.
+   */
+  const fireBlock = fire.text
+    ? `\n\n<fire_safety>\nПожарные характеристики ПРОЕКТИРУЕМОГО объекта: ${fire.text}.\n`
+      + (buildingLayers.length
+        ? `Существующие строения, от которых считается разрыв (слои чертежа):\n${buildingLayers.slice(0, 15).map((l) => `- ${l}`).join('\n')}\n`
+        : '')
+      + 'Найди в выдержках нормативной базы таблицу противопожарных расстояний и выдай правило '
+      + 'kind="fireBreak" с числом из неё. Степень огнестойкости соседних зданий не названа — '
+      + 'принимай наихудший случай и скажи об этом в note.\n</fire_safety>'
     : '';
 
   messages.push({
@@ -345,7 +461,7 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
     content: 'Сопоставь объекты участка из описи с ограничениями, названными в документах, '
       + 'и выдай правило на каждую пару. Верни строго JSON по схеме. '
       + 'Помни: правило, а не координаты. Чего не хватает — в missingData.'
-      + checklist + extraInstruction,
+      + checklist + fireBlock + extraInstruction,
   });
 
   progress.set(sessionId, {
@@ -456,4 +572,4 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   return result;
 }
 
-module.exports = { extract, inventory, hintsInDocuments, rawRulesFromFacts, rulesFromFacts, mergeRules, factNumber, SYSTEM };
+module.exports = { extract, inventory, hintsInDocuments, rawRulesFromFacts, rulesFromFacts, mergeRules, factNumber, fireFactsOf, SYSTEM };

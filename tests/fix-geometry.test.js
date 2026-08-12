@@ -1514,3 +1514,92 @@ test('опись участка: слои сворачиваются, а под�
   assert.ok(!/слой «null»/.test(inv));
   assert.match(inv, /из документа «ГПЗУ.pdf»/);
 });
+
+/* ================= шаг 5: противопожарные разрывы ================= */
+
+test('шаг 5: пожарные характеристики разбираются по виду обозначения, а не по имени ключа', () => {
+  const RE = require('../server/services/geometry/restriction-extract');
+
+  /*
+   * Имена ключей модель придумывает сама и путает: на прогоне 2026-08-12
+   * `object.fire_class = Ф5.1` — это класс ФУНКЦИОНАЛЬНОЙ опасности, а по имени
+   * он неотличим от конструктивного, и «Ф5.1» уезжало в столбец таблицы 3
+   * СП 4.13130, где стоят С0…С3. Обозначения при этом ни с чем не спутать.
+   */
+  const a = RE.fireFactsOf([
+    { key: 'object.fire_class', value: 'Ф5.1 (производственное)' },
+    { key: 'object.fire_degree', value: 'IV' },
+  ]);
+  assert.strictEqual(a.degree, 'IV');
+  assert.strictEqual(a.functional, 'Ф5.1');
+  assert.strictEqual(a.structural, '', 'конструктивного класса в этих фактах нет — выдумывать нечего');
+
+  const b = RE.fireFactsOf([
+    { key: 'object.constructive_fire_hazard_class', value: 'С0' },
+    { key: 'object.fire_hazard_category', value: 'В' },
+    { key: 'object.fire_hazard_level', value: 'Ф5.1' },
+    { key: 'object.fire_resistance_class', value: 'IV' },
+  ]);
+  assert.deepStrictEqual(
+    { d: b.degree, s: b.structural, f: b.functional, c: b.category },
+    { d: 'IV', s: 'С0', f: 'Ф5.1', c: 'В' },
+  );
+
+  // всё одной строкой — из каждого поля берётся своё обозначение, а не вся фраза
+  const c = RE.fireFactsOf([{ key: 'object.fire', value: 'IV степень огнестойкости, класс С0, категория В, Ф5.1' }]);
+  assert.deepStrictEqual(
+    { d: c.degree, s: c.structural, f: c.functional, c: c.category },
+    { d: 'IV', s: 'С0', f: 'Ф5.1', c: 'В' },
+  );
+
+  // нет пожарных данных — нет и блока: пустой блок сбивал бы модель с толку
+  assert.strictEqual(RE.fireFactsOf([{ key: 'object.floors', value: '2' }]).text, '');
+});
+
+test('шаг 5: разрыв строится от существующих строений и режет допустимую территорию', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const RE = require('../server/services/geometry/restriction-engine');
+  const RR = require('../server/services/geometry/restriction-rules');
+
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.9,
+    },
+  });
+  // соседнее строение ВНЕ участка — именно от таких считается разрыв
+  site.buildings.push(G.makeObject({
+    type: 'building', points: [[110, 40], [130, 40], [130, 60], [110, 60]], closed: true,
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: '03_Здания и строения',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+    },
+  }));
+
+  const rule = RR.normalizeRule({
+    kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building',
+    targetHint: '03_Здания и строения', value: 12, unit: 'м',
+    basis: 'СП 4.13130.2013, табл. 3', sourceDocument: 'НТД', sourceClause: 'табл. 3',
+    quote: 'IV степень огнестойкости классов C1, C2 и C3 — 12 м', confidence: 0.85,
+  }, 0).rule;
+  assert.ok(rule, 'правило противопожарного разрыва обязано проходить нормализацию');
+  assert.strictEqual(rule.kind, 'fireBreak');
+
+  const built = RE.build(site, [rule]);
+  assert.strictEqual(built.restrictions.length, 1);
+  // буфер 12 м от строения за границей заходит на участок полосой 2 м × 44 м
+  assert.ok(built.buildable.areaM2 < 10000 && built.buildable.areaM2 > 9800,
+    `разрыв обязан срезать угол участка, получено ${built.buildable.areaM2} м²`);
+
+  // а снесённое строение разрыва не даёт — решение шага 2 доходит до шага 5
+  const gone = G.createSiteGeometry();
+  gone.parcel = site.parcel;
+  const doomed = { ...site.buildings[0] };
+  doomed.properties = { ...doomed.properties, relocation: 'demolish' };
+  gone.buildings.push(doomed);
+  const after = RE.build(gone, [rule]);
+  assert.strictEqual(after.restrictions.length, 0);
+  assert.strictEqual(after.buildable.areaM2, 10000, 'после сноса участок свободен целиком');
+});
