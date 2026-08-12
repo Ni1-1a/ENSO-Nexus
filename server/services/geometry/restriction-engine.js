@@ -102,6 +102,33 @@ function buildZone(site, rule, parcelJts) {
     return { unresolved: `на участке нет объектов, от которых считается ограничение (${rule.target.selector})` };
   }
 
+  /*
+   * Уточнение не совпало ни с одним слоем — правило НЕ применяется к целому типу.
+   *
+   * Живой прогон 2026-08-12: модель написала правдоподобное, но несуществующее
+   * имя слоя — «Сети ЛЭП 10кВ», тогда как на чертеже слой зовётся «07_Объекты
+   * электропередачи». Движок совпадения не нашёл и построил охранную зону 10 м
+   * ОТ ВСЕХ одиннадцати слоёв сетей разом: канализации, теплосети, телефона.
+   * Зона выросла с 1068 до 2788 м², допустимая территория упала с 1457 до 565,
+   * и посадка перестала находиться — по правилу, которое к этим сетям
+   * не относится.
+   *
+   * Правило, объект отсчёта которого опознать не удалось, — это правило,
+   * которое применять НЕ К ЧЕМУ. Оно уходит в unresolved с причиной и списком
+   * слоёв, какие на участке есть: так человек видит и потерю, и чем её закрыть.
+   * Молча строить от всего типа хуже, чем не строить вовсе: зона от чужих
+   * объектов выглядит как расчёт и убивает посадку.
+   */
+  if (hintMissed) {
+    const have = [...new Set(targets.map((t) => t.provenance.sourceLayer).filter(Boolean))];
+    return {
+      unresolved: `уточнение «${rule.target.hint}» не совпало ни с одним слоем участка. `
+        + `Есть слои: ${have.slice(0, 8).join(', ')}${have.length > 8 ? ` и ещё ${have.length - 8}` : ''}. `
+        + 'Зона не построена: от всех объектов типа сразу считать нельзя — это ограничение от чужих объектов. '
+        + 'Подпишите нужную линию на плане либо поправьте уточнение в правиле.',
+    };
+  }
+
   if (rule.operation === 'bufferInward') {
     // отступ внутрь имеет смысл только от замкнутого контура — участка или квартала
     const closed = targets.filter((t) => t.geometry.type === 'polygon');
@@ -191,7 +218,6 @@ function build(site, rules) {
         statusLabel: RR.STATUS_LABELS[rule.status] || rule.status,
         areaOutsideParcelM2: G.round(Math.max(0, fullArea - jts.area(clipped)), 2),
         targets: (res.targets || []).map((t) => ({ id: t.id, layer: t.provenance.sourceLayer })),
-        ...(res.hintMissed ? { hintMissed: rule.target.hint } : {}),
       },
       provenance: {
         extractionMethod: 'computed',
@@ -202,13 +228,6 @@ function build(site, rules) {
       },
     });
     restrictions.push(object);
-    if (res.hintMissed) {
-      warnings.push({
-        code: 'target-hint-missed',
-        message: `Уточнение «${rule.target.hint}» не совпало ни с одним слоем — ` +
-          `ограничение построено от всех объектов типа «${rule.target.selector}». Проверьте.`,
-      });
-    }
   }
 
   /*

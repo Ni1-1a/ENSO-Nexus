@@ -393,6 +393,7 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
    * таблицы, без них нужную клетку не найти.
    */
   const fire = fireFactsOf(factRows);
+  let kbText = '';
   try {
     progress.set(sessionId, { phase: 'retrieving', label: 'Поиск нормативов по найденным объектам…' });
     const kb = require('../kb');
@@ -415,6 +416,7 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
     if (parts.length) {
       // шапка «Выдержки из базы…» повторяется в каждом ответе — оставляем одну
       const merged = parts.map((p, i) => (i ? p.replace(/^##[^\n]*\n/, '') : p)).join('\n');
+      kbText = merged;
       messages.push({ role: 'user', content: `<knowledge_base>\n${merged}\n</knowledge_base>` });
     }
   } catch (err) {
@@ -557,7 +559,13 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
     if (second && Array.isArray(second.rules) && second.rules.length) parsed = second;
   }
 
-  const result = rules.processExtraction(parsed);
+  /*
+   * Корпус для сверки нормативных ссылок — ровно то, что мы передали модели:
+   * выдержки базы знаний и тексты документов. Ссылка на пункт, которого в нём
+   * нет, подтверждением быть не может (см. rules.basisInCorpus).
+   */
+  const corpus = [kbText, blocks.map((b) => b.text || '').join('\n')].join('\n');
+  const result = rules.processExtraction(parsed, corpus);
   // Молчание модели не должно выглядеть как «ограничений нет».
   if (!result.rules.length && hints.length) {
     result.missingData.unshift(

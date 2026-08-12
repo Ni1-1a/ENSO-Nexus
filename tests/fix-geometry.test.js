@@ -343,16 +343,20 @@ test('движок: предупреждение о несовпавшем ут�
     { layer: 'ВОДОПРОВОД', closed: false, points: [[0, 40], [100, 40]] },
   ]), { fileName: 'вода.dxf' });
 
+  /*
+   * Уточнение «ЛЭП 10 кВ» не совпало ни с одним слоем чертежа (там водопровод).
+   * Прежде движок строил зону ОТ ВСЕГО ТИПА — от всех сетей участка разом. На
+   * боевом прогоне 2026-08-12 это раздуло охранную зону с 1068 до 2788 м² и
+   * убило посадку по правилу, которое к этим сетям не относится. Правило,
+   * объект отсчёта которого не опознан, применять не к чему.
+   */
   const res = engine.build(site, rulesFrom([lepRule]));
-  assert.ok(Array.isArray(res.warnings), 'движок обязан возвращать warnings, а не только мутировать site');
-  assert.strictEqual(res.warnings.length, 1);
-  assert.strictEqual(res.warnings[0].code, 'target-hint-missed');
-  assert.match(res.warnings[0].message, /ЛЭП 10 кВ/);
-  // site по-прежнему мутируется — этим пользуются отчёт и карточки
-  assert.ok(site.warnings.some((w) => w.code === 'target-hint-missed'));
-  // повторный расчёт того же не удваивает текст
-  engine.build(site, rulesFrom([lepRule]));
-  assert.strictEqual(site.warnings.filter((w) => w.code === 'target-hint-missed').length, 1);
+  assert.strictEqual(res.restrictions.length, 0, 'зона от чужих объектов не строится');
+  assert.strictEqual(res.unresolved.length, 1, 'потеря не молчаливая — правило в unresolved');
+  assert.match(res.unresolved[0].reason, /ЛЭП 10 кВ/, 'сказано, какое уточнение не совпало');
+  assert.match(res.unresolved[0].reason, /ВОДОПРОВОД/, 'и какие слои на участке есть');
+  // допустимой территорией остаётся весь участок — и это помечено как подозрительное
+  assert.ok(res.warnings.some((w) => w.code === 'no-restrictions'));
 });
 
 test('очередь: предупреждения переживают worker-поток', async () => {
@@ -365,16 +369,20 @@ test('очередь: предупреждения переживают worker-�
   const res = await queue.run('restrictions', { site, rules: rulesFrom([lepRule]) });
   assert.ok(Object.prototype.hasOwnProperty.call(res, 'warnings'),
     'результат задачи обязан нести warnings: мутация site в поток не возвращается');
-  assert.ok(res.warnings.some((w) => w.code === 'target-hint-missed'),
-    `зона построена от чужого объекта, а предупреждения нет: ${JSON.stringify(res.warnings)}`);
-  assert.strictEqual(res.restrictions.length, 1, 'сама зона при этом строится');
+  // payload уезжает в поток структурным клонированием, и всё, что движок дописал
+  // в свою копию site, умирает вместе с потоком — наружу это обязано вернуться
+  assert.ok(res.warnings.some((w) => w.code === 'no-restrictions'),
+    `предупреждения не вернулись из потока: ${JSON.stringify(res.warnings)}`);
+  assert.strictEqual(res.unresolved.length, 1, 'причина непостроенной зоны переживает поток');
+  assert.match(res.unresolved[0].reason, /не совпало ни с одним слоем/);
 });
 
 test('движок: нулевая площадь участка не превращается в NaN', () => {
   const site = cadGeom.fromDxf(writeDxf([
     { layer: 'Границы ЗУ', closed: true, points: [[0, 0], [50, 0], [100, 0]] },
   ]), { fileName: 'вырожденный.dxf' });
-  const res = engine.build(site, rulesFrom([lepRule]));
+  // правило БЕЗ уточнения: проверяем вырожденный участок, а не подбор объекта
+  const res = engine.build(site, rulesFrom([{ ...lepRule, targetHint: '' }]));
 
   assert.strictEqual(res.buildable, null,
     'расчёт по нулевому участку не выполняется — объект с нулями выглядел бы выполненным расчётом');
@@ -389,7 +397,9 @@ test('движок: нулевая площадь участка не превр
     { layer: 'Границы ЗУ', closed: true, points: [[0, 0], [100, 0], [100, 80], [0, 80]] },
     { layer: 'Сети ЛЭП 10кВ', closed: false, points: [[0, 60], [100, 60]] },
   ]), { fileName: 'норма.dxf' });
-  const good = engine.build(ok, rulesFrom([lepRule]));
+  // здесь уточнение СОВПАДАЕТ со слоем «Сети ЛЭП 10кВ» — зона строится
+  const good = engine.build(ok, rulesFrom([{ ...lepRule, targetHint: 'ЛЭП 10кВ' }]));
+  assert.strictEqual(good.restrictions.length, 1, 'совпавшее уточнение обязано дать зону');
   assert.ok(good.buildable.sharePercent > 0 && good.buildable.sharePercent < 100);
   assert.match(good.stats['доляОтУчастка'], /^\d+(\.\d+)?%$/);
 });
@@ -1381,13 +1391,20 @@ test('ограничения: зона строится от линии, НАЗ�
   assert.ok(!built.warnings.some((w) => w.code === 'target-hint-missed'),
     'уточнение совпало с подписью человека — «построено от всех объектов типа» тут неуместно');
 
-  // без подписи то же правило не различает линии и строит зону от обеих
+  /*
+   * Без подписи уточнение «ВЛ-10 кВ» не совпадает ни со слоем, ни с именем —
+   * и зона НЕ строится вовсе. Прежде она строилась от обеих линий разом, и на
+   * боевом чертеже такое правило накрывало все одиннадцать слоёв сетей.
+   * Подпись человека — единственный способ различить линии одного слоя, и
+   * платформа прямо об этом и просит в причине.
+   */
   const bare = G.createSiteGeometry();
   bare.parcel = site.parcel;
   bare.utilities.push(mkLine(50), mkLine(150));
   const wide = RE.build(bare, [rule]);
-  assert.ok(wide.restrictions[0].properties.areaM2 > 7000,
-    'без подписи различить линии одного слоя нечем — зона шире, и это видно');
+  assert.strictEqual(wide.restrictions.length, 0, 'зона от чужих объектов не строится');
+  assert.match(wide.unresolved[0].reason, /Подпишите нужную линию/,
+    'человеку сказано, чем закрыть потерю');
 });
 
 test('ограничения: имя линии переживает переразбор чертежа и пересчёт зон', () => {

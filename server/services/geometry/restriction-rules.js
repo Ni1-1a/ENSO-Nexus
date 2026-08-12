@@ -258,7 +258,60 @@ function assignStatus(rule) {
  * Полная обработка ответа модели: нормализация → конфликты → статусы.
  * Ничего не выбрасывает молча: отклонённые правила возвращаются с причиной.
  */
-function processExtraction(raw) {
+/**
+ * Сверка основания правила с текстом, который платформа САМА передала модели.
+ *
+ * Живой прогон 2026-08-12: правило противопожарного разрыва пришло с основанием
+ * «СП 4.13130-2013, табл. 22» и величиной 6 м — и получило статус «подтверждено
+ * документом». Таблицы 22 в этом СП нет: расстояния между зданиями стоят в
+ * таблицах 1 и 3, и в выдержках, переданных модели, была именно табл. 3 с
+ * другими числами. Документ модель взяла верный, а номер таблицы и число
+ * выдумала — платформа же проштамповала догадку как подтверждённую.
+ *
+ * Проверяется не «правда ли это», а куда более скромное: встречается ли
+ * названная ссылка в тексте, который мы сами же и дали. Не встречается —
+ * подтверждением она быть не может, статус опускается до «требует проверки».
+ * Это не обвинение модели во лжи: выдержки могли просто не содержать нужного
+ * пункта. Но и подтверждением такая ссылка не является.
+ *
+ * @param {string} basis  «СП 4.13130.2013, табл. 3»
+ * @param {string} corpus текст выдержек базы знаний и документов
+ * @returns {{checked: boolean, found: boolean, token: string}}
+ */
+function basisInCorpus(basis, corpus) {
+  const text = String(corpus || '');
+  if (!basis || !text) return { checked: false, found: false, token: '' };
+  // шифр норматива: «СП 4.13130», «ПП РФ № 160», «СанПиН 2.2.1/2.1.1.1200-03»
+  const code = String(basis).match(/(?:СП|СНиП|ГОСТ|СанПиН|ПУЭ|ФЗ|ПП\s*РФ)[\s№-]*[\d.\-/]+/i);
+  if (!code) return { checked: false, found: false, token: '' };
+  const norm = (s) => s.toLowerCase().replace(/[\s№.,-]/g, '');
+  if (!norm(text).includes(norm(code[0]))) {
+    return { checked: true, found: false, token: code[0].trim() };
+  }
+  /*
+   * Номер таблицы или пункта — со ГРАНИЦЕЙ СЛОВА перед «п».
+   *
+   * Без неё «п» цеплялось за П в «СП 4.13130-2013», номером пункта становилось
+   * «4.13130», и такой «пункт» находился в любом тексте, где шифр упомянут.
+   * Выдуманная «табл. 22» из живого прогона проходила проверку насквозь.
+   */
+  const clause = String(basis).match(/(?:^|[^а-яёa-z])((?:табл(?:ица)?|пункт|п)\.?\s*№?\s*([\d.]+))/i);
+  if (!clause) return { checked: true, found: true, token: code[0].trim() };
+  const isTable = /табл/i.test(clause[1]);
+  const num = clause[2].replace(/\.$/, '').replace(/\./g, '\\.');
+  const re = isTable
+    ? new RegExp(`табл[а-яё]*\\.?\\s*№?\\s*${num}(?![\\d.])`, 'i')
+    : new RegExp(`(?:^|[^а-яёa-z])(?:пункт|п)\\.?\\s*№?\\s*${num}(?![\\d.])`, 'i');
+  return { checked: true, found: re.test(text), token: `${code[0].trim()}, ${clause[1].trim()}` };
+}
+
+/**
+ * Полная обработка ответа модели.
+ * @param {object} raw     ответ модели
+ * @param {string} corpus  текст, переданный модели (выдержки базы знаний и документы) —
+ *                         по нему сверяются нормативные ссылки
+ */
+function processExtraction(raw, corpus = '') {
   const list = Array.isArray(raw && raw.rules) ? raw.rules : [];
   const rules = [];
   const rejected = [];
@@ -270,6 +323,17 @@ function processExtraction(raw) {
 
   const conflicts = detectConflicts(rules);
   for (const r of rules) assignStatus(r);
+
+  // ссылка, которой нет в переданном тексте, подтверждением не считается
+  for (const r of rules) {
+    if (r.status !== STATUSES.CONFIRMED) continue;
+    const check = basisInCorpus(r.basis, corpus);
+    if (!check.checked || check.found) continue;
+    r.status = STATUSES.NEEDS_REVIEW;
+    r.statusReason = `ссылка «${check.token}» не встречается в переданных выдержках нормативной базы — `
+      + 'проверьте её по первоисточнику: величина могла быть взята не из того пункта';
+    r.basisUnverified = true;
+  }
 
   return {
     rules,
@@ -328,5 +392,5 @@ const TARGET_LABELS = {
 
 module.exports = {
   RESTRICTION_KINDS, OPERATIONS, TARGET_SELECTORS, STATUSES, STATUS_LABELS, KIND_LABELS, TARGET_LABELS,
-  RULES_SCHEMA, normalizeRule, detectConflicts, assignStatus, processExtraction, explainRule,
+  RULES_SCHEMA, normalizeRule, detectConflicts, assignStatus, processExtraction, explainRule, basisInCorpus,
 };
