@@ -923,6 +923,59 @@ function actionsHtml(vv, fresh) {
     <ul class="pc-acts">${rows}</ul></div>`;
 }
 
+/**
+ * «Что стоит указать вручную» для карточки вариантов.
+ *
+ * Считается по ЖИВЫМ вариантам, а не по телу карточки: человек проходит объекты
+ * на плане один за другим, и подсказка обязана таять по мере решений, а не
+ * висеть до следующего прогона.
+ *
+ * Повод один, но он держит весь этап: объект, задетый пятном, класс которого не
+ * опознан («03_Здания и строения» не опознан) либо признан критическим, требует
+ * решения человека — и пока его нет, ВСЕ варианты стоят в статусе «требует
+ * вашего решения» и ни один не считается допустимым. На боевом плане Горбунков
+ * так и было: четыре варианта, все needs_decision из-за задетых сетей.
+ */
+function variantHintsHtml(run) {
+  const objects = new Map(); // objectId → {layer, title, volume, unit}
+  for (const v of run.variants || []) {
+    for (const a of v.actions || []) {
+      if (!a.requiresDecision || objects.has(a.objectId)) continue;
+      objects.set(a.objectId, a);
+    }
+  }
+  if (!objects.size) return '';
+
+  // группируем по слою чертежа: «12 объектов слоя 30_Канализация» читается,
+  // а двенадцать одинаковых строк — нет
+  const byLayer = new Map();
+  for (const a of objects.values()) {
+    const layer = String(a.title || '').split(': ').slice(1).join(': ') || 'без слоя';
+    const cur = byLayer.get(layer) || { n: 0, ids: [] };
+    cur.n += 1;
+    cur.ids.push(a.objectId);
+    byLayer.set(layer, cur);
+  }
+  const list = [...byLayer.entries()]
+    .sort((a, b) => b[1].n - a[1].n)
+    .slice(0, 5)
+    .map(([layer, v]) => `${esc(layer)} — ${v.n} шт.`)
+    .join('; ');
+  const ids = [...objects.keys()];
+  const stuck = (run.variants || []).filter((v) => v.status === 'needs_decision').length;
+
+  return `<div class="pc-hints">
+    <p class="pc-hints-head">Что стоит указать вручную — платформа этого знать не может</p>
+    <ul class="pc-hints-list"><li><b class="mh-gain">${ids.length}</b> объект(ов) задето пятном, и по ним нет решения:
+      ${list}. Пока решения нет, ${stuck === (run.variants || []).length ? 'все варианты стоят' : `${stuck} вариант(а) стоит`}
+      в статусе «требует вашего решения» и допустимым не считается ни один.
+      Клик по объекту на плане → «Что с ним делать»: сохраняется, переносится или сносится.
+      ${ids.length > 5 ? 'Их много — держите Shift и набирайте пачкой, правка применится ко всем сразу.' : ''}
+      <button class="mh-open" type="button" data-open-plan="1" data-focus="${esc(ids.join(','))}">показать на плане</button>
+    </li></ul>
+  </div>`;
+}
+
 function variantsCardHtml(data, fresh) {
   const run = state.run;
   if (!run || !Array.isArray(run.variants)) {
@@ -962,6 +1015,7 @@ function variantsCardHtml(data, fresh) {
   const done = state.view && ['drawing', 'done'].includes(state.view.stage);
   return `<div class="pc">
     <div class="pc-variants">${cards}</div>
+    ${done ? '' : variantHintsHtml(run)}
     ${(data.notes || []).length ? `<p class="pc-note">${(data.notes || []).map(esc).join(' ')}</p>` : ''}
     ${done
       ? `<div class="pc-done">✓ Вариант ${picked ? picked.number : ''} согласован</div>`
