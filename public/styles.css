@@ -905,71 +905,92 @@ details summary {
   .col-dialog { grid-column: 1 / -1; order: 3; }
   .card-dialog { min-height: 380px; }
 }
+/* ---------- телефон: панель выезжает, как в чатах ---------- */
+/* Полоса с названием видна только на узком экране: на широком панель
+   и так на месте, и дублировать название незачем. */
+.mobile-bar { display: none; }
+.sidebar-scrim { display: none; }
+
 @media (max-width: 800px) {
+  /*
+   * Навигация телефона устроена как в AI-чатах: сверху узкая полоса с
+   * названием и значком, панель выезжает поверх содержимого и закрывается
+   * касанием мимо неё.
+   *
+   * Прежде панель была горизонтальной полосой в потоке страницы. Четыре пункта
+   * не помещались в строку и шли двумя рваными, проекты рисовались вертикальным
+   * списком в полную ширину — на 375 px это съедало 280 px высоты, и «Этап 1»
+   * уезжал за сгиб. Выехавшая панель не занимает высоту вообще: закрытая она
+   * стоит за левым краем экрана.
+   */
   .shell { flex-direction: column; }
-  /* полоса сверху: уезжать ей некуда — просто убираем из потока */
-  .shell.sidebar-collapsed .sidebar { display: none; margin-left: 0; }
-  .shell.sidebar-collapsed .content { padding-left: 14px; padding-top: 54px; }
-  .sidebar-toggle { top: calc(8px + var(--banners-h, 0px)); left: 8px; }
+
+  .mobile-bar {
+    display: flex; align-items: center; gap: 10px;
+    position: fixed; top: var(--banners-h, 0px); left: 0; right: 0; z-index: 40;
+    height: 48px; padding: 0 14px 0 52px;
+    background: var(--panel-solid); border-bottom: 1px solid var(--stroke-soft);
+  }
+  .mobile-bar .brand-name { font-size: 15px; }
+  .sidebar-toggle { top: calc(8px + var(--banners-h, 0px)); left: 10px; z-index: 46; }
+
+  /* панель: за левым краем, выезжает по классу на оболочке.
+     Начинается ПОД полосой: название остаётся на виду и при открытом меню —
+     человек видит, где он находится, а не только куда собрался. */
   .sidebar {
-    width: 100%; height: auto; position: static;
-    flex-direction: row; align-items: center; gap: 12px;
-    flex-wrap: wrap;
-    padding: 10px 14px;
-    border-right: 0; border-bottom: 1px solid var(--stroke-soft);
+    position: fixed; top: calc(var(--banners-h, 0px) + 48px); left: 0; bottom: 0; z-index: 45;
+    width: min(300px, 84vw); height: auto; margin: 0;
+    flex-direction: column; gap: 14px; padding: 14px 12px;
+    border-right: 1px solid var(--stroke); border-bottom: 0;
+    box-shadow: var(--shadow-pop);
+    transform: translateX(0);
+    transition: transform .22s ease;
   }
-  .brand-text { display: none; }
+  /* закрытая панель уезжает целиком за левый край; visibility ей задаёт общее
+     правило выше — фокус в невидимое меню не уходит ни на какой ширине */
+  .shell.sidebar-collapsed .sidebar { transform: translateX(-101%); }
+  .shell.sidebar-collapsed .content { padding-left: 14px; }
 
-  /*
-   * Навигация — ОДНОЙ прокручиваемой строкой, а не переносами.
-   *
-   * На 375 px четыре пункта не помещались в строку и разваливались на две
-   * рваные: «Этап 1 / Нормоконтроль», под ними «Настройки / Новая сессия»,
-   * причём первый пункт налезал на кнопку-переключатель. Перенос здесь и не
-   * нужен: навигация из четырёх пунктов листается пальцем привычнее, чем
-   * занимает две строки высоты.
-   */
-  .nav { flex-direction: row; flex: 1 1 auto; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .nav::-webkit-scrollbar { display: none; }
-  .nav-item { flex: 0 0 auto; padding: 7px 10px; font-size: 12.5px; }
-  /* в строку разделитель не нужен — кнопка просто ещё один пункт */
-  .nav-action { margin-top: 0; padding-top: 7px; border-top: 0; }
+  /* название внутри панели не нужно: оно уже стоит в полосе сверху */
+  .brand { display: none; }
 
-  /* кнопка-переключатель стоит поверх полосы — освобождаем ей место слева */
-  .sidebar { padding-left: 52px; }
+  .nav { flex-direction: column; flex: 0 0 auto; }
+  .nav-item { padding: 9px 12px; font-size: 13.5px; }
+  .nav-action { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--stroke-soft); }
 
-  /*
-   * Проекты — горизонтальная лента чипов вместо вертикального списка.
-   *
-   * Вертикальным списком на телефоне сайдбар съедал больше половины экрана:
-   * два проекта — и «Этап 1» уезжал за сгиб. Проекты переключают редко,
-   * поэтому им хватает одной прокручиваемой строки; дата в чипе не нужна,
-   * а «⋮» и так проявляется свайпом влево.
-   */
-  .sessions-nav { flex: 1 1 100%; min-width: 0; margin-top: 2px; }
-  .sessions-head { display: none; }
-  .sessions-list { flex-direction: row; gap: 6px; overflow-x: auto; padding: 0 0 2px; scrollbar-width: none; }
-  .sessions-list::-webkit-scrollbar { display: none; }
-  .sess-item {
-    flex: 0 0 auto; max-width: 58vw; padding: 6px 10px;
-    border: 1px solid var(--stroke-soft); background: var(--panel);
-  }
-  .sess-item.active { border-color: var(--accent); }
-  .sess-meta, .sess-more { display: none; }
+  .sessions-nav { flex: 1 1 auto; min-height: 0; }
+  .sessions-list { flex-direction: column; gap: 2px; }
+  .sess-item { max-width: none; padding: 9px 34px 9px 10px; }
+  /* «⋮» на телефоне не появляется по наведению — показываем сразу */
+  .sess-more { opacity: 1; }
 
-  /* бейдж модели во всю ширину: имя модели длинное, и обрезать его незачем */
-  /* padding: 0 — иначе бейдж уезжает правее чипов проектов на четыре пикселя
-     и полоса перестаёт читаться как ровный столбец */
-  .sidebar-foot { flex: 1 1 100%; margin: 0; padding: 0; flex-direction: row; align-items: center; }
+  .sidebar-foot { padding: 0 4px; }
   .ai-badge { max-width: 100%; min-width: 0; }
   #ai-badge-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .content { padding: 18px 14px 30px; }
+
+  .sidebar-scrim {
+    display: block; position: fixed; z-index: 44;
+    top: calc(var(--banners-h, 0px) + 48px); left: 0; right: 0; bottom: 0;
+    border: 0; padding: 0; background: rgba(0, 0, 0, .35); cursor: pointer;
+    animation: scrim-in .18s ease;
+  }
+  .sidebar-scrim[hidden] { display: none; }
+
+  /* содержимое сдвинуто под полосу и панелью не поджимается: панель поверх */
+  .content { padding: 62px 14px 30px; }
   .columns { grid-template-columns: 1fr; }
   .toolbar h1 { font-size: 26px; }
   /* в узкой строке заголовку раздела важнее места, чем подписи значения */
   .set-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .set-value { max-width: 40%; }
 }
+
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Пока панель выехала, страница под ней не листается: иначе палец, промахнувшийся
+   мимо пункта, уносит содержимое вбок и вниз, а вернуться к нему нечем — панель
+   его закрывает. Класс ставит applySidebar и только на узком экране. */
+body.drawer-open { overflow: hidden; }
 
 /* ---------- движение по запросу ---------- */
 @media (prefers-reduced-motion: reduce) {

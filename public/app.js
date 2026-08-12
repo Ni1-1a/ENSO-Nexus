@@ -42,6 +42,11 @@ const LOG_OPEN_KEY = 'enso-pilot1-log-open';   // «Журнал этапов»:
    отрисовки, поэтому панель не «моргает» свёрнутой при каждой перезагрузке. */
 const SIDEBAR_KEY = 'enso-pilot1-sidebar';
 
+// На телефоне панель выезжает ПОВЕРХ содержимого, поэтому открытой её не
+// оставляют — она закрывает работу. Отсюда два отличия от широкого экрана:
+// стартует всегда закрытой и не запоминает состояние.
+const narrowScreen = () => window.matchMedia('(max-width: 800px)').matches;
+
 function applySidebar(collapsed) {
   const shell = $('shell');
   const btn = $('sidebar-toggle');
@@ -50,12 +55,18 @@ function applySidebar(collapsed) {
   btn.setAttribute('aria-expanded', String(!collapsed));
   btn.setAttribute('aria-label', collapsed ? 'Развернуть боковую панель' : 'Свернуть боковую панель');
   btn.title = `${collapsed ? 'Развернуть' : 'Свернуть'} панель (⌘\\ или Ctrl+\\)`;
+  // затемнение живёт только на телефоне, но hidden снимаем/ставим всегда:
+  // иначе после поворота экрана оно осталось бы висеть от прошлой ширины
+  const open = !collapsed && narrowScreen();
+  const scrim = $('sidebar-scrim');
+  if (scrim) scrim.hidden = !open;
+  document.body.classList.toggle('drawer-open', open);
 }
-applySidebar(localStorage.getItem(SIDEBAR_KEY) === '1');
+applySidebar(narrowScreen() ? true : localStorage.getItem(SIDEBAR_KEY) === '1');
 
 function toggleSidebar() {
   const collapsed = !$('shell').classList.contains('sidebar-collapsed');
-  localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
+  if (!narrowScreen()) localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
   applySidebar(collapsed);
   // меню проекта прибито к координатам кнопки, а она уезжает вместе с панелью.
   // Закрываем здесь, а не в applySidebar: та вызывается ещё до объявления
@@ -2112,6 +2123,24 @@ async function init() {
   $('sidebar-toggle').addEventListener('click', toggleSidebar);
   document.addEventListener('keydown', (e) => {
     if (e.key === '\\' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); toggleSidebar(); }
+    // Esc закрывает выехавшую панель — привычный выход, когда её открыли зря
+    if (e.key === 'Escape' && narrowScreen() && !$('shell').classList.contains('sidebar-collapsed')) {
+      applySidebar(true);
+    }
+  });
+  // касание мимо панели закрывает её, как в любом чате
+  $('sidebar-scrim').addEventListener('click', () => applySidebar(true));
+  // выбрал раздел или проект — панель уходит сама: она стоит поверх работы,
+  // и оставлять её открытой значит прятать то, ради чего её открывали
+  $('sidebar').addEventListener('click', (e) => {
+    if (!narrowScreen()) return;
+    if (!e.target.closest('.nav-item, .sess-item')) return;
+    if (e.target.closest('.sess-more')) return;   // «⋮» открывает меню, а не проект
+    applySidebar(true);
+  });
+  // поворот экрана: правила для узкого и широкого разные, состояние пересобираем
+  window.matchMedia('(max-width: 800px)').addEventListener('change', (e) => {
+    applySidebar(e.matches ? true : localStorage.getItem(SIDEBAR_KEY) === '1');
   });
   initSettingsGroups();
 
