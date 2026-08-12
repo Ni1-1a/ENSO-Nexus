@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
-# Обновляет постоянную ссылку-вход (GitHub Pages, ветка gh-pages):
-# страница https://ni1-1a.github.io/ENSO-Nexus/ всегда перенаправляет
-# на текущий публичный URL приложения из logs/public-url.txt.
+# Публикует на GitHub Pages (ветка gh-pages) приёмную и страницы ошибок.
+# Единственный источник правды — public/error-pages/ в ветке main:
+#   landing.html -> index.html       приёмная https://ni1-1a.github.io/ENSO-Nexus/
+#   cf-5xx.html  -> error-5xx.html   страница Cloudflare при 5xx
+#   cf-1xxx.html -> error-1033.html  страница Cloudflare при 1033 (туннель не поднят)
+# Раньше index.html генерировался прямо здесь, и каждый запуск serve-public.sh
+# затирал приёмную, выложенную вручную.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+SRC=public/error-pages
+for f in landing.html cf-5xx.html cf-1xxx.html; do
+  [[ -f "$SRC/$f" ]] || { echo "нет файла $SRC/$f — публиковать нечего" >&2; exit 1; }
+done
+
+# Адрес нужен только для сообщения и текста коммита: страницы ведут на постоянный
+# https://enso-nexus.com и от поднятого туннеля не зависят, поэтому скрипт можно
+# вызывать отдельно, чтобы перевыложить поправленные страницы.
 URL=$(cat logs/public-url.txt 2>/dev/null || true)
-if [[ -z "$URL" ]]; then
-  echo "logs/public-url.txt пуст — сначала запустите scripts/serve-public.sh" >&2
-  exit 1
-fi
+URL=${URL:-https://enso-nexus.com}
 
 WT=$(mktemp -d)
 trap 'rm -rf "$WT"' EXIT
@@ -27,72 +36,19 @@ else
   git -C "$WT" rm -rf --quiet . 2>/dev/null || true
 fi
 
-# Страница-вход сначала проверяет доступность сервера (/api/health с CORS):
-# доступен — переходим; нет — честно пишем «сервер сейчас недоступен» и
-# автоматически проверяем каждые 15 секунд, переходя как только он оживёт.
-cat > "$WT/index.html" <<HTML
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ENSO Nexus · Pilot 1 — переход к приложению</title>
-  <style>
-    body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 90vh; background: #f3efe6; color: #33302a; }
-    .card { text-align: center; padding: 2rem; max-width: 440px; }
-    a { color: #b95740; font-weight: 600; }
-    .muted { color: #8a8474; font-size: .85rem; }
-    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #d8d0c0; border-top-color: #b95740; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -2px; margin-right: 6px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #offline { display: none; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>ENSO Nexus · Pilot 1</h1>
-    <p id="checking"><span class="spinner"></span>Проверяем доступность сервера…</p>
-    <div id="offline">
-      <p><strong>Сервер сейчас недоступен.</strong></p>
-      <p class="muted">Скорее всего, компьютер с приложением выключен или нет связи.
-         Страница проверяет доступность каждые 15 секунд и откроет приложение автоматически,
-         как только сервер появится. Можно просто оставить вкладку открытой.</p>
-      <p class="muted" id="tries"></p>
-    </div>
-    <p><a href="$URL">$URL</a></p>
-  </div>
-  <script>
-    var URL_APP = '$URL';
-    var tries = 0;
-    function check() {
-      tries++;
-      var ctrl = new AbortController();
-      var t = setTimeout(function () { ctrl.abort(); }, 7000);
-      fetch(URL_APP + '/api/health', { cache: 'no-store', signal: ctrl.signal })
-        .then(function (r) {
-          clearTimeout(t);
-          if (r.ok) { location.replace(URL_APP); return; }
-          offline();
-        })
-        .catch(function () { clearTimeout(t); offline(); });
-    }
-    function offline() {
-      document.getElementById('checking').style.display = 'none';
-      document.getElementById('offline').style.display = 'block';
-      document.getElementById('tries').textContent = 'Проверок выполнено: ' + tries;
-      setTimeout(check, 15000);
-    }
-    check();
-  </script>
-</body>
-</html>
-HTML
-touch "$WT/.nojekyll"
+# Приёмная сама проверяет /api/health (CORS) и открывает платформу, как только та
+# поднимется; страницы ошибок Cloudflare показывает вместо своих стандартных.
+cp "$SRC/landing.html" "$WT/index.html"
+cp "$SRC/cf-5xx.html"  "$WT/error-5xx.html"
+cp "$SRC/cf-1xxx.html" "$WT/error-1033.html"
+touch "$WT/.nojekyll"   # иначе GitHub Pages прогонит файлы через Jekyll
 
 git -C "$WT" add -A
-if git -C "$WT" -c commit.gpgsign=false commit -m "redirect -> $URL" >/dev/null 2>&1; then
+if git -C "$WT" -c commit.gpgsign=false commit -m "Приёмная и страницы ошибок -> $URL" >/dev/null 2>&1; then
   git -C "$WT" push origin gh-pages >/dev/null
-  echo "Постоянная ссылка обновлена: https://ni1-1a.github.io/ENSO-Nexus/ -> $URL"
+  echo "Приёмная обновлена: https://ni1-1a.github.io/ENSO-Nexus/ -> $URL"
 else
-  echo "URL не изменился — обновление не требуется."
+  echo "Страницы не менялись — публикация не требуется."
 fi
 git worktree remove --force "$WT" 2>/dev/null || true
+git worktree prune   # убирает записи о временных worktree, стёртых по trap EXIT
