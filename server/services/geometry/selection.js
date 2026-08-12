@@ -24,6 +24,7 @@ const LAYER_TITLES = {
   existingObjects: 'Существующий объект',
   restrictions: 'Зона ограничения',
   buildable: 'Потенциально допустимая территория',
+  forbidden: 'Запретная зона (объединение ограничений)',
 };
 
 /**
@@ -32,6 +33,18 @@ const LAYER_TITLES = {
  */
 function allWithLayer(site) {
   const out = [];
+  // запретная зона — самая нижняя: сплошная подложка, поверх которой ложатся
+  // штриховки отдельных зон. Сначала видно, куда нельзя, потом — из-за чего
+  if (site.buildable && site.buildable.forbidden && site.buildable.forbidden.geometry) {
+    out.push({
+      layer: 'forbidden',
+      obj: {
+        id: 'forbidden',
+        geometry: site.buildable.forbidden.geometry,
+        properties: { areaM2: site.buildable.forbidden.areaM2 },
+      },
+    });
+  }
   if (site.buildable && site.buildable.geometry) {
     out.push({ layer: 'buildable', obj: { id: 'buildable', geometry: site.buildable.geometry, properties: { areaM2: site.buildable.areaM2 } } });
   }
@@ -96,14 +109,21 @@ const STYLE = {
   utilities: 'fill:none;stroke:#b07e36;stroke-width:1.5',
   existingObjects: 'fill:#8578684d;stroke:#857b6e;stroke-width:1',
   buildable: `fill:${ZoneStyle.BUILDABLE.fill};stroke:${ZoneStyle.BUILDABLE.color};stroke-width:1`,
+  forbidden: `fill:${ZoneStyle.FORBIDDEN.fill};stroke:${ZoneStyle.FORBIDDEN.color};stroke-width:1;stroke-dasharray:6 4`,
 };
 
 /**
- * Стиль объекта слоя. Зоны ограничений рисуются штриховкой своего типа:
- * наложенные зоны показывают обе штриховки, а не прячут нижнюю под верхней.
+ * Стиль объекта слоя.
+ *
+ * Зона ограничения рисуется штриховкой: угол — от ТИПА ограничения, цвет — от
+ * ОБЪЕКТА, вокруг которого она построена. Наложенные зоны показывают обе
+ * штриховки, а не прячут нижнюю под верхней, и по цвету видно, чья каждая.
  */
-function styleOf(layer, obj) {
+function styleOf(layer, obj, assignment) {
   if (layer === 'restrictions') {
+    if (assignment && assignment.byZone && assignment.byZone[obj.id]) {
+      return ZoneStyle.zoneStyleById(obj.id, assignment, 'cs-');
+    }
     return ZoneStyle.zoneStyle((obj.properties && obj.properties.kind) || 'other', 'cs-');
   }
   return STYLE[layer] || '';
@@ -148,16 +168,20 @@ function cropSvg(site, rectPoints, { width = 900, height = 640, marginRatio = 0.
   const minX = cx - vw / 2;
   const minY = cy - vh / 2;
 
+  const zones = site.restrictions || [];
+  const assignment = ZoneStyle.assignColors(zones);
   const parts = [];
   for (const { layer, obj } of allWithLayer(site)) {
     const d = geometryPath(obj.geometry);
     if (!d) continue;
     const open = obj.geometry.type === 'polyline';
-    const style = open ? `${styleOf(layer, obj)};fill:none` : styleOf(layer, obj);
+    const style = open ? `${styleOf(layer, obj, assignment)};fill:none` : styleOf(layer, obj, assignment);
     parts.push(`<path d="${d}" style="${style}" vector-effect="non-scaling-stroke"/>`);
   }
-  // поверх всего — то, о чём идёт речь: рамка вопроса или пятно застройки
-  if (rectPoints && rectPoints.length >= 3) {
+  // поверх всего — то, о чём идёт речь: рамка вопроса или пятно застройки.
+  // `highlight: 'none'` рисует чистую схему: на схеме ограничений в отчёте
+  // подсвечивать нечего, а рамка по габаритам участка читалась бы как объект
+  if (highlight !== 'none' && rectPoints && rectPoints.length >= 3) {
     const style = highlight === 'footprint'
       ? `fill:${ZoneStyle.FOOTPRINT.fill};stroke:${ZoneStyle.FOOTPRINT.color};stroke-width:2.5`
       : 'fill:#b9574022;stroke:#b95740;stroke-width:2.5;stroke-dasharray:7 4';
@@ -169,7 +193,7 @@ function cropSvg(site, rectPoints, { width = 900, height = 640, marginRatio = 0.
     // Шаг штриховки задан в единицах чертежа, а рисуем мы участок целиком:
     // без пересчёта под размер картинки полосы на участке в 74 м выходят
     // толщиной в метр и закрывают собой подложку. Тот же пересчёт делает вьювер.
-    ZoneStyle.defs('cs-', ZoneStyle.unitsPerPixel(vw, width)) +
+    ZoneStyle.defs('cs-', ZoneStyle.unitsPerPixel(vw, width), zones) +
     `<g transform="scale(1,-1)">${parts.join('')}</g></svg>`;
 }
 

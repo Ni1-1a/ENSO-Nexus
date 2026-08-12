@@ -60,12 +60,30 @@ async function svgToPng(svg, { width = 900, height = 600, scale = 2 } = {}) {
  * HTML → PDF. Печатается именно страница, а не картинка: в файле остаётся живой
  * текст, его можно искать и копировать, а таблицы верстаются сами.
  */
-async function htmlToPdf(html, { format = 'A4' } = {}) {
+async function htmlToPdf(html, { format = 'A4', header = '', footer = '', margin = null } = {}) {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     await page.setContent(html, { waitUntil: 'load', timeout: 30000 });
-    return await page.pdf({ format, printBackground: true });
+    /*
+     * Колонтитулы печатает БРАУЗЕР, а не вёрстка.
+     *
+     * Номер страницы и их общее число в HTML взять неоткуда: разбиение на
+     * страницы происходит уже при печати. Без колонтитула комплект на двадцать
+     * листов приходит без единого номера — такой документ нельзя ни обсудить
+     * по телефону, ни сшить, ни проверить на комплектность.
+     */
+    const opts = { format, printBackground: true };
+    if (header || footer) {
+      opts.displayHeaderFooter = true;
+      opts.headerTemplate = header || '<span></span>';
+      opts.footerTemplate = footer || '<span></span>';
+      // поля должны вмещать колонтитулы, иначе они срезаются
+      opts.margin = margin || { top: '18mm', bottom: '16mm', left: '14mm', right: '12mm' };
+    } else if (margin) {
+      opts.margin = margin;
+    }
+    return await page.pdf(opts);
   } finally {
     await page.close().catch(() => {});
     touchIdle();

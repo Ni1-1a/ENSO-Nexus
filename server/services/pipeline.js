@@ -375,9 +375,11 @@ async function startZonesStage(sessionId) {
 
       progress.set(sessionId, { phase: 'zones', label: 'Построение зон и допустимой территории…' });
       const built = await queue.run('restrictions', { site, rules: allRules });
+      // зоны и правила — в plan_zones, а не поверх чистого разбора в plans:
+      // иначе решение человека о сносе не доходит до пятна (geometry/zones.js)
+      require('./geometry/zones').save(sessionId, planId, { rules: allRules, built });
       site.restrictions = built.restrictions;
       site.buildable = built.buildable;
-      db.prepare('UPDATE plans SET geometry = ? WHERE id = ?').run(JSON.stringify(site), planId);
 
       logEvent(sessionId, 'Зоны построены',
         `зон ${built.restrictions.length}, не построено ${built.unresolved.length}`);
@@ -409,8 +411,17 @@ async function startZonesStage(sessionId) {
         planId,
         manualHints: hints,
         zones: stages.zonesSummary(site),
+        // и вторая сводка — по ОБЪЕКТАМ: решение принимается не по типу зоны,
+        // а по конкретной линии или корпусу, которые её порождают
+        sources: stages.zonesBySource(site),
         buildable: built.buildable
-          ? { areaM2: built.buildable.areaM2, sharePercent: built.buildable.sharePercent }
+          ? {
+            areaM2: built.buildable.areaM2,
+            sharePercent: built.buildable.sharePercent,
+            forbidden: built.buildable.forbidden
+              ? { areaM2: built.buildable.forbidden.areaM2, sharePercent: built.buildable.forbidden.sharePercent }
+              : null,
+          }
           : null,
         unresolved: built.unresolved.map((u) => ({ kind: u.kind, reason: u.reason })),
         conflicts: (extracted.conflicts || []).map((c) => c.message || String(c)),

@@ -19,6 +19,9 @@
 
   /** Слои плана (ТЗ, п. 32): порядок задаёт и порядок отрисовки. */
   const LAYERS = [
+    // порядок = порядок отрисовки: запретная зона ложится сплошной подложкой
+    // ПОД штриховки, чтобы сначала читался запрет целиком, а потом — чей он
+    { id: 'forbidden', label: 'Запретная зона', on: true },
     { id: 'buildable', label: 'Допустимая зона', on: true },
     { id: 'restrictions', label: 'Ограничения', on: true },
     { id: 'parcel', label: 'Участок', on: true },
@@ -83,6 +86,15 @@
       const b = plan.buildable;
       return b && b.geometry ? [{ id: 'buildable', type: 'buildable', geometry: b.geometry, properties: { areaM2: b.areaM2, note: b.note } }] : [];
     }
+    if (layerId === 'forbidden') {
+      const f = plan.buildable && plan.buildable.forbidden;
+      return f && f.geometry
+        ? [{
+          id: 'forbidden', type: 'forbidden', geometry: f.geometry,
+          properties: { areaM2: f.areaM2, sharePercent: f.sharePercent, zoneCount: f.zoneCount },
+        }]
+        : [];
+    }
     if (layerId === 'annotations') {
       return state.annotations.map((a) => ({
         id: a.id,
@@ -97,8 +109,12 @@
   function draw() {
     const svg = state.svg;
     // образцы штриховок зон — общие с миниатюрами, отчётом и чертежом;
-    // шаг задаётся в пикселях экрана и обновляется при каждом зуме
-    svg.innerHTML = window.ZoneStyle.defs('zh-', hatchScale());
+    // шаг задаётся в пикселях экрана и обновляется при каждом зуме.
+    // Список зон передаётся сюда, потому что цвет штриховки принадлежит
+    // не типу ограничения, а ОБЪЕКТУ, от которого зона отсчитана.
+    const zones = (state.plan && state.plan.restrictions) || [];
+    state.zoneColors = window.ZoneStyle.assignColors(zones);
+    svg.innerHTML = window.ZoneStyle.defs('zh-', hatchScale(), zones);
     const root = document.createElementNS(NS, 'g');
     root.setAttribute('transform', 'scale(1,-1)'); // ось Y чертежа смотрит вверх
     svg.appendChild(root);
@@ -125,13 +141,20 @@
         // зоны — штриховкой своего цвета и угла: наложение зон читается как
         // наложение штриховок, а не как «верхняя перекрыла нижнюю»
         if (layer.id === 'restrictions' && !open) {
+          const a = state.zoneColors && state.zoneColors.byZone[obj.id];
           const z = window.ZoneStyle.zone(obj.properties && obj.properties.kind);
-          path.style.fill = window.ZoneStyle.fill(obj.properties && obj.properties.kind, 'zh-');
-          path.style.stroke = z.color;
+          path.style.fill = a
+            ? window.ZoneStyle.zoneFillById(obj.id, 'zh-')
+            : window.ZoneStyle.fill(obj.properties && obj.properties.kind, 'zh-');
+          path.style.stroke = a ? a.color : z.color;
         }
         if (layer.id === 'buildable') {
           path.style.fill = window.ZoneStyle.BUILDABLE.fill;
           path.style.stroke = window.ZoneStyle.BUILDABLE.color;
+        }
+        if (layer.id === 'forbidden') {
+          path.style.fill = window.ZoneStyle.FORBIDDEN.fill;
+          path.style.stroke = window.ZoneStyle.FORBIDDEN.color;
         }
         g.appendChild(path);
       }
@@ -257,6 +280,12 @@
       if (p.note) lines.push(p.note);
       return lines.join('\n');
     }
+    if (layerId === 'forbidden') {
+      lines.push(`Запретная зона: ${p.areaM2} м² (${p.sharePercent}% участка)`);
+      lines.push(`объединение ${p.zoneCount} зон ограничений — строить нельзя нигде внутри неё`);
+      lines.push('поверх подложки — штриховка каждой зоны своим цветом: цвет = объект, угол = тип ограничения');
+      return lines.join('\n');
+    }
     if (layerId === 'annotations') {
       lines.push(p.comment ? `«${p.comment}»` : 'Выделение без комментария');
       if (p.author) lines.push(`автор: ${p.author}`);
@@ -274,7 +303,12 @@
       lines.push(p.relocation === 'move' ? 'решение: переносится' : 'решение: остаётся на месте');
     }
     if (p.userComment) lines.push(`«${p.userComment}»`);
-    if (p.kind) lines.push(`тип: ${p.kind}${p.statusLabel ? ` · ${p.statusLabel}` : ''}`);
+    if (p.kind) {
+      lines.push(`${window.ZoneStyle.zone(p.kind).label}${p.valueM ? ` ${p.valueM} м` : ''}`
+        + `${p.statusLabel ? ` · ${p.statusLabel}` : ''}`);
+    }
+    // зона без имени своего объекта бесполезна: по ней не понять, что убрать
+    if (p.sourceLabel) lines.push(`от объекта: ${p.sourceLabel}${p.sourceLayer && p.sourceLayer !== p.sourceLabel ? ` (слой «${p.sourceLayer}»)` : ''}`);
     if (p.areaM2) lines.push(`площадь: ${p.areaM2} м²`);
     if (p.perimeterM) lines.push(`периметр: ${p.perimeterM} м`);
     if (p.lengthM) lines.push(`длина: ${p.lengthM} м`);
@@ -293,6 +327,7 @@
     parcel: 'Границы участка', buildings: 'Здание', redLines: 'Красная линия',
     utilities: 'Инженерная сеть', existingObjects: 'Существующий объект',
     restrictions: 'Зона ограничения', buildable: 'Допустимая территория',
+    forbidden: 'Запретная зона',
   };
 
   function showTip(text, clientX, clientY) {
@@ -321,9 +356,11 @@
    * зоне» было невозможно: розового на плане не было. Теперь образец для зоны —
    * маленький SVG с настоящим образцом штриховки из ZoneStyle.
    */
-  function hatchSwatch(kind) {
+  let swatchSeq = 0;
+  function hatchSwatch(kind, color) {
     const z = window.ZoneStyle.zone(kind);
-    const id = `lg-${kind}`;
+    const paint = color || z.color;
+    const id = `lg-${(swatchSeq += 1)}`;
     const s = document.createElementNS(NS, 'svg');
     s.setAttribute('class', 'vw-swatch vw-swatch-svg');
     s.setAttribute('viewBox', '0 0 14 14');
@@ -331,9 +368,9 @@
     s.innerHTML =
       `<defs><pattern id="${id}" width="4" height="4" patternUnits="userSpaceOnUse" `
       + `patternTransform="rotate(${z.angle})">`
-      + `<line x1="0" y1="0" x2="0" y2="4" stroke="${z.color}" stroke-width="1.2"/></pattern></defs>`
+      + `<line x1="0" y1="0" x2="0" y2="4" stroke="${paint}" stroke-width="1.2"/></pattern></defs>`
       + `<rect x="0.5" y="0.5" width="13" height="13" rx="2.5" fill="url(#${id})" `
-      + `stroke="${z.color}" stroke-width="1"/>`;
+      + `stroke="${paint}" stroke-width="1"/>`;
     return s;
   }
 
@@ -345,6 +382,38 @@
       kinds.set(k, (kinds.get(k) || 0) + 1);
     }
     return kinds;
+  }
+
+  /**
+   * Легенда ограничений — ПО ОБЪЕКТАМ, а не по типам.
+   *
+   * Тип ограничения отвечает на вопрос «что это за зона», но не на главный:
+   * «что убрать, чтобы её не стало». Убрать можно только объект — конкретную
+   * линию ЛЭП, конкретный корпус. Поэтому строка легенды — это объект: его
+   * цвет, его имя (подпись человека, если он её дал, иначе слой чертежа),
+   * какие зоны он порождает и сколько метров участка отнимает.
+   *
+   * Сортировка — по отнятой площади: сверху то, что мешает больше всего.
+   */
+  function restrictionSources() {
+    const zones = (state.plan && state.plan.restrictions) || [];
+    const assign = state.zoneColors || window.ZoneStyle.assignColors(zones);
+    const bySource = new Map();
+    for (const z of zones) {
+      const a = assign.byZone[z.id];
+      if (!a) continue;
+      if (!bySource.has(a.key)) {
+        bySource.set(a.key, {
+          key: a.key, color: a.color, label: a.label || 'объект не назван',
+          layer: (z.properties && z.properties.sourceLayer) || '', kinds: new Map(), areaM2: 0,
+        });
+      }
+      const s = bySource.get(a.key);
+      s.areaM2 += Number((z.properties && z.properties.areaM2) || 0);
+      const kind = (z.properties && z.properties.kind) || 'other';
+      s.kinds.set(kind, (s.kinds.get(kind) || 0) + 1);
+    }
+    return [...bySource.values()].sort((a, b) => b.areaM2 - a.areaM2);
   }
 
   function renderLayerToggles() {
@@ -366,27 +435,68 @@
       const swatch = layer.id === 'restrictions'
         ? hatchSwatch(restrictionKinds().keys().next().value || 'other')
         : Object.assign(document.createElement('span'), { className: `vw-swatch vw-sw-${layer.id}` });
-      label.append(cb, swatch, document.createTextNode(`${layer.label} (${count})`));
+      const title = layer.id === 'forbidden' && count
+        ? `${layer.label} (${forbiddenSummary()})`
+        : `${layer.label} (${count})`;
+      label.append(cb, swatch, document.createTextNode(title));
       box.appendChild(label);
 
       /*
-       * У ограничений один переключатель, но НЕ один вид: отступ, охранная
-       * зона, противопожарный разрыв и СЗЗ рисуются разными цветами под разными
-       * углами. Одна строка легенды на все четыре не объясняет ничего, поэтому
-       * под переключателем перечисляются те типы, что есть на этом плане.
+       * У ограничений один переключатель, но НЕ один вид. Под ним перечислены
+       * ОБЪЕКТЫ, которые эти ограничения порождают: свой цвет на каждый,
+       * его имя, какие зоны он даёт и сколько метров участка отнимает.
+       * Строка легенды подсвечивает свои зоны на плане по наведению — иначе
+       * найти на площадке с полусотней ограничений нужную зону невозможно.
        */
       if (layer.id === 'restrictions' && count) {
-        const kinds = restrictionKinds();
         const sub = document.createElement('div');
         sub.className = 'vw-legend-sub';
-        for (const [kind, n] of kinds) {
+        // На боевой площадке ограничения даёт семь десятков объектов, и полный
+        // список превращает меню слоёв в бесконечную ленту. Показываются те,
+        // что отнимают больше всего; остальные пересчитаны строкой ниже и
+        // полностью перечислены в ведомости комплекта.
+        const LEGEND_LIMIT = 20;
+        const all = restrictionSources();
+        for (const s of all.slice(0, LEGEND_LIMIT)) {
+          const kinds = [...s.kinds.keys()].map((k) => window.ZoneStyle.zone(k).label).join(', ');
           const row = document.createElement('span');
           row.className = 'vw-legend-item';
-          row.append(hatchSwatch(kind), document.createTextNode(`${window.ZoneStyle.zone(kind).label} (${n})`));
+          row.title = `${s.label}${s.layer ? ` · слой «${s.layer}»` : ''}\n${kinds}\nотнимает ${Math.round(s.areaM2)} м² участка`;
+          row.append(
+            hatchSwatch([...s.kinds.keys()][0] || 'other', s.color),
+            document.createTextNode(`${s.label} — ${kinds}, ${Math.round(s.areaM2)} м²`),
+          );
+          row.addEventListener('mouseenter', () => highlightSource(s.key, true));
+          row.addEventListener('mouseleave', () => highlightSource(s.key, false));
           sub.appendChild(row);
+        }
+        if (all.length > LEGEND_LIMIT) {
+          const more = document.createElement('span');
+          more.className = 'vw-legend-item vw-legend-more';
+          const rest = all.slice(LEGEND_LIMIT);
+          const restArea = Math.round(rest.reduce((s, x) => s + x.areaM2, 0));
+          more.textContent = `…и ещё ${rest.length} объект(ов) — ${restArea} м². Полный перечень — в ведомости комплекта.`;
+          sub.appendChild(more);
         }
         box.appendChild(sub);
       }
+    }
+  }
+
+  /** Сколько участка запрещено — числом, а не количеством полигонов. */
+  function forbiddenSummary() {
+    const f = state.plan && state.plan.buildable && state.plan.buildable.forbidden;
+    if (!f) return '0';
+    return `${Math.round(f.areaM2)} м², ${f.sharePercent}% участка`;
+  }
+
+  /** Подсветить на плане зоны одного объекта-источника. */
+  function highlightSource(key, on) {
+    if (!state.root || !state.zoneColors) return;
+    for (const [zoneId, a] of Object.entries(state.zoneColors.byZone)) {
+      if (a.key !== key) continue;
+      const path = state.root.querySelector(`[data-object-id="${CSS.escape(zoneId)}"]`);
+      if (path) path.classList.toggle('vw-hover', on);
     }
   }
 
@@ -514,9 +624,18 @@
       if (d) parts.push(`<path d="${d}" style="${style}" vector-effect="non-scaling-stroke"/>`);
     };
     const bu = plan.buildable;
+    // запретная зона — сплошной подложкой под всеми штриховками: миниатюра
+    // читается за секунду, и первое, что она обязана показать, — куда нельзя
+    if (bu && bu.forbidden && bu.forbidden.geometry) {
+      add(bu.forbidden.geometry, `fill:${ZS.FORBIDDEN.fill};stroke:${ZS.FORBIDDEN.color};stroke-width:1`);
+    }
     if (bu && bu.geometry) add(bu.geometry, `fill:${ZS.BUILDABLE.fill};stroke:${ZS.BUILDABLE.color};stroke-width:1`);
-    for (const z of plan.restrictions || []) {
-      add(z.geometry, ZS.zoneStyle(z.properties && z.properties.kind, prefix));
+    const zones = plan.restrictions || [];
+    const assign = ZS.assignColors(zones);
+    for (const z of zones) {
+      add(z.geometry, assign.byZone[z.id]
+        ? ZS.zoneStyleById(z.id, assign, prefix)
+        : ZS.zoneStyle(z.properties && z.properties.kind, prefix));
     }
     if (plan.parcel) add(plan.parcel.geometry, 'fill:none;stroke:currentColor;stroke-width:1.6');
     for (const u of plan.utilities || []) add(u.geometry, 'fill:none;stroke:#a8802c;stroke-width:1');
@@ -525,7 +644,7 @@
 
     return `<svg class="${o.className || 'vw-mini'}" viewBox="${b.minX - pad} ${-(b.maxY + pad)} ${span} ${h + pad * 2}" ` +
       'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Схема участка">' +
-      ZS.defs(prefix, scale) + `<g transform="scale(1,-1)">${parts.join('')}</g></svg>`;
+      ZS.defs(prefix, scale, zones) + `<g transform="scale(1,-1)">${parts.join('')}</g></svg>`;
   }
 
   /* ---------------- инициализация ---------------- */

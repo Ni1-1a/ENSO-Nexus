@@ -17,21 +17,6 @@ const render = require('../render');
 const cadDrawing = require('../cad/drawing');
 const selection = require('./selection');
 const G = require('./site-geometry');
-const RR = require('./restriction-rules');
-
-/** Статус берётся живой из записи варианта: решения могли быть приняты позже. */
-const VARIANT_STATUS = {
-  admissible: 'допустим',
-  needs_decision: 'требует решения пользователя',
-  violations: 'есть нарушения',
-  rejected: 'отклонён решением пользователя',
-};
-function statusLabel(variant) {
-  return VARIANT_STATUS[variant.status] || variant.statusLabel || variant.status;
-}
-
-const esc = (s) => String(s == null ? '' : s)
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /**
  * Схема участка с наложенным пятном выбранного варианта.
@@ -49,110 +34,19 @@ function planSvg(site, variant, { width = 1000, height = 700 } = {}) {
   const frame = [[b.minX, b.minY], [b.maxX, b.minY], [b.maxX, b.maxY], [b.minX, b.maxY]];
   return selection.cropSvg(site, pts || frame, {
     width, height, marginRatio: 0.08,
-    highlight: pts ? 'footprint' : 'selection',
+    // без варианта подсвечивать нечего: рамка по габаритам участка на схеме
+    // ограничений читалась бы как ещё один объект чертежа
+    highlight: pts ? 'footprint' : 'none',
     frame,
   });
 }
 
-/** Многостраничная HTML-вёрстка комплекта — из неё печатается PDF. */
-function buildHtml({ session, site, variant, restrictions, buildable, annotations }) {
-  const m = (variant && variant.metrics) || {};
-  const rows = (list, cols) => list.map((r) => `<tr>${cols.map((c) => `<td>${esc(c(r))}</td>`).join('')}</tr>`).join('');
-
-  const actions = (variant && variant.actions) || [];
-  const tep = m.tep || [];
-
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Комплект по выбранному варианту</title>
-<style>
-  @page { size: A4; margin: 16mm 14mm; }
-  body { font: 11pt/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #23201c; }
-  h1 { font-size: 20pt; margin: 0 0 4pt; }
-  h2 { font-size: 13pt; margin: 18pt 0 6pt; border-bottom: 1px solid #d8d0c0; padding-bottom: 3pt; }
-  .sub { color: #6f665a; margin: 0 0 12pt; }
-  table { width: 100%; border-collapse: collapse; margin: 6pt 0; font-size: 10pt; }
-  th, td { text-align: left; padding: 4pt 6pt; border-bottom: 1px solid #e6e0d4; vertical-align: top; }
-  th { color: #6f665a; font-weight: 600; }
-  .plan { margin: 10pt 0; }
-  .plan svg { width: 100%; height: auto; border: 1px solid #d8d0c0; }
-  .warn { color: #a93e2c; }
-  .muted { color: #857b6e; }
-  .page-break { page-break-before: always; }
-  ul { margin: 4pt 0 4pt 16pt; padding: 0; }
-</style></head><body>
-
-<h1>${esc(session.title || 'Проект без названия')}</h1>
-<p class="sub">Комплект по выбранному варианту посадки · Enso-nexus · ${esc(new Date(now()).toLocaleString('ru-RU'))}</p>
-
-<div class="plan">${planSvg(site, variant)}</div>
-
-<h2>Параметры варианта</h2>
-${variant ? `<table>
-  <tr><th>Номер варианта</th><td>${esc(variant.number)}</td></tr>
-  <tr><th>Площадь застройки</th><td>${esc(m.areaM2)} м²</td></tr>
-  <tr><th>Габариты</th><td>${esc(m.width)} × ${esc(m.length)} м</td></tr>
-  <tr><th>Поворот</th><td>${esc(m.rotationDeg)}°</td></tr>
-  <tr><th>Этажность</th><td>${m.floors ? esc(m.floors) : '<span class="muted">не задана</span>'}</td></tr>
-  <tr><th>Затронуто объектов</th><td>${esc(m.affectedCount || 0)}</td></tr>
-  <tr><th>Статус</th><td>${esc(statusLabel(variant))}</td></tr>
-</table>` : '<p class="warn">Вариант не выбран.</p>'}
-
-<h2>Ограничения, учтённые в расчёте</h2>
-${restrictions.length ? `<table>
-  <tr><th>Тип</th><th>Площадь</th><th>Статус</th><th>Основание</th></tr>
-  ${rows(restrictions, [
-    (r) => RR.KIND_LABELS[r.properties.kind] || r.properties.kind,
-    (r) => `${r.properties.areaM2} м²`,
-    (r) => r.properties.statusLabel || '',
-    (r) => r.provenance.basis || '—',
-  ])}
-</table>` : '<p class="muted">Зоны ограничений не рассчитывались.</p>'}
-
-${buildable ? `<p>Потенциально допустимая территория: <b>${esc(buildable.areaM2)} м²</b>
-(${esc(buildable.sharePercent)}% участка). ${esc(buildable.note)}</p>` : ''}
-
-<h2>Мероприятия</h2>
-${actions.length ? `<table>
-  <tr><th>Мероприятие</th><th>Объём</th><th>Класс объекта</th><th>Решение</th></tr>
-  ${rows(actions, [
-    (a) => a.title,
-    (a) => (Number.isFinite(a.volume) ? `${a.volume} ${a.unit}` : '—'),
-    (a) => require('./critical-objects').LABELS[a.classification] || a.classification || '—',
-    (a) => (a.requiresDecision ? (a.decision === 'allow' ? 'разрешено' : a.decision === 'forbid' ? 'запрещено' : 'ТРЕБУЕТ РЕШЕНИЯ') : '—'),
-  ])}
-</table>` : '<p class="muted">Мероприятия не требуются: вариант не затрагивает существующие объекты.</p>'}
-
-${tep.length ? `<h2>Объёмы (ТЭП мероприятий)</h2><table>
-  <tr><th>Показатель</th><th>Значение</th><th>Единица</th></tr>
-  ${rows(tep, [(t) => t.name, (t) => t.value, (t) => t.unit])}
-</table>` : ''}
-
-<div class="page-break"></div>
-<h2>Предупреждения</h2>
-${(variant && variant.warnings && variant.warnings.length) || site.warnings.length
-    ? `<ul>${[...((variant && variant.warnings) || []), ...site.warnings.map((w) => w.message)]
-      .map((w) => `<li class="warn">${esc(w)}</li>`).join('')}</ul>`
-    : '<p class="muted">Предупреждений нет.</p>'}
-
-<h2>Исходные основания</h2>
-<table>
-  <tr><th>Объект</th><th>Источник</th><th>Способ</th><th>Уверенность</th></tr>
-  ${rows(G.allObjects(site).slice(0, 60), [
-    (o) => `${o.type}${o.properties.kind ? ` (${o.properties.kind})` : ''}`,
-    (o) => `${o.provenance.sourceFile || '—'}${o.provenance.sourceLayer ? ` · ${o.provenance.sourceLayer}` : ''}`,
-    (o) => o.provenance.extractionMethod,
-    (o) => `${Math.round((o.provenance.confidence || 0) * 100)}%`,
-  ])}
-</table>
-
-${annotations.length ? `<h2>Выделения и комментарии</h2><table>
-  <tr><th>Комментарий</th><th>Автор</th><th>Статус</th></tr>
-  ${rows(annotations, [(a) => a.comment || '—', (a) => a.author || '—', (a) => a.status])}
-</table>` : ''}
-
-<p class="muted" style="margin-top:18pt">Документ сформирован автоматически. Потенциально допустимая
-территория — аналитический результат, а не разрешённое пятно застройки.</p>
-</body></html>`;
+/**
+ * Схема ограничений БЕЗ пятна: её место — в разделе планировочных ограничений.
+ * Кадр тот же, что у схемы посадки, чтобы две картинки читались как пара.
+ */
+function zonesSvg(site, opts = {}) {
+  return planSvg(site, null, opts);
 }
 
 /**
@@ -193,11 +87,35 @@ function saveResult(sessionId, filename, title, format, buffer) {
  * @returns {{created: Array, notes: string[]}}
  */
 async function buildPackage(sessionId, { session, site, variant, restrictions, buildable, annotations, signal = null }) {
-  const html = buildHtml({ session, site, variant, restrictions, buildable, annotations });
   const created = [];
   const notes = [];
 
-  const pdf = await render.htmlToPdf(html);
+  /*
+   * Комплект верстается как проектный материал (services/geometry/report.js):
+   * титул с реквизитами, нумерованные разделы, две схемы с легендой, ведомости
+   * с основаниями, колонтитул с номером листа. Прежняя вёрстка укладывалась
+   * в один экран таблиц без титула, без исходных данных, без легенды и без
+   * нумерации страниц — подшить и вынести на согласование такое нельзя.
+   */
+  const report = require('./report');
+  const date = new Date(now()).toLocaleString('ru-RU', { dateStyle: 'long', timeStyle: 'short' });
+  const files = db.prepare('SELECT original_name, ext, size FROM files WHERE session_id = ? ORDER BY created_at')
+    .all(sessionId);
+  // перечень непостроенных зон и атрибутивных ограничений (высота, процент
+  // застройки) живёт в записи расчёта, а не в геометрии плана
+  const zonesRecord = require('./zones').latest(sessionId);
+  const zoneData = (zonesRecord && zonesRecord.zones) || {};
+
+  const html = report.buildHtml({
+    session, site, variant, restrictions: restrictions || [], buildable,
+    annotations: annotations || [], files, date,
+    attributes: zoneData.attributes || [],
+    unresolved: zoneData.unresolved || [],
+    zonesSvg: zonesSvg(site, { width: 1000, height: 620 }),
+    variantSvg: planSvg(site, variant, { width: 1000, height: 620 }),
+  });
+
+  const pdf = await render.htmlToPdf(html, { footer: report.footerTemplate(session, date) });
   created.push(saveResult(sessionId, 'КОМПЛЕКТ-вариант.pdf', 'Комплект по выбранному варианту', 'pdf', pdf));
 
   const png = await render.svgToPng(planSvg(site, variant, { width: 1400, height: 950 }), { width: 1400, height: 950, scale: 1.5 });
@@ -230,4 +148,6 @@ async function buildPackage(sessionId, { session, site, variant, restrictions, b
   return { created, notes };
 }
 
-module.exports = { buildPackage, buildHtml, planSvg, saveResult };
+// buildHtml переехал в services/geometry/report.js — там вёрстка комплекта целиком.
+// Имя оставлено прежним: на него ссылаются вызывающие и тесты.
+module.exports = { buildPackage, buildHtml: require('./report').buildHtml, planSvg, zonesSvg, saveResult };

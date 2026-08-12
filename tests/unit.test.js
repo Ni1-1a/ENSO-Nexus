@@ -486,7 +486,11 @@ test('движок: правило превращается в полигон с
   assert.strictEqual(zone.properties.kind, 'protectionZone');
   assert.strictEqual(zone.provenance.extractionMethod, 'computed');
   assert.strictEqual(zone.provenance.basis, 'ПП РФ № 160, п. 8');
-  assert.match(zone.provenance.reason, /буфером 10 м и отсечена границей участка/);
+  // в происхождении названо и число, и ОБЪЕКТ, от которого зона отсчитана:
+  // без имени объекта на плане не разобрать, чья это зона и что снести, чтобы её снять
+  assert.match(zone.provenance.reason, /буфером 10 м от объекта «[^»]+» и отсечена границей участка/);
+  assert.ok(zone.properties.sourceObjectId, 'у зоны есть объект-источник');
+  assert.ok(zone.properties.sourceLabel, 'объект-источник назван');
 });
 
 test('движок: зона отсекается границей участка, вынос за участок зафиксирован', () => {

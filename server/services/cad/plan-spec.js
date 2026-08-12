@@ -45,6 +45,10 @@ const BUCKET_FALLBACK = {
 const LAYERS = {
   existingObjects: { name: 'AI_ПРОЧИЕ_ОБЪЕКТЫ', color: 9, linetype: 'Continuous' },
   buildable: { name: 'AI_ДОПУСТИМАЯ_ТЕРРИТОРИЯ', color: 92, linetype: 'Continuous' },
+  // Запретная зона отдельным слоем: объединение всех ограничений одним контуром.
+  // По зонам поштучно ответ «куда нельзя» приходится собирать глазами, а этот
+  // слой отвечает сразу — его и печатают на схеме планировочных ограничений.
+  forbidden: { name: 'AI_ЗАПРЕТНАЯ_ЗОНА', color: 14, linetype: 'Continuous' },
   footprint: { name: 'AI_ПЯТНО_ЗАСТРОЙКИ', color: 3, linetype: 'Continuous' },
   labels: { name: 'AI_ПОДПИСИ', color: 7, linetype: 'Continuous' },
   tep: { name: 'AI_ТЭП', color: 7, linetype: 'Continuous' },
@@ -225,6 +229,18 @@ function build(site, { variant = null, buildable = null, title = '', subtitle = 
     }
   }
 
+  // ── запретная зона: контур объединения всех ограничений ───────────────
+  if (area && area.forbidden && area.forbidden.geometry) {
+    const name = addLayer(LAYERS.forbidden);
+    for (const ring of ringsOf(area.forbidden.geometry)) {
+      if (!ring.points || ring.points.length < 3) continue;
+      entities.push({
+        type: 'polyline', layer: name, closed: true,
+        points: ring.points.map(([x, y]) => [round(x), round(y)]),
+      });
+    }
+  }
+
   // ── зоны ограничений: штриховка своего угла и цвета на своём слое ─────
   for (const zone of site.restrictions || []) {
     const kind = (zone.properties && zone.properties.kind) || 'other';
@@ -291,6 +307,27 @@ function build(site, { variant = null, buildable = null, title = '', subtitle = 
       line(`  ${ZONE_LAYER_NAMES[zone.kind] || zone.kind} — ${RR.KIND_LABELS[zone.kind] || zone.kind}, ` +
         `${zone.areaM2} м², ${zone.count} шт.`);
     }
+    /*
+     * Перечень объектов, которые эти зоны и порождают.
+     *
+     * Экспликация по типам отвечает, ЧТО за зона; чтобы решить, что с ней
+     * делать, нужен объект: снять охранную зону можно только выносом сети,
+     * противопожарный разрыв — только сносом корпуса. Сортировка по отнятой
+     * площади: сверху то, что стоит участку дороже всего.
+     */
+    const bySource = zonesBySource(site.restrictions || []);
+    if (bySource.length) {
+      y -= textH * 0.5;
+      line('  ОТ КАКИХ ОБЪЕКТОВ:');
+      for (const s of bySource.slice(0, 20)) {
+        line(`    ${s.label} — ${s.kinds.join(', ')}, ${Math.round(s.areaM2)} м²`);
+      }
+      if (bySource.length > 20) line(`    …и ещё ${bySource.length - 20} объектов`);
+    }
+    if (area && area.forbidden) {
+      line(`  ${LAYERS.forbidden.name} — запретная зона (объединение ограничений), `
+        + `${area.forbidden.areaM2} м², ${area.forbidden.sharePercent}% участка`);
+    }
     if (area) line(`  ${LAYERS.buildable.name} — потенциально допустимая территория, ${area.areaM2} м²`);
     if (variant) {
       const m = variant.metrics || {};
@@ -328,6 +365,26 @@ function dedupeZones(restrictions) {
     map.set(kind, cur);
   }
   return [...map.values()].map((z) => ({ ...z, areaM2: Math.round(z.areaM2) }));
+}
+
+/**
+ * Зоны, сгруппированные по ОБЪЕКТУ отсчёта: имя, какие ограничения он даёт
+ * и сколько метров участка отнимает. Один объект может давать несколько зон
+ * (охранную и противопожарную) — в перечне он остаётся одной строкой.
+ */
+function zonesBySource(restrictions) {
+  const map = new Map();
+  for (const z of restrictions) {
+    const p = z.properties || {};
+    const key = String(p.sourceObjectId || p.sourceLabel || p.ruleId || z.id);
+    const cur = map.get(key) || { label: p.sourceLabel || 'объект не назван', kinds: new Set(), areaM2: 0 };
+    cur.areaM2 += Number(p.areaM2) || 0;
+    cur.kinds.add(RR.KIND_LABELS[p.kind] || p.kind || 'ограничение');
+    map.set(key, cur);
+  }
+  return [...map.values()]
+    .map((s) => ({ ...s, kinds: [...s.kinds] }))
+    .sort((a, b) => b.areaM2 - a.areaM2);
 }
 
 function centroid(points) {

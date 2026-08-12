@@ -368,7 +368,10 @@ test('rescaleDefs пересчитывает уже вставленные об�
 
 test('вьювер и миниатюры считают штриховку от размера на экране', () => {
   assert.match(viewerJs, /window\.ZoneStyle\.rescaleDefs\(state\.svg, 'zh-', px\)/, 'зум обязан пересчитывать штриховку');
-  assert.match(viewerJs, /defs\('zh-', hatchScale\(\)\)/);
+  // список зон уходит в defs третьим доводом: цвет штриховки принадлежит
+  // объекту-источнику, а не типу ограничения, поэтому образцов столько же,
+  // сколько зон на плане
+  assert.match(viewerJs, /defs\('zh-', hatchScale\(\), zones\)/);
   assert.match(viewerJs, /ZS\.unitsPerPixel\(span, o\.pxWidth \|\| 150\)/);
   assert.match(viewerJs, /function thumbPrefix\(scale\)/, 'у миниатюр разного масштаба должны быть разные id образцов');
   assert.ok(!/defs\('th-'/.test(viewerJs), 'общий префикс th- давал одну штриховку на все схемы документа');

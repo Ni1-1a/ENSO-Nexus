@@ -820,10 +820,38 @@ function manualHintsHtml(hints) {
   </div>`;
 }
 
+/**
+ * Образец конкретного объекта: угол штриховки — от типа ограничения,
+ * цвет — от объекта. Тот же цвет ложится на план, в отчёт и в чертёж.
+ */
+function sourceSwatchStyle(kind, color) {
+  const z = window.ZoneStyle.zone(kind);
+  const step = Math.max(4, z.spacing);
+  return `background: repeating-linear-gradient(${z.angle}deg, ${color} 0 1.5px, transparent 1.5px ${step}px);` +
+    `border: 1px solid ${color}`;
+}
+
 function zonesCardHtml(data, fresh) {
   const zones = data.zones || [];
-  const legend = zones.map((z) =>
-    `<span class="pc-legend-item"><span class="pc-swatch" style="${swatchStyle(z.kind)}"></span>${esc(z.label)} · ${z.areaM2} м²${z.count > 1 ? ` · ${z.count} шт.` : ''}</span>`).join('');
+  /*
+   * Легенда карточки — ПО ОБЪЕКТАМ, если сервер их прислал.
+   *
+   * Перечень типов («охранная зона · 958 м²») не отвечает на вопрос, который
+   * человек задаёт, глядя на схему: что убрать, чтобы места стало больше.
+   * Убрать можно только объект, поэтому строка легенды — объект: его цвет,
+   * его имя, какие зоны он даёт и во сколько метров участка обходится.
+   * Старые карточки в ленте останутся с прежней легендой по типам — тело
+   * карточки заморожено на момент отправки, и это правильно.
+   */
+  const sources = data.sources || [];
+  const legend = sources.length
+    ? sources.slice(0, 12).map((s) =>
+      `<span class="pc-legend-item" title="${esc(s.layer ? `слой «${s.layer}»` : s.label)}">`
+      + `<span class="pc-swatch" style="${sourceSwatchStyle((s.kinds && s.kinds[0]) || 'other', s.color)}"></span>`
+      + `${esc(s.label)} · ${esc((s.kinds || []).join(', '))} · ${s.areaM2} м²</span>`).join('')
+      + (sources.length > 12 ? `<span class="pc-legend-item">…и ещё ${sources.length - 12} объектов</span>` : '')
+    : zones.map((z) =>
+      `<span class="pc-legend-item"><span class="pc-swatch" style="${swatchStyle(z.kind)}"></span>${esc(z.label)} · ${z.areaM2} м²${z.count > 1 ? ` · ${z.count} шт.` : ''}</span>`).join('');
   const b = data.buildable;
   const problems = [
     ...(data.unresolved || []).map((u) => `Не построено «${esc(u.kind)}»: ${esc(u.reason)}`),
@@ -834,10 +862,12 @@ function zonesCardHtml(data, fresh) {
   return `<div class="pc">
     ${sheetHtml(null)}
     <div class="pc-legend">${legend || '<span class="pc-legend-item">Зоны ограничений не построены</span>'}
+      <span class="pc-legend-item"><span class="pc-swatch" style="background: rgba(164,64,47,.20); border:1px solid #a4402f"></span>запретная зона — под краской</span>
       <span class="pc-legend-item"><span class="pc-swatch" style="background: rgba(126,176,138,.45); border:1px solid #6f9e78"></span>допустимая территория</span>
     </div>
     <div class="pc-facts">
       ${b ? `<span>Допустимо под застройку: <b>${b.areaM2} м²</b> (${b.sharePercent}% участка)</span>` : '<span>Допустимая территория не рассчитана</span>'}
+      ${b && b.forbidden ? `<span>Запрещено: <b>${b.forbidden.areaM2} м²</b> (${b.forbidden.sharePercent}%)</span>` : ''}
       <span>Зон построено: <b>${zones.reduce((s, z) => s + z.count, 0)}</b></span>
     </div>
     ${manualHintsHtml(data.manualHints)}
@@ -922,7 +952,8 @@ function variantsCardHtml(data, fresh) {
       <span class="pc-shape">${esc(m.shapeLabel || 'прямоугольник')}${m.shapeNote ? ` — ${esc(m.shapeNote)}` : ''}</span>
       <span class="pc-metrics"><span>${m.areaM2} м²</span><span>${m.width} × ${m.length} м</span>
         <span>${m.rotationDeg}°</span>${m.floors ? `<span>${m.floors} эт.</span>` : ''}
-        ${m.affectedCount ? `<span>задето ${m.affectedCount}</span>` : ''}</span>
+        ${m.affectedCount ? `<span>задето ${m.affectedCount}</span>` : ''}
+        ${m.removedCount ? `<span title="Решение о сносе или переносе уже принято — воздействием варианта это не считается, но в ТЭП попадает">под снос ${m.removedCount} · ${m.removedAreaM2} м²</span>` : ''}</span>
       </button>
       ${actionsHtml(vv, fresh)}
     </div>`;

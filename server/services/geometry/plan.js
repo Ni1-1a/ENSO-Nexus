@@ -200,9 +200,10 @@ async function ensurePlan(sessionId, { raw = false } = {}) {
     .get(sessionId, hash);
   if (existing) {
     const site = JSON.parse(existing.geometry);
+    if (raw) return { planId: existing.id, version: existing.version, isNew: false, site };
     return {
       planId: existing.id, version: existing.version, isNew: false,
-      site: raw ? site : applyUserEdits(sessionId, site),
+      site: withZones(sessionId, existing.id, applyUserEdits(sessionId, site)),
     };
   }
 
@@ -213,9 +214,33 @@ async function ensurePlan(sessionId, { raw = false } = {}) {
   // сохраняется чистый разбор — до наложения правок
   db.prepare('INSERT INTO plans (id, session_id, version, source_hash, geometry, coordinate_system, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(id, sessionId, version, hash, JSON.stringify(site), site.coordinateSystem.sourceUnits || '', now());
-  return { planId: id, version, isNew: true, site: raw ? site : applyUserEdits(sessionId, site) };
+  if (raw) return { planId: id, version, isNew: true, site };
+  return { planId: id, version, isNew: true, site: withZones(sessionId, id, applyUserEdits(sessionId, site)) };
+}
+
+/**
+ * Зоны ограничений прикладываются ЗДЕСЬ — и пересчитываются, если правки
+ * человека изменились с прошлого расчёта.
+ *
+ * Пока зоны жили внутри `plans.geometry`, они замерзали на момент нажатия
+ * «Рассчитать ограничения». Человек помечал строение под снос, шёл за
+ * вариантами посадки — и получал пятно, посчитанное ДО его решения: подбор
+ * вариантов, посадка, чертёж и отчёт все до одного читают `site.buildable`
+ * из плана. На боевом комплекте это стоило 1094 м² допустимой территории
+ * и всех четырёх вариантов сразу.
+ *
+ * Пересчёт детерминирован и модель не зовёт (см. geometry/zones.js).
+ */
+function withZones(sessionId, planId, site) {
+  try {
+    require('./zones').attach(sessionId, planId, site);
+  } catch (err) {
+    console.warn('[plan] зоны не приложены:', err.message);
+  }
+  return site;
 }
 
 module.exports = {
   buildForSession, siteForFile, invalidate, ensurePlan, sourceHash, coordinateMismatchWarnings,
+  applyUserEdits,
 };

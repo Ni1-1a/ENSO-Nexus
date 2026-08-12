@@ -248,6 +248,10 @@ function deleteSessionData(sessionId) {
   for (const dir of [path.join(config.dataDir, 'uploads', sessionId), path.join(config.dataDir, 'outputs', sessionId)]) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
+  // plan_zones внешнего ключа на sessions не имеет намеренно (запись живёт
+  // при версии плана, а не при проекте), поэтому каскад её не заберёт —
+  // чистим руками, иначе полигоны удалённых проектов остаются в базе навсегда
+  try { require('../services/geometry/zones').clear(sessionId); } catch { /* таблицы может не быть */ }
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId); // cascades to child tables
 }
 
@@ -596,10 +600,19 @@ router.post('/sessions/:id/plan/restrictions', sessionAuth, sessionOwner, expens
     // построение зон — в отдельном потоке: булевы операции блокируют HTTP (ТЗ, п. 76)
     const built = await require('../services/geometry/queue').run('restrictions', { site, rules: extracted.rules });
 
-    // результат кладётся в ту же версию плана: ограничения — часть геометрии
+    /*
+     * Зоны сохраняются ВМЕСТЕ С ПРАВИЛАМИ и отдельно от разбора чертежа.
+     *
+     * Раньше здесь стояло `UPDATE plans SET geometry`, то есть план с уже
+     * наложенными правками человека затирал в таблице чистый разбор, а зоны
+     * замерзали на этом мгновении: пометил здание под снос — варианты посадки
+     * всё равно считались по старому пятну. Теперь запись живёт в `plan_zones`,
+     * и `ensurePlan` пересобирает зоны по тем же правилам, как только решения
+     * человека изменятся (services/geometry/zones.js).
+     */
+    require('../services/geometry/zones').save(req.session.id, planId, { rules: extracted.rules, built });
     site.restrictions = built.restrictions;
     site.buildable = built.buildable;
-    db.prepare('UPDATE plans SET geometry = ? WHERE id = ?').run(JSON.stringify(site), planId);
 
     pipeline.logEvent(req.session.id, 'Рассчитаны зоны ограничений',
       `построено ${built.restrictions.length}, не построено ${built.unresolved.length}`);

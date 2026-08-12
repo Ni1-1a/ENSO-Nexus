@@ -1620,3 +1620,236 @@ test('шаг 5: разрыв строится от существующих ст
   assert.strictEqual(after.restrictions.length, 0);
   assert.strictEqual(after.buildable.areaM2, 10000, 'после сноса участок свободен целиком');
 });
+
+/* ================= решение человека доходит до ПЯТНА, а не только до зон ================= */
+
+/**
+ * Здание под снос держало пятно застройки.
+ *
+ * Зоны считались один раз по кнопке и складывались прямо в запись плана,
+ * а подбор вариантов, посадка, чертёж и отчёт читали `site.buildable` оттуда.
+ * Пометил строение «сносится» — зоны на экране остались прежними, потому что
+ * пересчёта не было: на боевом комплекте допустимая территория держалась на
+ * 633 м² вместо 1487, и посадка не находилась.
+ */
+test('зоны: решение о сносе пересчитывает пятно без повторного обращения к модели', async (t) => {
+  const os = require('os'); const pathMod = require('path'); const crypto = require('crypto');
+  const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'fixgeo-zones-'));
+  process.env.DATA_DIR = dir;
+  const { db, now } = require('../server/db');
+  const zones = require('../server/services/geometry/zones');
+  const objectEdits = require('../server/services/geometry/object-edits');
+  const sid = crypto.randomUUID();
+  db.prepare('INSERT INTO sessions (id, token, status, created_at, updated_at) VALUES (?,?,?,?,?)')
+    .run(sid, `tok-${sid}`, 'active', now(), now());
+  t.after(() => {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(sid);
+    db.prepare('DELETE FROM plan_zones WHERE session_id = ?').run(sid);
+    db.prepare('DELETE FROM plan_object_edits WHERE session_id = ?').run(sid);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const p = pathMod.join(dir, 'площадка.dxf');
+  fs.writeFileSync(p, writeDxf([
+    { layer: 'Границы ЗУ', closed: true, points: [[0, 0], [100, 0], [100, 100], [0, 100]] },
+    { layer: '03_Здания и строения', closed: true, points: [[40, 40], [60, 40], [60, 60], [40, 60]] },
+  ]));
+  db.prepare('INSERT INTO files (id, session_id, original_name, stored_path, ext, size, created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(crypto.randomUUID(), sid, 'площадка.dxf', p, 'dxf', fs.statSync(p).size, now());
+
+  const rule = RR.normalizeRule({
+    kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building', targetHint: '',
+    value: 12, unit: 'м', basis: 'СП 4.13130.2013, табл. 1', sourceDocument: 'НТД',
+    sourceClause: 'табл. 1', quote: '12 м', confidence: 0.85,
+  }, 0).rule;
+
+  // 1. считаем зоны один раз — ровно то, что делает маршрут /plan/restrictions
+  const first = await planSvc.ensurePlan(sid);
+  const built = engine.build(first.site, [rule]);
+  zones.save(sid, first.planId, { rules: [rule], built });
+  const before = built.buildable.areaM2;
+  assert.ok(before < 9000, `разрыв обязан съесть часть участка, получено ${before} м²`);
+
+  // 2. человек помечает строение «сносится» — и НЕ нажимает пересчёт
+  const raw = await planSvc.ensurePlan(sid, { raw: true });
+  const target = raw.site.buildings[0];
+  assert.ok(target, 'здание должно быть разобрано');
+  objectEdits.save(sid, {
+    planId: raw.planId, objectId: target.id, layer: 'buildings', object: target,
+    patch: { relocation: 'demolish' },
+  });
+
+  // 3. следующий же запрос плана обязан отдать пересчитанное пятно
+  const after = await planSvc.ensurePlan(sid);
+  assert.strictEqual(after.site.buildable.areaM2, 10000,
+    'снесённое строение разрыва не даёт — участок свободен целиком');
+  assert.ok(after.site.warnings.some((w) => w.code === 'zones-recomputed'),
+    'о пересчёте зон сказано вслух');
+
+  // 4. отмена решения возвращает прежнее пятно
+  objectEdits.remove(sid, objectEdits.keyOf(target, 'buildings'));
+  const reverted = await planSvc.ensurePlan(sid);
+  assert.strictEqual(reverted.site.buildable.areaM2, before,
+    'отмена правки возвращает расчёт к исходному');
+
+  // 5. в таблице планов остаётся ЧИСТЫЙ разбор: зоны туда не попадают
+  const stored = JSON.parse(db.prepare('SELECT geometry FROM plans WHERE id = ?').get(first.planId).geometry);
+  assert.ok(!(stored.restrictions || []).length, 'зоны в записи плана не хранятся');
+  assert.ok(!stored.buildable, 'допустимая территория в записи плана не хранится');
+});
+
+/**
+ * Правка типа меняет геометрию (ломаная → полигон), а вместе с ней менялся
+ * отпечаток, из которого строится ключ правки. Правка переставала находить
+ * свой объект: «Отменить правку» слала несуществующий ключ, а повторная правка
+ * заводила вторую запись вместо дополнения первой.
+ */
+test('правки: смена типа не уводит ключ правки от объекта', () => {
+  const objectEdits = require('../server/services/geometry/object-edits');
+  const site = G.createSiteGeometry();
+  const ring = [[0, 0], [50, 0], [50, 40], [0, 40], [0, 0]];
+  site.utilities.push(G.makeObject({
+    type: 'utility', points: ring, closed: false,
+    properties: { closedRing: true, lengthM: 180 },
+    provenance: {
+      extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: '33_Газопровод',
+      sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+    },
+  }));
+  const keyBefore = objectEdits.keyOf(site.utilities[0], 'utilities');
+
+  objectEdits.applyTo(site, [{
+    objectKey: keyBefore, layer: 'utilities', patch: { type: 'parcel', label: 'Участок' },
+  }]);
+  assert.ok(site.parcel, 'контур назначен участком');
+  assert.strictEqual(site.parcel.geometry.type, 'polygon', 'кольцо стало полигоном');
+  assert.strictEqual(objectEdits.keyOf(site.parcel, 'parcel'), keyBefore,
+    'ключ правки после пересборки геометрии обязан остаться прежним');
+});
+
+/**
+ * Пустое имя слоя совпадало с ЛЮБЫМ уточнением: `needle.includes('')` истинно
+ * всегда. Граница участка, перенесённая из ГПЗУ (слоя у неё нет), попадала
+ * под каждое правило подряд — охранная зона газопровода строилась вокруг всего
+ * участка.
+ */
+test('движок: объект без имени слоя не совпадает с уточнением правила', () => {
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true,
+    provenance: {
+      extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+      sourceEntity: 'таблица координат', confidence: 0.9,
+    },
+  });
+  const rule = RR.normalizeRule({
+    kind: 'protectionZone', operation: 'bufferOutward', targetSelector: 'layer',
+    targetHint: '33_Газопровод', value: 4, unit: 'м',
+    basis: 'ПП РФ № 878, п. 7', sourceDocument: 'ГПЗУ.pdf', sourceClause: 'п. 7',
+    quote: '4 м', confidence: 0.85,
+  }, 0).rule;
+
+  const res = engine.resolveTargets(site, rule);
+  assert.ok(!res.narrowed, 'граница участка без слоя уточнению не соответствует');
+  assert.ok(res.hintMissed, 'несовпавшее уточнение обязано быть названо');
+  const built = engine.build(site, [rule]);
+  assert.strictEqual(built.restrictions.length, 0, 'зона от чужого объекта не строится');
+  assert.strictEqual(built.buildable.areaM2, 10000, 'участок остаётся свободным');
+});
+
+/**
+ * У каждой зоны — свой объект отсчёта и свой цвет, а под краской лежит
+ * запретная зона: объединение всех ограничений одним контуром.
+ */
+test('зоны: одна зона на объект, свой цвет и общая запретная подложка', () => {
+  const ZoneStyle = require('../public/zone-style.js');
+  const site = G.createSiteGeometry();
+  site.parcel = G.makeObject({
+    type: 'parcel', points: [[0, 0], [200, 0], [200, 200], [0, 200]], closed: true,
+    provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: 'Границы ЗУ', sourceEntity: 'полилиния', confidence: 0.8 },
+  });
+  for (const [i, x] of [20, 120].entries()) {
+    site.buildings.push(G.makeObject({
+      type: 'building', points: [[x, 20], [x + 20, 20], [x + 20, 40], [x, 40]], closed: true,
+      properties: { userLabel: `Корпус ${i + 1}` },
+      provenance: { extractionMethod: 'cad-vector', sourceFile: 'т.dxf', sourceLayer: '03_Здания и строения', sourceEntity: 'полилиния', confidence: 0.8 },
+    }));
+  }
+  const rule = RR.normalizeRule({
+    kind: 'fireBreak', operation: 'bufferOutward', targetSelector: 'building', targetHint: '',
+    value: 10, unit: 'м', basis: 'СП 4.13130.2013, табл. 1', sourceDocument: 'НТД',
+    sourceClause: 'табл. 1', quote: '10 м', confidence: 0.85,
+  }, 0).rule;
+
+  const built = engine.build(site, [rule]);
+  assert.strictEqual(built.restrictions.length, 2, 'на каждый корпус — своя зона');
+  const labels = built.restrictions.map((r) => r.properties.sourceLabel).sort();
+  assert.deepStrictEqual(labels, ['Корпус 1', 'Корпус 2'], 'зона названа именем своего объекта');
+
+  const colors = ZoneStyle.assignColors(built.restrictions);
+  const used = built.restrictions.map((r) => colors.byZone[r.id].color);
+  assert.strictEqual(new Set(used).size, 2, 'у двух объектов два разных цвета');
+
+  const f = built.buildable.forbidden;
+  assert.ok(f && f.geometry, 'запретная зона отдаётся отдельной геометрией');
+  assert.strictEqual(f.zoneCount, 2);
+  // запретная плюс допустимая = участок, до сотых
+  assert.ok(Math.abs(f.areaM2 + built.buildable.areaM2 - 40000) < 1,
+    `${f.areaM2} + ${built.buildable.areaM2} должно давать 40000 м²`);
+});
+
+test('посадка: здание под снос не считается воздействием варианта, но остаётся в ТЭП', () => {
+  const G = require('../server/services/geometry/site-geometry');
+  const P = require('../server/services/geometry/placement-engine');
+  const V = require('../server/services/geometry/variants');
+
+  /*
+   * Пятно ставится поверх существующего здания. Пока решения нет — это
+   * воздействие варианта. После «сносится» здания на площадке не будет, и
+   * воздействием оно быть перестаёт: платформа не должна уводить пятно от
+   * того, что сама же и сносит. Мероприятие при этом остаётся — объём
+   * демонтажа настоящая работа и обязан попасть в ТЭП.
+   */
+  const мир = (relocation) => {
+    const site = G.createSiteGeometry();
+    site.parcel = G.makeObject({
+      type: 'parcel', points: [[0, 0], [60, 0], [60, 60], [0, 60]], closed: true,
+      provenance: {
+        extractionMethod: 'document-stated', sourceFile: 'ГПЗУ.pdf',
+        sourceEntity: 'таблица координат', confidence: 0.9,
+      },
+    });
+    const дом = G.makeObject({
+      type: 'building', points: [[20, 20], [40, 20], [40, 40], [20, 40]], closed: true,
+      provenance: {
+        extractionMethod: 'cad-vector', sourceFile: 'т.dwg', sourceLayer: '03_Здания и строения',
+        sourceEntity: 'замкнутая полилиния', confidence: 0.8,
+      },
+    });
+    if (relocation) дом.properties = { ...дом.properties, relocation };
+    site.buildings.push(дом);
+    site.buildable = { geometry: site.parcel.geometry, areaM2: 3600, sharePercent: 100 };
+    return site;
+  };
+
+  const без = мир('undecided');
+  const c1 = P.generate(без, без.buildable, { areaM2: 1600, floors: 1, allowReshape: false, allowRotate: false }).candidates[0];
+  assert.strictEqual(c1.affected.length, 1, 'пока решения нет, здание — воздействие варианта');
+  assert.strictEqual(c1.removed.length, 0);
+
+  const снос = мир('demolish');
+  const g = P.generate(снос, снос.buildable, { areaM2: 1600, floors: 1, allowReshape: false, allowRotate: false });
+  const c2 = g.candidates[0];
+  assert.strictEqual(c2.affected.length, 0, 'здания, которого не будет, вариант не задевает');
+  assert.strictEqual(c2.removed.length, 1, 'но оно не потеряно — уходит в отдельный список');
+  assert.strictEqual(c2.removed[0].decided, 'demolish');
+
+  const { variants } = V.build(снос, g.candidates, { criterion: 'maxArea' });
+  const v = variants[0];
+  assert.strictEqual(v.metrics.affectedCount, 0, 'в метриках варианта воздействия нет');
+  assert.strictEqual(v.metrics.removedCount, 1, 'а снос показан отдельно');
+  assert.strictEqual(v.metrics.removedAreaM2, 400, 'с площадью — она нужна для объёма демонтажа');
+  assert.strictEqual(v.status, 'admissible', 'решение уже принято — спрашивать заново незачем');
+  assert.ok((v.actions || []).some((a) => a.decided === 'demolish'),
+    'мероприятие по сносу остаётся: объём демонтажа обязан попасть в ТЭП');
+});

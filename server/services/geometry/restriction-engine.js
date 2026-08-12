@@ -75,10 +75,23 @@ function resolveTargets(site, rule) {
   });
   if (named.length) return { targets: named, narrowed: true, byUserLabel: true };
 
-  // уточнение по имени слоя: «Сети ЛЭП 10кВ» должно найти именно свой слой,
-  // а не все сети участка
-  const matched = byType.filter((o) => String(o.provenance.sourceLayer || '').toLowerCase().includes(needle)
-    || needle.includes(String(o.provenance.sourceLayer || '').toLowerCase()));
+  /*
+   * Уточнение по имени слоя: «Сети ЛЭП 10кВ» должно найти именно свой слой,
+   * а не все сети участка.
+   *
+   * Пустое имя слоя в сопоставлении НЕ УЧАСТВУЕТ. Без этой проверки
+   * `needle.includes('')` истинно для любого уточнения, и объект без слоя —
+   * а это в первую очередь граница участка, перенесённая из ГПЗУ, — совпадал
+   * с каждым правилом подряд. На боевом комплекте охранная зона газопровода
+   * строилась буфером 4 м вокруг ВСЕГО участка: 3700,18 м² «охранной зоны»
+   * там, где газопровод — линия в 274 м. Запретная зона раздувалась до 3126 м²
+   * из 3700, допустимая падала до 574 м², и посадка честно не находилась.
+   */
+  const matched = byType.filter((o) => {
+    const layer = String(o.provenance.sourceLayer || '').trim().toLowerCase();
+    if (!layer) return false;
+    return layer.includes(needle) || needle.includes(layer);
+  });
   if (matched.length) return { targets: matched, narrowed: true };
 
   // уточнение не совпало ни с одним слоем — берём весь тип, но отмечаем это
@@ -129,17 +142,62 @@ function buildZone(site, rule, parcelJts) {
     };
   }
 
+  /*
+   * Зона строится НА КАЖДЫЙ объект отсчёта отдельно, а не одним объединением.
+   *
+   * Раньше правило «противопожарный разрыв 12 м от зданий» давало одну зону —
+   * объединение буферов вокруг всех сорока шести строений чертежа. На плане это
+   * выглядело одним оранжевым пятном, и на вопрос «почему сюда нельзя» ответить
+   * было нечем: пятно есть, а чьё оно — не видно. Снести мешающее строение
+   * человек не мог по той же причине: он не знал, какое именно мешает.
+   *
+   * Теперь у каждой зоны один объект-источник, своё имя и свой цвет, а
+   * допустимая территория считается объединением по-прежнему — до квадратного
+   * сантиметра тот же результат (проверяется тестом).
+   */
   if (rule.operation === 'bufferInward') {
     // отступ внутрь имеет смысл только от замкнутого контура — участка или квартала
     const closed = targets.filter((t) => t.geometry.type === 'polygon');
     if (!closed.length) return { unresolved: 'отступ внутрь требует замкнутого контура' };
-    const rings = closed.map((t) => jts.insetRing(t.geometry, rule.valueM));
-    return { geom: jts.union(rings), targets: closed, hintMissed };
+    return { parts: closed.map((t) => ({ geom: jts.insetRing(t.geometry, rule.valueM), target: t })), hintMissed };
   }
 
-  // bufferOutward: полоса вокруг каждого объекта, затем объединение
-  const zones = targets.map((t) => jts.bufferOutward(t.geometry, rule.valueM));
-  return { geom: jts.union(zones), targets, hintMissed };
+  // bufferOutward: полоса вокруг каждого объекта
+  return {
+    parts: targets.map((t) => ({ geom: jts.bufferOutward(t.geometry, rule.valueM), target: t })),
+    hintMissed,
+  };
+}
+
+/**
+ * Как называется объект, от которого считается зона.
+ *
+ * Подпись человека сильнее имени слоя: он видел чертёж и написал «ВЛ-10 кВ»,
+ * а слой зовётся «07_Объекты электропередачи» и о киловольтах молчит.
+ */
+function targetLabel(obj) {
+  const p = (obj && obj.properties) || {};
+  if (p.userLabel || p.label) return String(p.userLabel || p.label).slice(0, 120);
+
+  const layer = String((obj && obj.provenance && obj.provenance.sourceLayer) || '').trim();
+  /*
+   * Имени слоя мало, когда на слое лежат десятки объектов.
+   *
+   * На боевом чертеже со слоя «05_Элементы зданий» приходит два десятка зон, и
+   * в легенде они выглядят двадцатью одинаковыми строками разного цвета —
+   * пользы от такой легенды нет. Размер объекта различает их сразу: инженер
+   * находит на плане именно тот контур, о котором речь.
+   */
+  const size = p.areaM2 ? `${G.round(p.areaM2, 1)} м²`
+    : (p.lengthM ? `${G.round(p.lengthM, 1)} м` : '');
+  if (layer) return `${layer}${size ? `, ${size}` : ''}`.slice(0, 120);
+
+  const TYPE_NAMES = {
+    parcel: 'Границы участка', redLine: 'Красная линия', building: 'Здание',
+    utility: 'Инженерная сеть', existingObject: 'Существующий объект',
+  };
+  const type = TYPE_NAMES[obj && obj.type] || (obj && obj.type) || 'объект';
+  return `${type}${size ? `, ${size}` : ''}`.slice(0, 120);
 }
 
 /**
@@ -188,46 +246,58 @@ function build(site, rules) {
     }
 
     const res = buildZone(site, rule, parcelJts);
-    if (!res.geom) {
+    if (!res.parts || !res.parts.length) {
       unresolved.push({ ruleId: rule.id, kind: rule.kind, reason: res.unresolved || 'зона не построена', rule });
       continue;
     }
 
-    // Зона за пределами участка проектировщику не нужна: отсекаем границей.
-    // Исходная (неотсечённая) площадь сохраняется — по ней видно, какая часть
-    // зоны выходит за участок.
-    const fullArea = jts.area(res.geom);
-    const clipped = parcelJts ? jts.intersection(res.geom, parcelJts) : res.geom;
-    if (!clipped) {
+    let placed = 0;
+    for (const part of res.parts) {
+      if (!part.geom) continue;
+      // Зона за пределами участка проектировщику не нужна: отсекаем границей.
+      // Исходная (неотсечённая) площадь сохраняется — по ней видно, какая часть
+      // зоны выходит за участок.
+      const fullArea = jts.area(part.geom);
+      const clipped = parcelJts ? jts.intersection(part.geom, parcelJts) : part.geom;
+      if (!clipped) continue;
+
+      const src = part.target;
+      const object = G.makeObject({
+        type: 'restriction',
+        geometry: jts.fromJts(clipped),
+        properties: {
+          kind: rule.kind,
+          ruleId: rule.id,
+          valueM: rule.valueM,
+          status: rule.status,
+          statusLabel: RR.STATUS_LABELS[rule.status] || rule.status,
+          areaOutsideParcelM2: G.round(Math.max(0, fullArea - jts.area(clipped)), 2),
+          // объект отсчёта — по нему зона получает имя и цвет на плане,
+          // в легенде, в отчёте и в чертеже
+          sourceObjectId: src ? src.id : null,
+          sourceLabel: src ? targetLabel(src) : '',
+          sourceLayer: src ? (src.provenance.sourceLayer || '') : '',
+          sourceType: src ? src.type : '',
+          targets: src ? [{ id: src.id, layer: src.provenance.sourceLayer }] : [],
+        },
+        provenance: {
+          extractionMethod: 'computed',
+          confidence: rule.confidence,
+          basis: rule.basis || null,
+          sourceFile: (rule.source && rule.source.document) || null,
+          reason: `${RR.explainRule(rule)}; зона построена буфером ${rule.valueM} м от объекта `
+            + `«${src ? targetLabel(src) : '—'}» и отсечена границей участка`,
+        },
+      });
+      restrictions.push(object);
+      placed++;
+    }
+    if (!placed) {
       unresolved.push({
         ruleId: rule.id, kind: rule.kind,
         reason: 'зона целиком за пределами участка — на посадку не влияет', rule,
       });
-      continue;
     }
-
-    const geometry = jts.fromJts(clipped);
-    const object = G.makeObject({
-      type: 'restriction',
-      geometry,
-      properties: {
-        kind: rule.kind,
-        ruleId: rule.id,
-        valueM: rule.valueM,
-        status: rule.status,
-        statusLabel: RR.STATUS_LABELS[rule.status] || rule.status,
-        areaOutsideParcelM2: G.round(Math.max(0, fullArea - jts.area(clipped)), 2),
-        targets: (res.targets || []).map((t) => ({ id: t.id, layer: t.provenance.sourceLayer })),
-      },
-      provenance: {
-        extractionMethod: 'computed',
-        confidence: rule.confidence,
-        basis: rule.basis || null,
-        sourceFile: (rule.source && rule.source.document) || null,
-        reason: `${RR.explainRule(rule)}; зона построена буфером ${rule.valueM} м и отсечена границей участка`,
-      },
-    });
-    restrictions.push(object);
   }
 
   /*
@@ -346,14 +416,36 @@ function computeBuildable(site, parcelJts, restrictions, warnings = []) {
   }
 
   const zones = cutting;
-  const forbidden = jts.union(zones);
-  const free = forbidden ? jts.difference(parcelJts, forbidden) : parcelJts;
+  const forbiddenJts = jts.union(zones);
+  const free = forbiddenJts ? jts.difference(parcelJts, forbiddenJts) : parcelJts;
+
+  /*
+   * Запретная зона отдаётся ОТДЕЛЬНОЙ геометрией, а не выводится из разности.
+   *
+   * На плане она рисуется сплошной подложкой, а поверх неё ложатся штриховки
+   * зон — своя на каждый объект. Без подложки запрет читался только по краске:
+   * там, где две зоны накладывались, штриховки спорили друг с другом, а место
+   * без штриховки (зона за краем экрана, вырожденный контур) выглядело
+   * свободным. Подложка отвечает на первый вопрос — «куда нельзя», краска
+   * поверх на второй — «из-за чего именно».
+   */
+  const forbiddenArea = forbiddenJts
+    ? Math.min(parcelArea, jts.area(jts.intersection(forbiddenJts, parcelJts) || forbiddenJts))
+    : 0;
+  const forbidden = forbiddenJts ? {
+    geometry: jts.fromJts(jts.intersection(forbiddenJts, parcelJts) || forbiddenJts),
+    areaM2: G.round(forbiddenArea, 2),
+    sharePercent: G.round((forbiddenArea / parcelArea) * 100, 1),
+    zoneCount: zones.length,
+  } : null;
+
   if (!free) {
     return {
       status: 'analytical',
       geometry: null,
       areaM2: 0,
       sharePercent: 0,
+      forbidden,
       basedOn: restrictions.map((r) => r.properties.ruleId),
       note: 'Свободной территории не осталось: ограничения перекрывают участок целиком.',
     };
@@ -365,6 +457,7 @@ function computeBuildable(site, parcelJts, restrictions, warnings = []) {
     geometry: jts.fromJts(free),
     areaM2: G.round(freeArea, 2),
     sharePercent: G.round((freeArea / parcelArea) * 100, 1),
+    forbidden,
     basedOn: restrictions.map((r) => r.properties.ruleId),
     uncertainRules: needsReview.map((r) => ({ ruleId: r.properties.ruleId, status: r.properties.status })),
     note: 'Потенциально допустимая территория по учтённым ограничениям. ' +
@@ -375,4 +468,4 @@ function computeBuildable(site, parcelJts, restrictions, warnings = []) {
   };
 }
 
-module.exports = { build, buildZone, resolveTargets, computeBuildable };
+module.exports = { build, buildZone, resolveTargets, computeBuildable, targetLabel, willBeGone };

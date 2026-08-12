@@ -231,7 +231,7 @@ function validate(site, footprintPoints, req, ctx = {}) {
   if (!fp || fp.isEmpty() || !(jts.area(fp) > 0)) {
     return {
       violations: [{ code: 'degenerate', message: 'Пятно выродилось (нулевая площадь) — проверять нечего' }],
-      warnings: [], affected: [], areaM2: 0,
+      warnings: [], affected: [], removed: [], areaM2: 0,
     };
   }
   const areaM2 = round(jts.area(fp));
@@ -263,8 +263,23 @@ function validate(site, footprintPoints, req, ctx = {}) {
     });
   }
 
-  // пересечения с существующими объектами — это уже мероприятия (ТЗ, п. 47)
+  /*
+   * Пересечения с существующими объектами — это мероприятия (ТЗ, п. 47).
+   *
+   * ВОЗДЕЙСТВИЕМ варианта считается только то, что на площадке ОСТАНЕТСЯ.
+   * Здание, уже назначенное человеком под снос, попадает в отдельный список
+   * `removed`: мероприятие по нему остаётся (объём демонтажа — настоящая работа
+   * и обязан попасть в ТЭП), но воздействием этого пятна оно не является —
+   * его убирают с площадки в любом случае, где бы здание ни встало.
+   *
+   * Пока снесённые считались задетыми, платформа выбирала пятно, обходящее
+   * здание, которого уже не будет: на боевом плане Горбунков из 15 «задетых»
+   * объектов варианта 1 двое были под снос, и от них варианты и уворачивались.
+   * Отбор по наименьшему воздействию и подбор непохожих вариантов шли по
+   * заведомо ложному числу.
+   */
   const affected = [];
+  const removed = [];
   for (const key of ['buildings', 'existingObjects', 'utilities']) {
     for (const obj of site[key] || []) {
       const og = jts.toJts(obj.geometry);
@@ -273,13 +288,16 @@ function validate(site, footprintPoints, req, ctx = {}) {
         ? fp.intersects(og)
         : jts.overlaps(fp, og);
       if (!hit) continue;
-      affected.push({
+      const decided = (obj.properties && obj.properties.relocation) || '';
+      const rec = {
         id: obj.id,
         layer: key,
         sourceLayer: obj.provenance.sourceLayer,
         areaM2: obj.properties.areaM2 || null,
         lengthM: obj.properties.lengthM || null,
-      });
+        decided: decided === 'demolish' || decided === 'move' ? decided : '',
+      };
+      (rec.decided ? removed : affected).push(rec);
     }
   }
 
@@ -291,7 +309,7 @@ function validate(site, footprintPoints, req, ctx = {}) {
       (req.allowReshape ? warnings : violations).push(rec);
     }
   }
-  return { violations, warnings, affected, areaM2 };
+  return { violations, warnings, affected, removed, areaM2 };
 }
 
 /* ---------------- генерация ---------------- */
@@ -443,6 +461,7 @@ function generate(site, buildable, rawReq, { limit = 24 } = {}) {
           violations: check.violations,
           warnings: check.warnings,
           affected: check.affected,
+          removed: check.removed,
           admissible: check.violations.length === 0,
         });
       }

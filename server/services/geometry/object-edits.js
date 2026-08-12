@@ -66,6 +66,21 @@ const MAX_COMMENT = 1000;
  * геометрически неразличимы, и правка к ним и должна относиться одинаково.
  */
 function geometryFingerprint(obj) {
+  /*
+   * Отпечаток, снятый ДО правки, всегда сильнее пересчитанного.
+   *
+   * Смена типа пересобирает геометрию: замкнутая ломаная становится полигоном,
+   * хвостовая вершина отбрасывается, длина считается по замкнутому обходу.
+   * Отпечаток от этого меняется — и правка переставала находить свой объект:
+   * кнопка «Отменить правку» слала ключ, которого в базе нет, а повторная
+   * правка того же контура заводила ВТОРУЮ запись вместо дополнения первой.
+   * Снаружи это выглядело как «исправил, а ничего не изменилось».
+   *
+   * Поэтому объект, геометрию которого пересобрала правка, несёт исходный
+   * отпечаток в свойствах: ключ остаётся тем же, каким его сохранил человек.
+   */
+  const kept = obj && obj.properties && obj.properties.geometryFingerprint;
+  if (kept) return String(kept);
   const g = obj && obj.geometry;
   if (!g) return '';
   const pts = [];
@@ -325,9 +340,13 @@ function applyTo(plan, edits) {
     if (patch.comment) obj.properties.userComment = patch.comment;
     if (patch.relocation) obj.properties.relocation = patch.relocation;
     if (patch.type && patch.type !== obj.type) {
+      // отпечаток снимается ДО пересборки геометрии и остаётся при объекте:
+      // иначе ключ правки уедет вместе с формой (см. geometryFingerprint)
+      const before = geometryFingerprint(obj);
       obj.properties.parserType = obj.type;
       retypeGeometry(obj, patch.type); // ломаная ↔ полигон: см. комментарий выше
       obj.type = patch.type;
+      if (before) obj.properties.geometryFingerprint = before;
       moves.push({ obj, from: layer, to: TYPE_LAYER[patch.type] });
     }
   }

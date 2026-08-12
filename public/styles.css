@@ -1113,7 +1113,13 @@ body.modal-open { overflow: hidden; }
 /* Допустимая территория — единственная сплошная заливка на плане; числа взяты
    из ZoneStyle.BUILDABLE, чтобы легенда и план не разъезжались. */
 .vw-sw-buildable { background: rgba(126, 176, 138, .30); border-color: #6f9e78; }
+/* Запретная зона — сплошная подложка ПОД штриховками: числа из ZoneStyle.FORBIDDEN. */
+.vw-sw-forbidden { background: rgba(164, 64, 47, .14); border-color: #a4402f; }
 .vw-sw-annotations { background: color-mix(in srgb, var(--accent) 20%, transparent); border-color: var(--accent); border-style: dashed; }
+/* Строка легенды показывает свои зоны на плане по наведению — на площадке
+   с полусотней ограничений иначе не найти, о какой из них речь. */
+.vw-legend-item { cursor: default; }
+.vw-legend-sub .vw-legend-item:hover { color: var(--text); }
 
 .pm-stage { flex: 1; min-height: 0; margin: 0 18px 18px; border-radius: var(--radius); }
 .pm-empty { margin: 0 18px 18px; }
@@ -1137,9 +1143,13 @@ body.modal-open { overflow: hidden; }
 .vw-redLines .vw-shape { fill: none; stroke: var(--red); stroke-width: 1.5px; stroke-dasharray: 8 5; }
 .vw-utilities .vw-shape { fill: none; stroke: var(--orange); stroke-width: 1.5px; }
 .vw-existingObjects .vw-shape { fill: color-mix(in srgb, var(--text-3) 18%, transparent); stroke: var(--text-3); stroke-width: 1px; }
-/* заливку зон и допустимой территории задаёт viewer инлайном (штриховка по типу) */
+/* заливку зон и допустимой территории задаёт viewer инлайном
+   (штриховка своего цвета на каждый объект-источник) */
 .vw-restrictions .vw-shape { stroke-width: 1.2px; }
 .vw-buildable .vw-shape { stroke-width: 1.2px; }
+/* Запретная зона — подложка: она не должна перехватывать курсор у объектов,
+   которые под ней лежат, иначе до линии ЛЭП мышью не добраться. */
+.vw-forbidden .vw-shape { stroke-width: 1px; stroke-dasharray: 6 4; pointer-events: none; }
 /* Объект под курсором подсвечивается ЦЕЛИКОМ. Прежняя подсветка была
    `brightness(1.12)`: на тонкой линии чертежа она не читается вообще, и понять,
    где линия начинается и кончается, было нельзя — а именно это и нужно, чтобы
@@ -1341,3 +1351,6 @@ body.app-arriving .sidebar { animation: rail-slide .5s cubic-bezier(.2, .8, .2, 
 
 /* пока не решено, что показывать, приложение не мигает под экраном входа */
 html[data-boot="auth"] .shell { visibility: hidden; }
+/* Хвост легенды ограничений: сколько объектов не поместилось и на сколько метров.
+   Полный перечень живёт в ведомости комплекта, а меню слоёв обязано остаться меню. */
+.vw-legend-more { color: var(--text-3); font-style: italic; padding-left: 21px; }

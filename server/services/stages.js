@@ -482,8 +482,45 @@ function zonesSummary(site) {
   }));
 }
 
+/**
+ * Сводка по ОБЪЕКТАМ, которые порождают ограничения.
+ *
+ * Сводка по типам отвечает, что за зоны построены. Но решение принимается не
+ * по типу, а по объекту: снять охранную зону можно только выносом сети,
+ * противопожарный разрыв — сносом корпуса. Поэтому в карточку согласования
+ * идёт вторая сводка — с именем объекта, его цветом на плане и ценой в метрах.
+ *
+ * Цвет берётся из того же `ZoneStyle.assignColors`, что красит план: легенда
+ * карточки и картинка обязаны совпадать, иначе о «синей зоне» не поговорить.
+ */
+function zonesBySource(site) {
+  const zones = (site && site.restrictions) || [];
+  if (!zones.length) return [];
+  const ZoneStyle = require('../../public/zone-style.js');
+  const assign = ZoneStyle.assignColors(zones);
+  const map = new Map();
+  for (const z of zones) {
+    const a = assign.byZone[z.id];
+    if (!a) continue;
+    const p = z.properties || {};
+    const cur = map.get(a.key) || {
+      key: a.key, color: a.color,
+      label: p.sourceLabel || 'объект не назван',
+      layer: p.sourceLayer || '',
+      objectId: p.sourceObjectId || '',
+      kinds: new Set(), areaM2: 0,
+    };
+    cur.areaM2 += Number(p.areaM2) || 0;
+    cur.kinds.add(RR.KIND_LABELS[p.kind] || p.kind || 'ограничение');
+    map.set(a.key, cur);
+  }
+  return [...map.values()]
+    .map((s) => ({ ...s, kinds: [...s.kinds], areaM2: Math.round(s.areaM2) }))
+    .sort((a, b) => b.areaM2 - a.areaM2);
+}
+
 module.exports = {
   STAGES, STAGE_LABELS, WORKING_STAGES,
   get, set, settle, lastCardStage, addNote, notes, notesInstruction,
-  addCard, parseCard, requirementsFromFacts, zonesSummary, parcelAreaMismatch, manualHints,
+  addCard, parseCard, requirementsFromFacts, zonesSummary, zonesBySource, parcelAreaMismatch, manualHints,
 };

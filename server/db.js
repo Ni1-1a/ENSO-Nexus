@@ -267,6 +267,31 @@ for (const sql of [
      created_at INTEGER NOT NULL,
      updated_at INTEGER NOT NULL
    )`,
+
+  // Зоны ограничений живут ОТДЕЛЬНО от разбора чертежа.
+  //
+  // Раньше посчитанные зоны дописывались в site и весь site сохранялся обратно
+  // в `plans.geometry`. Отсюда две беды сразу. Первая: в таблице планов, где
+  // обязан лежать ЧИСТЫЙ разбор, оказывался план с уже наложенными правками
+  // человека — обучающий пример врал, а ключ правки переставал совпадать
+  // с объектом. Вторая, куда хуже: зоны замерзали. Человек помечал здание под
+  // снос, шёл за вариантами посадки — и получал пятно, посчитанное ДО его
+  // решения, потому что подбор вариантов читал `site.buildable` из плана.
+  //
+  // Поэтому здесь хранятся и сами зоны, и ПРАВИЛА, по которым они построены,
+  // и отпечаток решений человека на момент расчёта. Совпал отпечаток — зоны
+  // отдаются как есть; не совпал — движок пересобирает их по тем же правилам,
+  // детерминированно и без единого обращения к модели.
+  `CREATE TABLE IF NOT EXISTS plan_zones (
+     plan_id TEXT PRIMARY KEY,
+     session_id TEXT NOT NULL,
+     rules TEXT NOT NULL DEFAULT '[]',
+     zones TEXT NOT NULL DEFAULT '{}',
+     edits_hash TEXT NOT NULL DEFAULT '',
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   )`,
+  'CREATE INDEX IF NOT EXISTS idx_plan_zones_session ON plan_zones(session_id)',
 ]) {
   try { db.exec(sql); } catch { /* колонка уже есть */ }
 }

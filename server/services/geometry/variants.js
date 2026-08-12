@@ -57,6 +57,23 @@ function actionsFor(site, affected) {
     else if (/ограждени|забор/i.test(layer)) kind = 'relocateFence';
     else kind = info.classification === 'demolishable' ? 'demolish' : 'relocate';
 
+    /*
+     * Решение уже принято человеком — переспрашивать нечего.
+     *
+     * Здание, назначенное под снос на плане, попадало сюда как обычный задетый
+     * объект: если класс его не опознан (а «03_Здания и строения» не опознан),
+     * мероприятие требовало решения, вариант становился «требует вашего
+     * решения» и вылетал из отбора чистых. Платформа спрашивала разрешения на
+     * то, что ей только что разрешили.
+     *
+     * Само мероприятие остаётся: объём демонтажа — настоящая работа и место
+     * ему в ТЭП. Меняется только вид действия (оно теперь следует решению
+     * человека, а не догадке о классе) и то, что подтверждения оно не ждёт.
+     */
+    const decided = hit.decided || '';
+    if (decided === 'demolish') kind = 'demolish';
+    else if (decided === 'move') kind = kind === 'relocateUtility' ? 'relocateUtility' : 'relocate';
+
     actions.push({
       kind,
       objectId: obj.id,
@@ -67,11 +84,16 @@ function actionsFor(site, affected) {
       classificationLabel: critical.LABELS[info.classification],
       basis: info.basis || '',
       validatedBy: info.validatedBy || '',
-      // критический объект нельзя переносить без решения человека (ТЗ, п. 46)
-      requiresDecision: info.classification === 'critical' || info.classification === 'unknown',
-      note: info.classification === 'unknown'
-        ? 'Класс объекта не определён — подтвердите, критический ли он'
-        : (info.source === 'норматив' ? 'классификация по нормативу' : ''),
+      decided,
+      // критический объект нельзя переносить без решения человека (ТЗ, п. 46),
+      // но если решение по этому объекту уже принято — оно и есть ответ
+      requiresDecision: !decided
+        && (info.classification === 'critical' || info.classification === 'unknown'),
+      note: decided
+        ? `решение принято человеком на плане: ${decided === 'demolish' ? 'снос' : 'перенос'}`
+        : (info.classification === 'unknown'
+          ? 'Класс объекта не определён — подтвердите, критический ли он'
+          : (info.source === 'норматив' ? 'классификация по нормативу' : '')),
     });
   }
   return actions;
@@ -209,11 +231,22 @@ function build(site, candidates, { criterion = 'maxArea', count = VARIANT_COUNT 
 
   // каждому кандидату — его мероприятия: без них не понять, кто трогает критику
   const enriched = candidates.map((c) => {
-    const actions = actionsFor(site, c.affected);
+    /*
+     * Мероприятия считаются и по остающимся объектам, и по тем, что человек уже
+     * назначил под снос или перенос: объём демонтажа — настоящая работа и обязан
+     * попасть в ТЭП. А вот ВОЗДЕЙСТВИЕМ варианта считаются только остающиеся
+     * (c.affected): здание, которого на площадке не будет, вариант не задевает,
+     * где бы он ни встал. Пока снесённые считались задетыми, отбор непохожих
+     * вариантов и сортировка по наименьшему воздействию шли по ложному числу —
+     * платформа уводила пятно от здания, которое сама же и сносит.
+     */
+    const actions = actionsFor(site, [...c.affected, ...(c.removed || [])]);
     return {
       ...c,
       actions,
-      touchesCritical: actions.some((a) => a.classification === 'critical'),
+      // объект, судьба которого уже решена человеком, «критическим» для отбора
+      // вариантов не считается: его убирают с площадки в любом случае
+      touchesCritical: actions.some((a) => a.classification === 'critical' && !a.decided),
       needsDecision: actions.some((a) => a.requiresDecision),
     };
   });
@@ -268,6 +301,10 @@ function toVariant(c, number, site) {
       affectedCount: c.affected.length,
       buildingsAffected: c.affected.filter((a) => a.layer === 'buildings').length,
       utilitiesAffected: c.affected.filter((a) => a.layer === 'utilities').length,
+      // объекты, решение по которым уже принято: они попадают в ТЭП, но
+      // воздействием варианта не считаются — их убирают в любом случае
+      removedCount: (c.removed || []).length,
+      removedAreaM2: G.round((c.removed || []).reduce((s, a) => s + (a.areaM2 || 0), 0), 2),
       tep: actionsToTep(c.actions),
     },
     actions: c.actions,
