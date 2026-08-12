@@ -798,3 +798,30 @@ test('описания моделей: класс берётся из разме
   assert.ok(about.strengths.length && about.limits.length, 'и сильные стороны, и цена — иначе это реклама');
   assert.strictEqual(registry.describe('невиданный-провайдер', 'x'), null, 'выдумывать описание нечестно');
 });
+
+test('бюджет окна: документы не режутся ради длины ответа', async () => {
+  resetSession();
+  scenario = { json: { status: 'completed', message: 'ок', report_markdown: 'отчёт' } };
+
+  /*
+   * Живой прогон 2026-08-12: при окне 98 304 и LOCAL_AI_MAX_TOKENS = размеру окна
+   * ответу отдавалось 68 813 токенов, а промпту оставалась четверть — 49 тыс.
+   * символов при комплекте в 81 тыс. Техническое задание обрезалось, площадь и
+   * этажность до модели не доходили, и анализ спрашивал «какая этажность?» про
+   * данные, лежавшие в непрочитанном файле.
+   *
+   * Документы — то, что нам дали; резать их ради длины отчёта нельзя. Ответ мы
+   * вправе просить короче, и порядок обслуживания теперь такой.
+   */
+  const big = 'Техническое задание. '.repeat(3000); // ~63 тыс. символов
+  await adapter.chatOnce(SID, {
+    text: big,
+    route: { provider: 'ollama', model: 'test-model' },
+  }).catch(() => {});
+
+  const req = chatRequests()[chatRequests().length - 1];
+  const sent = (req.body.messages || []).map((m) => (typeof m.content === 'string' ? m.content : '')).join('');
+  assert.ok(sent.includes(big.slice(0, 200)), 'начало документа обязано дойти до модели');
+  assert.ok(sent.length > big.length * 0.9,
+    `до модели дошло ${sent.length} символов из ${big.length} — документ обрезан ради ответа`);
+});

@@ -10,8 +10,11 @@ npm start          # сервер на http://localhost:3000
 npm test           # node --test tests/*.test.js
 ```
 
-Публикация наружу — `scripts/serve-public.sh` (сервер + cloudflared + watchdog),
-адрес `https://app.enso-nexus.ru`. Полный перезапуск — `Перезапуск/Перезапустить сервер.command`.
+Публикация наружу — `scripts/serve-public.sh` (сервер + cloudflared + watchdog).
+Главный адрес — `https://enso-nexus.com`, старый `https://app.enso-nexus.ru` редиректит
+на него. На 2026-08-12 переезд не завершён: `.com` ещё отдаёт парковку регистратора,
+рабочим адресом пока остаётся `.ru` (подробности и статус — в `DEPLOYMENT.md`).
+Полный перезапуск — `Перезапуск/Перезапустить сервер.command`.
 
 **Тесты: 303 на 2026-08-12 (baseline до работ был 28).** Прогонять после каждого этапа.
 E2E-тест изолирован: поднимает свой сервер и свой `DATA_DIR` во временной папке,

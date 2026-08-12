@@ -1,8 +1,8 @@
 # Деплой — ENSO Nexus Pilot 1 Web
 
-## Вариант A (текущий): свой компьютер + Cloudflare quick tunnel
+## Вариант A (текущий): свой компьютер + именной туннель Cloudflare
 
-Работает сейчас, без аккаунтов и подписок: сервер приложения крутится на этом Mac (AI — локальная модель в LM Studio), публичный HTTPS даёт бесплатный quick-туннель Cloudflare.
+Работает сейчас, без хостинга и подписок: сервер приложения крутится на этом Mac (AI — локальная модель в LM Studio), публичный HTTPS даёт именной туннель Cloudflare.
 
 ```bash
 cd "ENSO-Nexus/Pilot 1/Web"
@@ -10,20 +10,31 @@ bash scripts/serve-public.sh        # старт: печатает публич�
 bash scripts/serve-public.sh stop   # остановка
 ```
 
-Скрипт: запускает `npm start` под `caffeinate -i` (Mac не уснёт, пока сервер работает; крышку не закрывать), поднимает `cloudflared tunnel --url http://localhost:3000` и сохраняет URL.
+Скрипт: запускает `npm start` под `caffeinate -i` (Mac не уснёт, пока сервер работает; крышку не закрывать), поднимает `cloudflared tunnel run enso-nexus` и сохраняет URL в `logs/public-url.txt`.
 
 Ограничения этого варианта:
-- URL вида `https://<случайные-слова>.trycloudflare.com` **меняется при каждом перезапуске** туннеля/компьютера — новую ссылку смотреть в `logs/public-url.txt`;
 - сервис доступен, только пока компьютер включён и в сети;
 - LM Studio должен быть запущен с загруженной моделью (`qwen/qwen3-vl-30b`), иначе приложение честно перейдёт в демо-режим.
 
-### Постоянная ссылка (работает сейчас, домен не нужен)
+### Постоянный адрес: свой домен
 
-**https://ni1-1a.github.io/ENSO-Nexus/** — постоянная страница-вход на GitHub Pages (ветка `gh-pages` этого репозитория). Она мгновенно перенаправляет на текущий адрес туннеля и **обновляется автоматически**: `scripts/serve-public.sh` после получения нового quick-URL вызывает `scripts/update-public-link.sh`, который коммитит новую страницу-редирект в `gh-pages` и пушит (GitHub Pages пересобирается за ~10–30 с). Эту ссылку можно раздавать пользователям — она не меняется.
+**Главный адрес — https://enso-nexus.com** (плюс `www`). Прежние `enso-nexus.ru`, `www.enso-nexus.ru` и `app.enso-nexus.ru` отдают 301 на `.com`, поэтому уже розданные ссылки продолжают работать.
 
-### Постоянный адрес на своём домене (опция на будущее)
+Устройство: именной туннель `enso-nexus` (`73ae7cf2-b2be-47f1-bfc3-80241846e71c`), конфиг — `~/.cloudflared/config.yml`, ingress всех имён смотрит в `http://localhost:3000`. DNS обеих зон — в Cloudflare; апекс и `www` привязаны **проксируемым** CNAME на `<tunnel-id>.cfargotunnel.com` (без оранжевого облака такой CNAME не резолвится). Сертификаты управления зонами лежат раздельно: `~/.cloudflared/cert-ru.pem` и `cert.pem` — команда `route dns` пишет в ту зону, на которую выписан текущий `cert.pem`, и на чужом имени молча создаёт поддомен своей зоны.
 
-Если появится собственный домен: добавить его в Cloudflare (бесплатный план), выполнить `cloudflared tunnel login` (авторизация в браузере), затем `cloudflared tunnel create pilot1` + `cloudflared tunnel route dns pilot1 pilot1.<домен>` + локальный config с ingress `http://localhost:3000` — получится адрес вида `https://pilot1.<домен>` без страницы-редиректа. Настроенные MCP-серверы Cloudflare (`.mcp.json` в рабочей директории) позволяют сделать это и через API после OAuth-авторизации.
+Добавить ещё одно имя:
+
+```bash
+cloudflared tunnel route dns --overwrite-dns enso-nexus <имя>.enso-nexus.com
+# затем дописать hostname в ingress ~/.cloudflared/config.yml и перезапустить туннель
+cloudflared tunnel ingress validate
+```
+
+> **Статус на 2026-08-12:** `enso-nexus.com` делегирован на NS Cloudflare, но апекс и `www` ещё отдают парковочный `208.91.112.55` вместо туннеля: зона, куда пишет `cloudflared`, и зона, отвечающая на запросы, расходятся. Пока это не устранено, рабочим адресом остаётся `https://app.enso-nexus.ru`, а редирект `.ru` → `.com` не включён.
+
+### Запасной вход на GitHub Pages
+
+**https://ni1-1a.github.io/ENSO-Nexus/** — страница-приёмная (ветка `gh-pages` этого репозитория). Она живёт независимо от Mac: ждёт платформу и открывает её сама, как только та поднимется. Исходник — `public/error-pages/landing.html`; `scripts/serve-public.sh` обновляет опубликованную копию через `scripts/update-public-link.sh`.
 
 ## Вариант B: облачная платформа
 
@@ -113,8 +124,9 @@ docker run -d -p 3000:3000 \
 
 ### Что нажать в панели Cloudflare
 
-1. Панель → домен `enso-nexus.ru` → **Rules → Custom Errors** (в старых версиях
-   раздел называется **Custom Pages**).
+1. Панель → домен `enso-nexus.com` → **Rules → Custom Errors** (в старых версиях
+   раздел называется **Custom Pages**). Для зоны `enso-nexus.ru` то же делать не нужно:
+   она отдаёт 301 на `.com` ещё на крае, до обращения к origin.
 2. **500 class errors** → *Custom Pages* → указать
    `https://ni1-1a.github.io/ENSO-Nexus/error-5xx.html` → **Publish**.
 3. **1000 class errors** → указать

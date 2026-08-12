@@ -621,18 +621,35 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     }
   }
 
-  // Бюджет окна модели: у маленьких окон сначала ужимается ответ (max_tokens),
-  // чтобы промпту гарантированно осталось не меньше четверти окна.
+  /*
+   * Бюджет окна модели. ПЕРВЫМ обслуживается ПРОМПТ, ответ берёт остаток.
+   *
+   * Прежний порядок был обратный, и это стоило прогона. Логика «промпту
+   * гарантируется не меньше четверти окна» при LOCAL_AI_MAX_TOKENS = размеру
+   * окна выдавала ровно четверть: ответ зажимался до 68 813 токенов, а промпту
+   * доставалось 24 576 токенов ≈ 49 тыс. символов при комплекте в 81 тыс.
+   * Техническое задание обрезалось, площадь и этажность до модели не доходили,
+   * и анализ честно спрашивал «какая этажность объекта?» — данные были в файле,
+   * которого он не увидел. Проверено живым прогоном 2026-08-12.
+   *
+   * Документы — это данные, которые нам дали; их нельзя резать ради длины
+   * ответа. Ответ мы вправе просить короче. Поэтому: промпт занимает столько,
+   * сколько ему нужно, ответу достаётся остаток, и лишь когда остатка меньше
+   * рабочего минимума — режется промпт.
+   */
   const ctxTokens = isLmStudio ? modelManager.desiredContext(modelId) : 0;
   const reserveTokens = ctxTokens ? Math.max(2048, Math.round(ctxTokens * 0.05)) : 0;
-  // бюджет ответа берётся из реестра: у облачных он ограничен потолком провайдера,
-  // у локального сервера ниже зажимается под фактическое окно модели
+  /** Ниже этого ответа не собрать: отчёт со схемой в него не поместится. */
+  const MIN_OUTPUT_TOKENS = 4096;
   const modelCaps = registry.capabilities(providerId, modelId);
   let effMaxTokens = maxTokens
     || registry.maxOutputTokens({ provider: providerId, model: modelId })
     || config.localAiMaxTokens;
-  if (ctxTokens && ctxTokens - effMaxTokens - reserveTokens < ctxTokens / 4) {
-    effMaxTokens = Math.max(1024, ctxTokens - reserveTokens - Math.ceil(ctxTokens / 4));
+  if (ctxTokens) {
+    const promptTokens = Math.ceil(messagesChars([{ content: system }, ...messages]) / CHARS_PER_TOKEN);
+    const room = ctxTokens - promptTokens - reserveTokens;
+    // ответу — остаток окна, но не больше запрошенного и не меньше рабочего минимума
+    effMaxTokens = Math.max(MIN_OUTPUT_TOKENS, Math.min(effMaxTokens, room));
   }
 
   // зрение спрашивается у реестра возможностей, а не у бренда провайдера
@@ -670,7 +687,10 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   // Бюджет контекста: промпт + max_tokens не должны превышать окно модели,
   // иначе LM Studio вернёт 400 или молча отбросит середину промпта.
   if (isLmStudio) {
-    const budgetChars = Math.floor((ctxTokens - effMaxTokens - reserveTokens) * CHARS_PER_TOKEN);
+    // Режем промпт ТОЛЬКО до предела, за которым не соберётся даже минимальный
+    // ответ. Считать порог от запрошенного бюджета ответа значило бы выбрасывать
+    // документы ради длины отчёта, которую всё равно никто не заказывал.
+    const budgetChars = Math.floor((ctxTokens - MIN_OUTPUT_TOKENS - reserveTokens) * CHARS_PER_TOKEN);
     const beforeChars = messagesChars(body.messages);
     if (beforeChars > budgetChars) {
       const notes = trimToBudget(body.messages, budgetChars);
