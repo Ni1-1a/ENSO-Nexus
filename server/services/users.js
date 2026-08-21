@@ -90,6 +90,14 @@ function normalizeStore(raw) {
         // другим людям. Умолчание — false, и оно обязано быть именно таким:
         // забытое поле не имеет права означать «можно». См. ai/cloud-access.js.
         cloudAi: u.cloudAi === true,
+        // Владелец платформы: видит расход всех людей, деньги на счетах
+        // провайдеров и вносит пополнения. Умолчание false по той же причине,
+        // что и у cloudAi: забытое поле не имеет права означать «можно».
+        owner: u.owner === true,
+        // Допуск к чужой статистике без прочих прав владельца. Право отдельное:
+        // разрешение тратить деньги и разрешение видеть, кто их тратит, —
+        // разные вещи.
+        statsAll: u.statsAll === true,
         note: String(u.note || '').slice(0, 200),
         id: String(u.id || `u_${crypto.randomBytes(8).toString('hex')}`),
         createdAt: String(u.createdAt || new Date().toISOString()),
@@ -207,7 +215,27 @@ function publicUser(u) {
     approved: u.approved,
     // интерфейсу нужно знать, показывать ли облачные модели вообще
     cloudAi: u.cloudAi === true,
+    // владелец платформы: видит расход всех и деньги на счетах провайдеров
+    owner: u.owner === true,
+    // допущен к чужой статистике без прочих прав владельца
+    statsAll: u.statsAll === true,
   };
+}
+
+/** Все записи — для переключателя людей на вкладке «Статистика». */
+function list() {
+  return readFileIfChanged().users.slice();
+}
+
+/**
+ * Может ли человек смотреть чужую статистику.
+ *
+ * Право отдельное от cloudAi: разрешение тратить деньги и разрешение видеть,
+ * кто их тратит, — разные вещи, и связывать их значит выдать первое вместе
+ * со вторым по недосмотру.
+ */
+function canSeeAllStats(u) {
+  return !!(u && u.approved && (u.owner === true || u.statsAll === true));
 }
 
 /** Последние адреса и устройства — без истории: хранится ровно то, что нужно. */
@@ -304,7 +332,7 @@ function init() {
 }
 
 module.exports = {
-  init, state, enter, logout, byToken, byId, find, touch, publicUser,
+  init, state, enter, logout, byToken, byId, find, touch, publicUser, list, canSeeAllStats,
   normName, cleanName, validNames, hashToken,
   MAX_USERS, NAME_MAX,
   _readFileIfChanged: readFileIfChanged,

@@ -22,7 +22,11 @@ const CAD_EXT = new Set(['dxf', 'dwg']);
  * чертежей — чтобы сохранённый план пересчитался следующей версией, а старая
  * осталась нетронутой вместе со своими аннотациями (ТЗ, п. 74).
  */
-const PARSER_VERSION = 4;
+// 5 — у разбора появилась привязка по крестам координатной сетки (site.gridRef)
+// 6 — привязка доходит до ОБЪЕДИНЁННОГО плана: на 5 она оставалась внутри
+//     разбора отдельного файла, и план сообщал «подписей сетки нет», хотя
+//     кресты были прочитаны. Планы версии 5 надо пересчитать.
+const PARSER_VERSION = 6;
 
 /** Кэш разбора одного файла: разбирать чертёж на каждый запрос viewer'а незачем. */
 async function siteForFile(file) {
@@ -76,6 +80,33 @@ async function buildForSession(sessionId) {
     plan.sourceReferences.push(...part.sourceReferences);
     G.mergeWarnings(plan.warnings, part.warnings);
     if (part.drawingBounds) placed.push({ name: file.original_name, bounds: part.drawingBounds });
+
+    /*
+     * Привязка по крестам берётся у первого чертежа, где сетка прочиталась.
+     *
+     * Без этой строки gridRef оставался внутри разбора отдельного файла и до
+     * плана не доходил: границы участка из ГПЗУ ложились по старой догадке о
+     * габаритах, хотя кресты в чертеже были прочитаны. Проверено на Горбунках
+     * — сетка нашлась в файле, но план сообщал «подписей нет».
+     *
+     * Обычно сетка одна на комплект. Если второй чертёж даёт ДРУГУЮ привязку,
+     * это разные системы координат, и молчать об этом нельзя.
+     */
+    if (part.gridRef && part.gridRef.ok) {
+      if (!plan.gridRef || !plan.gridRef.ok) {
+        plan.gridRef = { ...part.gridRef, sourceFile: file.original_name };
+      } else if (Math.abs(plan.gridRef.offsetX - part.gridRef.offsetX) > 1
+              || Math.abs(plan.gridRef.offsetY - part.gridRef.offsetY) > 1) {
+        plan.warnings.push({
+          code: 'grid-mismatch',
+          message: `Координатные сетки чертежей «${plan.gridRef.sourceFile}» и «${file.original_name}» дают разную привязку `
+            + `(сдвиг ${plan.gridRef.offsetX.toFixed(2)}; ${plan.gridRef.offsetY.toFixed(2)} против `
+            + `${part.gridRef.offsetX.toFixed(2)}; ${part.gridRef.offsetY.toFixed(2)} м). `
+            + 'Скорее всего, чертежи выполнены в разных системах координат — приведите их к одной.',
+        });
+      }
+    }
+
     if (part.parcel) G.addObject(plan, part.parcel);
     for (const key of ['buildings', 'redLines', 'existingObjects', 'utilities']) {
       for (const o of part[key]) plan[key].push(o);

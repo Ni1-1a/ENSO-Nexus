@@ -6,7 +6,7 @@
   <title>Enso-nexus — платформа автоматического проектирования</title>
   <meta name="description" content="Платформа автоматического проектирования: анализ исходных данных, запретные зоны, посадка здания на участок и выгрузка чертежа">
   <meta name="theme-color" content="#f3efe6">
-  <link rel="stylesheet" href="styles.css?v=53">
+  <link rel="stylesheet" href="styles.css?v=54">
   <script src="boot.js?v=1"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
 </head>
@@ -70,11 +70,24 @@
           </svg>
           Этап 1
         </button>
+        <button class="nav-item" data-screen="tz" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M6 3h9l4 4v14H6z" stroke-linejoin="round"/><path d="M15 3v4h4"/>
+            <path d="M9 12h6M9 16h4" stroke-linecap="round"/>
+          </svg>
+          Анализ ТЗ
+        </button>
         <button class="nav-item" data-screen="normo" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
             <path d="M6 3h9l4 4v14H6z" stroke-linejoin="round"/><path d="M15 3v4h4"/><path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           Нормоконтроль
+        </button>
+        <button class="nav-item" data-screen="stats" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke-linecap="round"/>
+          </svg>
+          Статистика
         </button>
         <button class="nav-item" data-screen="settings" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -102,6 +115,21 @@
         <div id="ai-badge" class="ai-badge" title="Действующая нейросеть">
           <span class="ai-dot" aria-hidden="true"></span>
           <span id="ai-badge-text">Подключение…</span>
+        </div>
+
+        <!-- Кто вошёл и выход. Блок скрыт целиком, когда вход на сервере
+             выключен (REQUIRE_LOGIN=0): показывать «выйти» там, где двери нет,
+             значит обещать несуществующее действие. -->
+        <div id="user-box" class="user-box" hidden>
+          <span class="user-avatar" id="user-initials" aria-hidden="true"></span>
+          <span class="user-name" id="user-name"></span>
+          <button id="btn-sign-out" class="icon-btn user-out" type="button"
+                  aria-label="Выйти из записи" title="Выйти из записи">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
       </div>
     </aside>
@@ -235,6 +263,28 @@
         </div>
       </section>
 
+      <!-- ══════════ Экран: Анализ ТЗ ══════════ -->
+      <section id="screen-tz" class="screen" aria-label="Анализ технического задания">
+        <header class="toolbar">
+          <h1>Анализ ТЗ</h1>
+          <p class="toolbar-sub">Разбор технического задания на проверяемые требования</p>
+        </header>
+        <div class="normo-hero card">
+          <div class="normo-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+              <path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/>
+              <path d="M9 12h6M9 16h4" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h2>Раздел в разработке</h2>
+          <p>Здесь появится разбор технического задания: текст ТЗ раскладывается
+             на пронумерованные требования — каждое с дословной цитатой и страницей,
+             с пометкой противоречий, пробелов и отсылок к нормативам, которые
+             в задании названы, но не раскрыты.</p>
+          <button class="btn btn-quiet" type="button" disabled>Загрузить ТЗ — скоро</button>
+        </div>
+      </section>
+
       <!-- ══════════ Экран: Нормоконтроль ══════════ -->
       <section id="screen-normo" class="screen" aria-label="Нормоконтроль">
         <header class="toolbar">
@@ -252,6 +302,39 @@
              по ГОСТ 21.508, СП 42.13330 и требованиям пожарной безопасности:
              комплектность, оформление, ссылки на нормативы, контроль ТЭП.</p>
           <button class="btn btn-quiet" type="button" disabled>Загрузить комплект — скоро</button>
+        </div>
+      </section>
+
+      <!-- ══════════ Экран: Статистика ══════════ -->
+      <section id="screen-stats" class="screen" aria-label="Статистика расхода и остатки">
+        <header class="toolbar">
+          <h1>Статистика</h1>
+          <p class="toolbar-sub">Расход на модели, остатки на счетах и доступность моделей</p>
+        </header>
+
+        <div class="stats-bar">
+          <div class="field field-inline">
+            <label for="stats-period">Период</label>
+            <select id="stats-period">
+              <option value="7">7 дней</option>
+              <option value="30" selected>30 дней</option>
+              <option value="90">90 дней</option>
+              <option value="0">за всё время</option>
+            </select>
+          </div>
+          <!-- Переключатель людей виден только владельцу и допущенным:
+               право видеть чужой расход выдаётся отдельно (owner / statsAll). -->
+          <div class="field field-inline" id="stats-who-field" hidden>
+            <label for="stats-who">Чей расход</label>
+            <select id="stats-who"></select>
+          </div>
+          <button id="stats-refresh" class="btn btn-quiet" type="button">Обновить</button>
+        </div>
+
+        <p id="stats-since" class="hint stats-since" hidden></p>
+
+        <div id="stats-body" class="stats-grid">
+          <p class="hint">Загрузка…</p>
         </div>
       </section>
 
@@ -597,10 +680,10 @@
     </div>
   </div>
 
-  <script src="auth.js?v=3"></script>
+  <script src="auth.js?v=4"></script>
   <script src="geo-transform.js?v=1"></script>
   <script src="zone-style.js?v=4"></script>
   <script src="viewer.js?v=19"></script>
-  <script src="app.js?v=52"></script>
+  <script src="app.js?v=53"></script>
 </body>
 </html>

@@ -292,9 +292,76 @@ for (const sql of [
      updated_at TEXT NOT NULL
    )`,
   'CREATE INDEX IF NOT EXISTS idx_plan_zones_session ON plan_zones(session_id)',
+
+  /*
+   * Расход по одному запросу к модели — строка на каждое обращение.
+   *
+   * До этой таблицы расход существовал только итогами в самой сессии
+   * (ai_requests, input_tokens, output_tokens, cost_usd). Итог отвечает на
+   * вопрос «сколько всего», но не на «когда», «какой моделью» и «за чей счёт»:
+   * из суммы нельзя достать ни график по дням, ни разбивку по моделям, ни
+   * расход конкретного человека. Поэтому пишем событиями, а итоги в сессии
+   * оставляем — на них держатся предохранители проекта.
+   *
+   * Задним числом это не восстановить: у прошлых прогонов есть только суммы.
+   * Графики начинаются с появления таблицы, и вкладка говорит об этом прямо.
+   */
+  `CREATE TABLE IF NOT EXISTS usage_events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     session_id TEXT NOT NULL,
+     user_id TEXT DEFAULT '',
+     provider TEXT DEFAULT '',
+     model TEXT DEFAULT '',
+     internal INTEGER NOT NULL DEFAULT 0,          -- служебный подзапрос: OCR страницы, конспект документа
+     input_tokens INTEGER NOT NULL DEFAULT 0,      -- включая кэш-токены: их тоже оплачивают
+     output_tokens INTEGER NOT NULL DEFAULT 0,
+     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+     cost_usd REAL NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL
+   )`,
+  'CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_events(user_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_events(session_id)',
+
+  /*
+   * Пополнения счёта у провайдера — вносятся руками.
+   *
+   * Остаток кредитов не отдаёт ни одна ручка Anthropic: в Admin API есть
+   * участники, workspace, ключи, отчёты о расходе и лимитах — и ничего про
+   * доступные кредиты (проверено по документации 21.08.2026). Живой баланс
+   * даёт только Kimi. Поэтому для остальных остаток считается «внесено минус
+   * потрачено» и помечается оценкой, а не выдаётся за биллинг.
+   */
+  `CREATE TABLE IF NOT EXISTS credit_topups (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     provider TEXT NOT NULL,
+     amount_usd REAL NOT NULL,
+     note TEXT DEFAULT '',
+     happened_at TEXT NOT NULL,
+     author TEXT DEFAULT '',
+     created_at TEXT NOT NULL
+   )`,
+  'CREATE INDEX IF NOT EXISTS idx_topups_provider ON credit_topups(provider, happened_at)',
 ]) {
   try { db.exec(sql); } catch { /* колонка уже есть */ }
 }
+
+/*
+ * Проекты, оставшиеся на исчезнувшей базе Гриши, переводятся на «Верифицировано».
+ *
+ * Это не косметика. Выбранная база хранится у проекта строкой, а поиск по
+ * несуществующей базе не падает — он молча возвращает пустой список. Проект
+ * продолжал бы работать, просто без единой нормативной выдержки в контексте,
+ * и заметить это можно было бы только по качеству ответов.
+ *
+ * Список документов у обеих баз один и тот же, разбор у «Верифицировано»
+ * лучше, так что перевод ничего не отнимает.
+ */
+try {
+  const moved = db.prepare("UPDATE sessions SET kb_choice = 'verified' WHERE kb_choice = 'grisha'").run().changes;
+  if (moved) console.log(`[kb] проектов переведено с базы Гриши на «Верифицировано»: ${moved}`);
+} catch { /* колонки ещё нет — свежая база */ }
 
 const now = () => new Date().toISOString();
 

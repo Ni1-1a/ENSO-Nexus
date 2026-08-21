@@ -63,6 +63,18 @@ const ARC_SEGMENTS = 72;
 /** Допуск сшивки отрезков в цепочку, в единицах чертежа. */
 const STITCH_TOL_DIGITS = 6;
 
+/**
+ * Точка вставки надписи: код 10, а при выравнивании не по левому краю — код 11.
+ * Нулевая точка 10 у выровненного текста — не «начало координат», а «не задано».
+ */
+function textAnchor(e) {
+  const alt = e.p11 && Number.isFinite(e.p11[0]) ? e.p11 : null;
+  const base = e.pts && e.pts[0] && Number.isFinite(e.pts[0][0]) ? e.pts[0] : null;
+  if (base && (base[0] !== 0 || base[1] !== 0)) return base;
+  if (alt && (alt[0] !== 0 || alt[1] !== 0)) return alt;
+  return base || alt || null;
+}
+
 /** Снимает базовое MTEXT-форматирование: {\f...;текст}, \P (перевод строки) и т.п. */
 function cleanMtext(s) {
   return s
@@ -184,7 +196,7 @@ function parseDxf(text) {
   const entities = new Map();      // тип → количество, модельное пространство
   const paperEntities = new Map(); // тип → количество, пространство листа
   const blockEntities = new Map(); // тип → количество внутри определений блоков
-  const texts = [];                // {value, layer}
+  const texts = [];                // {value, layer, at:[x,y]|null} — координата нужна подписям сетки
   const inserts = new Map();       // имя блока → количество
   const polylines = [];            // {layer, closed, points: [[x,y],…], source}
   const segments = [];             // LINE до сшивки
@@ -219,16 +231,29 @@ function parseDxf(text) {
     }
     if (e.paper) return; // рамка, штамп, видовые экраны — не геометрия местности
 
+    /*
+     * Точка вставки надписи сохраняется вместе с текстом.
+     *
+     * Без неё подпись «2195850» — просто строка в списке надписей, а с ней это
+     * ПОДПИСЬ КРЕСТА координатной сетки: она стоит у своей линии, и по ней
+     * чертёж привязывается к системе координат (geometry/grid-crosses.js).
+     * Раньше координата отбрасывалась, и порядок осей приходилось угадывать
+     * по тому, попадает ли контур в габариты чертежа.
+     *
+     * Для TEXT точка вставки — код 10; при выравнивании не по левому краю
+     * AutoCAD дублирует её в код 11, поэтому берём вторую, если она есть:
+     * у выровненного по центру текста код 10 бывает нулевым.
+     */
     if (e.type === 'TEXT') {
       // однострочный TEXT не размечен: снимать с него MTEXT-форматирование нельзя,
       // иначе из подписи «{кв. 12}» пропадут скобки
       const v = e.textParts.join('').trim();
-      if (v) texts.push({ value: v, layer: e.layer });
+      if (v) texts.push({ value: v, layer: e.layer, at: textAnchor(e) });
       return;
     }
     if (e.type === 'MTEXT') {
       const v = cleanMtext(e.textParts.join(''));
-      if (v) texts.push({ value: v, layer: e.layer });
+      if (v) texts.push({ value: v, layer: e.layer, at: textAnchor(e) });
       return;
     }
     if (e.type === 'INSERT') {

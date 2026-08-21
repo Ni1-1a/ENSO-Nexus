@@ -33,15 +33,38 @@ const { db } = require('../../db');
 /** Провайдеры, которые обращаются к чужому сервису по нашему ключу. */
 const CLOUD_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini']);
 
-/** Текст отказа — один на все места, чтобы человек везде читал одно и то же. */
-const DENY_MESSAGE =
-  'Облачные модели на этой платформе доступны только владельцу: условия провайдеров '
-  + 'запрещают открывать доступ к их сервисам другим людям. Выберите в «Настройках» '
-  + 'локальную модель — она работает на сервере платформы и доступна всем.';
+/** Человеческие имена провайдеров для текста отказа. */
+const PROVIDER_LABELS = { claude: 'Claude', chatgpt: 'ChatGPT', kimi: 'Kimi', gemini: 'Gemini' };
 
 function isCloud(providerId) {
   return CLOUD_PROVIDERS.has(String(providerId || ''));
 }
+
+/**
+ * Открыт ли провайдер всем вошедшим (список из CLOUD_AI_OPEN_PROVIDERS).
+ *
+ * Владелец может открыть один сервис и оставить закрытыми остальные: у разных
+ * провайдеров разные условия и разная цена ошибки. Открытие — осознанное
+ * действие: список белый, пустая переменная не открывает ничего.
+ */
+function openToEveryone(providerId) {
+  return config.cloudAiOpenProviders.has(String(providerId || '').toLowerCase());
+}
+
+/** Текст отказа: называет и то, чем человек может воспользоваться вместо. */
+function denyMessage(providerId) {
+  const имя = PROVIDER_LABELS[providerId] || 'Эта облачная модель';
+  const открытые = [...config.cloudAiOpenProviders]
+    .map((id) => PROVIDER_LABELS[id] || id).join(', ');
+  return `${имя} на этой платформе доступна только владельцу: условия провайдера `
+    + 'запрещают открывать доступ к их сервису другим людям. '
+    + (открытые
+      ? `Выберите в «Настройках» ${открытые} или локальную модель — они доступны всем.`
+      : 'Выберите в «Настройках» локальную модель — она доступна всем.');
+}
+
+/** Общий текст — для мест, где конкретный провайдер неизвестен. */
+const DENY_MESSAGE = denyMessage('');
 
 /** Владелец проекта по его идентификатору; пусто — проект заведён до входа. */
 function ownerOf(sessionId) {
@@ -54,9 +77,14 @@ function ownerOf(sessionId) {
   }
 }
 
-/** Разрешено ли облако конкретному человеку (объект из `users.json`). */
-function userAllowed(user) {
+/**
+ * Разрешено ли облако конкретному человеку (объект из `users.json`).
+ * @param {object} user
+ * @param {string} [providerId] — если провайдер открыт всем, отметка не нужна
+ */
+function userAllowed(user, providerId) {
   if (config.cloudAiOpen) return true;
+  if (providerId && openToEveryone(providerId)) return !!(user && user.approved);
   return !!(user && user.approved && user.cloudAi === true);
 }
 
@@ -68,11 +96,11 @@ function userAllowed(user) {
  * правдой. Отключается это одним способом — `CLOUD_AI_OPEN=1`, и он же
  * возвращает прежнее поведение целиком.
  */
-function allowedForSession(sessionId) {
+function allowedForSession(sessionId, providerId) {
   if (config.cloudAiOpen) return true;
   const ownerId = ownerOf(sessionId);
   if (!ownerId) return false;
-  return userAllowed(require('../users').byId(ownerId));
+  return userAllowed(require('../users').byId(ownerId), providerId);
 }
 
 /**
@@ -90,6 +118,6 @@ function safetyIdentifier(sessionId) {
 }
 
 module.exports = {
-  CLOUD_PROVIDERS, DENY_MESSAGE,
-  isCloud, userAllowed, allowedForSession, safetyIdentifier, ownerOf,
+  CLOUD_PROVIDERS, DENY_MESSAGE, PROVIDER_LABELS,
+  isCloud, openToEveryone, denyMessage, userAllowed, allowedForSession, safetyIdentifier, ownerOf,
 };

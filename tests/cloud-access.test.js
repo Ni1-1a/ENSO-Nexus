@@ -310,3 +310,93 @@ test('CLOUD_AI_OPEN=1 возвращает прежнее поведение ц�
   }
   assert.strictEqual(cloudAccess.allowedForSession(sid), false, 'и возвращать запрет обратно');
 });
+
+/* ================= доступ по каждому провайдеру отдельно ================= */
+
+/*
+ * Решение владельца 2026-08-20: «Kimi всем, остальные только мне». Гейт
+ * `cloudAi` — всё или ничего, поэтому появился белый список
+ * CLOUD_AI_OPEN_PROVIDERS. Здесь закрывается главное: открытие ОДНОГО сервиса
+ * не должно приоткрывать соседние, и на дне адаптера правило то же, что в пикере.
+ */
+function сОткрытымKimi(fn) {
+  const config = require('../server/config');
+  const было = config.cloudAiOpenProviders;
+  config.cloudAiOpenProviders = new Set(['kimi']);
+  try { return fn(); } finally { config.cloudAiOpenProviders = было; }
+}
+
+test('открытый Kimi доступен всем вошедшим, остальное облако — только владельцу', () => {
+  const сотрудник = makeUser('Открытов', 'Пётр', false);
+  const владелец = makeUser('Владельцев', 'Иван', true);
+  сОткрытымKimi(() => {
+    const u = require('../server/services/users');
+    assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), 'kimi'), true, 'Kimi открыт всем');
+    assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), 'claude'), false, 'Claude остаётся владельцу');
+    assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), 'gemini'), false);
+    assert.strictEqual(cloudAccess.userAllowed(u.byId(владелец), 'claude'), true, 'у владельца доступ ко всему');
+  });
+});
+
+test('открытие одного провайдера не открывает соседние на дне адаптера', async () => {
+  const sid = makeSession(makeUser('Соседов', 'Кирилл', false));
+  await сОткрытымKimi(async () => {
+    // Kimi проходит
+    requests = [];
+    await adapter.plainCall({
+      system: 'с', sessionId: sid, route: { provider: 'kimi', model: 'kimi-k2.6' },
+      messages: [{ role: 'user', content: 'привет' }],
+    });
+    assert.strictEqual(requests.length, 1, 'Kimi обязан дойти до провайдера');
+
+    // ChatGPT — нет, и отказ приходит ДО обращения к сети.
+    // Провайдер взят настроенный: у Claude в тестовой среде нет ключа, и он
+    // отказал бы раньше гейта — тест проверял бы не то, что заявлено.
+    requests = [];
+    await assert.rejects(
+      adapter.plainCall({
+        system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+        messages: [{ role: 'user', content: 'привет' }],
+      }),
+      (err) => /только владельцу/.test(err.message),
+      'ChatGPT обязан отказать человеку без отметки',
+    );
+    assert.strictEqual(requests.length, 0, 'до провайдера запрос доходить не должен');
+  });
+});
+
+test('в отказе названо, чем можно воспользоваться вместо', () => {
+  сОткрытымKimi(() => {
+    const текст = cloudAccess.denyMessage('claude');
+    assert.match(текст, /Claude/, 'человек должен понять, какой именно модели ему отказали');
+    assert.match(текст, /Kimi/, 'и увидеть открытую замену, а не только запрет');
+    assert.match(текст, /локальную модель/);
+  });
+});
+
+test('пустой список не открывает никого', () => {
+  const config = require('../server/config');
+  const было = config.cloudAiOpenProviders;
+  config.cloudAiOpenProviders = new Set();
+  try {
+    const u = require('../server/services/users');
+    const сотрудник = makeUser('Забытов', 'Семён', false);
+    assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), 'kimi'), false,
+      'забытая переменная обязана означать «никому», а не «всем»');
+  } finally { config.cloudAiOpenProviders = было; }
+});
+
+test('Kimi помечает конечного человека полем user', async () => {
+  const sid = makeSession(makeUser('Меткин', 'Олег', false));
+  await сОткрытымKimi(async () => {
+    requests = [];
+    await adapter.plainCall({
+      system: 'с', sessionId: sid, route: { provider: 'kimi', model: 'kimi-k2.6' },
+      messages: [{ role: 'user', content: 'привет' }],
+    });
+    const тело = requests[0].body;
+    assert.ok(тело.user, 'один ключ на пятерых обязан различать людей на стороне провайдера');
+    assert.match(тело.user, /^enso-[0-9a-f]{24}$/, 'уходит хэш, а не имя');
+    assert.ok(!/Меткин|Олег/.test(JSON.stringify(тело)), 'ФИО в запрос попадать не должно');
+  });
+});

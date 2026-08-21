@@ -256,6 +256,12 @@ function createSiteGeometry({ coordinateSystem = null, sourceReferences = [] } =
       assumedUnits: true,
     },
     drawingBounds: null,
+    /*
+     * Привязка чертежа по крестам координатной сетки (geometry/grid-crosses.js):
+     * какая ось чертежа несёт какое семейство координат и есть ли сдвиг.
+     * null — сетку в чертеже прочитать не удалось.
+     */
+    gridRef: null,
     parcel: null,
     buildings: [],
     redLines: [],

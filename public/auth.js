@@ -31,7 +31,7 @@
     return d;
   }
 
-  const state = { user: null, token: '', mode: 'free' };
+  const state = { user: null, token: '', mode: 'free', requireLogin: true };
 
   function stored() {
     try { return JSON.parse(localStorage.getItem(AUTH_KEY) || 'null'); } catch { return null; }
@@ -177,6 +177,7 @@
     const saved = stored();
     // вход мог быть выключен на сервере (REQUIRE_LOGIN=0) — тогда экран не нужен
     const mode = await loadMode();
+    state.requireLogin = !(mode && mode.requireLogin === false);
     if (mode && mode.requireLogin === false) {
       document.documentElement.dataset.boot = 'app';
       el('auth-screen').hidden = true;
@@ -222,10 +223,25 @@
     init, start,
     get token() { return state.token; },
     get user() { return state.user; },
-    signOut() {
+    /** Требуется ли вход на этом сервере: при REQUIRE_LOGIN=0 выходить неоткуда. */
+    get requireLogin() { return state.requireLogin; },
+    /**
+     * Выход. Сервер уведомляется ДО перезагрузки: раньше запрос уходил в
+     * `location.reload()` следующей строкой и браузер обрывал его на полпути —
+     * токен оставался живым на сервере, хотя в браузере его уже не было.
+     * Ответа не ждём дольше двух секунд: недоступный сервер не должен
+     * запирать человека внутри записи.
+     */
+    async signOut() {
       const token = state.token;
       forget();
-      fetch('/api/auth/logout', { method: 'POST', headers: { 'X-User-Token': token } }).catch(() => {});
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'X-User-Token': token },
+          signal: AbortSignal.timeout(2000),
+        });
+      } catch { /* сервер недоступен — локально мы уже вышли */ }
       location.reload();
     },
   };

@@ -32,6 +32,7 @@ const adapter = require('../claude/adapter');
 const { buildDocumentBlocks } = require('../claude/memory');
 const registry = require('../ai/registry');
 const progress = require('../progress');
+const gridCrosses = require('./grid-crosses');
 
 /* ---------------- схема структурного ответа ---------------- */
 
@@ -124,8 +125,7 @@ function outsideShare(points, bounds) {
  * Раскладка координат по осям чертежа.
  *
  * Проверяются обе: «как напечатано» и «колонки местами». Площадь при
- * перестановке не меняется, поэтому решает попадание в габариты чертежа,
- * а при их отсутствии — заголовок колонки из документа (ЕГРН: X — север).
+ * перестановке не меняется, поэтому по ней раскладку различить нельзя.
  */
 function orientations(raw, drawingBounds) {
   const direct = raw.map((p) => [p.first, p.second]);
@@ -134,6 +134,51 @@ function orientations(raw, drawingBounds) {
     { id: 'direct', points: direct, label: 'колонки как напечатаны (первая → X чертежа)' },
     { id: 'swapped', points: swapped, label: 'колонки переставлены (первая → Y чертежа)' },
   ].map((o) => ({ ...o, outside: outsideShare(o.points, drawingBounds) }));
+}
+
+/**
+ * Раскладка ПО КРЕСТАМ координатной сетки — измерение вместо догадки.
+ *
+ * Кресты сетки подписаны своими координатами, и по подписям известно, какая
+ * ось чертежа несёт какое семейство чисел (geometry/grid-crosses.js). Дальше
+ * вопрос решается арифметикой: число 2 195 897,76 принадлежит семейству
+ * горизонтали, 422 352,83 — семейству вертикали, и никакого выбора не
+ * остаётся. Как названы колонки в документе и попадает ли контур в габариты
+ * чертежа, здесь не важно вовсе.
+ *
+ * Голосуют все точки: одна криво прочитанная строка таблицы не должна
+ * переворачивать весь участок. Ничья или разнобой — отказ, и тогда решение
+ * принимается прежним способом, с честной пометкой.
+ *
+ * @returns {{id:string, label:string, votes:number, total:number}|null}
+ */
+function orientationByGrid(raw, grid) {
+  if (!grid || !grid.ok) return null;
+  let direct = 0;      // first → горизонталь чертежа
+  let swapped = 0;     // first → вертикаль чертежа
+  let unknown = 0;
+  for (const p of raw) {
+    const a = gridCrosses.axisFor(grid, p.first);
+    const b = gridCrosses.axisFor(grid, p.second);
+    if (a === 'x' && b === 'y') direct++;
+    else if (a === 'y' && b === 'x') swapped++;
+    else unknown++;
+  }
+  const total = raw.length;
+  if (direct === swapped) return null;
+  const winner = direct > swapped ? 'direct' : 'swapped';
+  const votes = Math.max(direct, swapped);
+  // большинство обязано быть уверенным: половина точек «за» — это не ответ
+  if (votes < Math.ceil(total * 0.6)) return null;
+  return {
+    id: winner,
+    votes,
+    total,
+    unknown,
+    label: winner === 'direct'
+      ? 'колонки как напечатаны (первая → X чертежа), сверено по крестам сетки'
+      : 'колонки переставлены (первая → Y чертежа), сверено по крестам сетки',
+  };
 }
 
 /**
@@ -158,31 +203,69 @@ function build(record, site = null) {
   }
 
   const bounds = site && site.drawingBounds ? site.drawingBounds : null;
+  const grid = site && site.gridRef ? site.gridRef : null;
   const variants = orientations(raw, bounds);
 
-  // Выбор раскладки: сначала попадание в чертёж, при равенстве — заголовок колонки.
+  /*
+   * Раскладка осей: сначала кресты, и только потом всё остальное.
+   *
+   * Кресты координатной сетки подписаны своими координатами — это ИЗМЕРЕНИЕ,
+   * прямо отвечающее на вопрос «какая ось чертежа что несёт». Прежний порядок
+   * (попадает ли контур в габариты чертежа) — догадка, и она врёт ровно там,
+   * где ошибка дороже всего: участок выходит за рамку съёмки; обе раскладки
+   * попадают в габариты; чертёж вычерчен со сдвигом. На Горбунках догадка
+   * случайно давала верный ответ, но опереться на неё нельзя.
+   */
   let chosen = null;
-  const fits = variants.filter((v) => v.outside !== null && v.outside === 0);
-  if (fits.length === 1) {
-    chosen = fits[0];
-  } else if (fits.length === 2) {
-    // обе укладываются — чертёж не различает; верим заголовку таблицы
-    chosen = variants.find((v) => v.id === (meta.firstColumnMeans === 'Y' ? 'direct' : 'swapped')) || variants[1];
-    warnings.push('Обе раскладки координат попадают в габариты чертежа — порядок осей выбран по заголовку ' +
-      `колонки в документе («${meta.firstColumnMeans || 'не указан'}»). Проверьте положение участка на плане.`);
-  } else if (bounds) {
-    const best = [...variants].sort((a, b) => a.outside - b.outside)[0];
-    chosen = best;
-    warnings.push(`Ни одна раскладка координат не укладывается в габариты чертежа целиком: ` +
-      `лучшая («${best.label}») выносит за них ${Math.round(best.outside * 100)}% точек. ` +
-      'Вероятно, чертёж и документ выполнены в разных системах координат — проверьте систему в штампе топосъёмки.');
+  const byGrid = orientationByGrid(raw, grid);
+  if (byGrid) {
+    chosen = { ...variants.find((v) => v.id === byGrid.id), label: byGrid.label };
+    if (byGrid.unknown) {
+      warnings.push(`Из ${byGrid.total} точек границы ${byGrid.unknown} не легли ни на одну ось координатной сетки — `
+        + 'проверьте эти строки таблицы в документе.');
+    }
   } else {
-    // чертежа нет — сравнивать не с чем; порядок берётся из заголовка колонки
-    chosen = variants.find((v) => v.id === (meta.firstColumnMeans === 'Y' ? 'direct' : 'swapped')) || variants[1];
-    warnings.push('Чертежа для сверки нет — порядок осей принят по заголовку колонки в документе.');
+    const why = grid && grid.ok
+      ? 'координаты из документа не совпали ни с одной осью сетки'
+      : `координатной сетки в чертеже не прочитано (${(grid && grid.note) || 'подписей нет'})`;
+    const fits = variants.filter((v) => v.outside !== null && v.outside === 0);
+    if (fits.length === 1) {
+      chosen = fits[0];
+      warnings.push(`Порядок осей выбран по габаритам чертежа, а не по крестам сетки: ${why}.`);
+    } else if (fits.length === 2) {
+      // обе укладываются — габариты не различают; верим заголовку таблицы
+      chosen = variants.find((v) => v.id === (meta.firstColumnMeans === 'Y' ? 'direct' : 'swapped')) || variants[1];
+      warnings.push('Обе раскладки координат попадают в габариты чертежа, а по крестам сетки не различить '
+        + `(${why}) — порядок осей выбран по заголовку колонки в документе `
+        + `(«${meta.firstColumnMeans || 'не указан'}»). Проверьте положение участка на плане.`);
+    } else if (bounds) {
+      const best = [...variants].sort((a, b) => a.outside - b.outside)[0];
+      chosen = best;
+      warnings.push('Ни одна раскладка координат не укладывается в габариты чертежа целиком: '
+        + `лучшая («${best.label}») выносит за них ${Math.round(best.outside * 100)}% точек. `
+        + `По крестам сетки тоже не определить (${why}). `
+        + 'Вероятно, чертёж и документ выполнены в разных системах координат — проверьте систему в штампе топосъёмки.');
+    } else {
+      // чертежа нет — сравнивать не с чем; порядок берётся из заголовка колонки
+      chosen = variants.find((v) => v.id === (meta.firstColumnMeans === 'Y' ? 'direct' : 'swapped')) || variants[1];
+      warnings.push('Чертежа для сверки нет — порядок осей принят по заголовку колонки в документе.');
+    }
   }
 
-  const points = dropClosingPoint(G.cleanPoints(chosen.points, true));
+  /*
+   * Сдвиг чертежа относительно системы координат — если кресты его показали.
+   * Отступ подписи от линии сюда не попадает: он обнулён в grid-crosses.js,
+   * иначе участок уезжал бы на полметра, и проверка по площади этого не
+   * заметила бы (при переносе площадь не меняется).
+   */
+  let placed = chosen.points;
+  if (grid && grid.ok && (grid.offsetX || grid.offsetY)) {
+    placed = placed.map(([x, y]) => [x - grid.offsetX, y - grid.offsetY]);
+    warnings.push(`Чертёж вычерчен со сдвигом относительно системы координат `
+      + `(${grid.offsetX.toFixed(2)}; ${grid.offsetY.toFixed(2)}) м по подписям сетки — граница участка сдвинута на ту же величину.`);
+  }
+
+  const points = dropClosingPoint(G.cleanPoints(placed, true));
   if (points.length < 3) {
     errors.push('После удаления повторяющихся вершин осталось меньше трёх точек — контур вырожден.');
     return { ok: false, warnings, errors, report: { pointCount: raw.length } };
@@ -229,10 +312,20 @@ function build(record, site = null) {
     orientationLabel: chosen.label,
     warnings,
     errors,
+    grid: grid && grid.ok ? {
+      crosses: grid.crosses.length,
+      axisX: grid.axisX, axisY: grid.axisY,
+      offsetX: grid.offsetX, offsetY: grid.offsetY,
+      note: grid.note,
+    } : null,
     report: {
       areaM2, declared, tolerance, areaCheck,
       pointCount: points.length,
       orientation: chosen.label,
+      // на чём стоит раскладка осей: измерение по крестам или запасной способ
+      axisBasis: byGrid
+        ? `кресты координатной сетки (${grid.crosses.length} подписей, совпало точек ${byGrid.votes} из ${byGrid.total})`
+        : 'крестов сетки нет — запасной способ',
       cadastralNumber: meta.cadastralNumber || '',
       coordinateSystem: meta.coordinateSystem || '',
       sourceDocument: meta.sourceDocument || '',
@@ -367,9 +460,35 @@ function applyTo(sessionId, site) {
     code: 'parcel-from-document',
     message: `Границы участка взяты не из чертежа, а из документа «${meta.sourceDocument || 'исходные данные'}»`
       + `${meta.sourcePage ? ` (${meta.sourcePage})` : ''}: ${built.points.length} характерных точек, `
-      + `площадь ${built.areaM2} м², ${built.report.areaCheck}. Порядок осей — ${built.orientationLabel}.`
+      + `площадь ${built.areaM2} м², ${built.report.areaCheck}. Порядок осей — ${built.orientationLabel}`
+      + `; основание: ${built.report.axisBasis}.`
       + (prev ? ` Прежний контур (${prev.properties.areaM2} м², слой «${prev.provenance.sourceLayer}») сохранён в плане как существующий объект.` : ''),
   });
+
+  /*
+   * Расхождение с чертежом называется отдельной строкой, а не хвостом
+   * предыдущей фразы.
+   *
+   * Документ теперь читается всегда, поэтому пара «контур из чертежа» и
+   * «контур из ГПЗУ» встречается на каждом комплекте, где есть и то и другое.
+   * Пока они сходятся — говорить не о чем. Когда расходятся в разы, это либо
+   * участком назначен не тот контур, либо чертёж и документ в разных системах
+   * координат: и то и другое человек обязан увидеть до того, как согласует
+   * посадку, а не после.
+   */
+  if (prev && Number(prev.properties.areaM2) > 0) {
+    const was = Number(prev.properties.areaM2);
+    const delta = Math.abs(built.areaM2 - was);
+    if (delta > Math.max(built.areaM2 * 0.02, 1)) {
+      site.warnings.push({
+        code: 'parcel-document-vs-drawing',
+        message: `Контур участка из чертежа (${G.round(was, 2)} м², слой «${prev.provenance.sourceLayer || 'без слоя'}») `
+          + `расходится с границей по ГПЗУ (${built.areaM2} м²) на ${G.round(delta, 2)} м². `
+          + 'Расчёт ведётся по документу. Проверьте, что в чертёж не попал посторонний контур '
+          + 'и что чертёж и документ выполнены в одной системе координат.',
+      });
+    }
+  }
 
   G.recomputeBounds(site);
   return { applied: true, built, parcel };
@@ -401,7 +520,23 @@ async function extract(sessionId, { route, signal = null, author = '' } = {}) {
    */
   await adapter.ensureDocumentsStudied(sessionId, { route, signal });
 
-  const { blocks, manifest } = await buildDocumentBlocks(sessionId, registry.documentMode(route));
+  /*
+   * useDigest: false — обязательно.
+   *
+   * По умолчанию документы уходят модели КОНСПЕКТОМ: если конспект есть, он
+   * подставляется вместо распознанного текста и остальные источники даже не
+   * читаются. Для разговора о документе это правильно, для переноса таблицы —
+   * гибельно: конспект пересказывает, а таблицу из двадцати чисел пересказать
+   * нельзя, её можно только выбросить. Ровно это и происходило на Горбунках —
+   * модель отвечала «указаны диапазоны координат (точки 1–6), но отсутствует
+   * полная таблица со значениями X/Y», хотя таблица стоит на первой странице
+   * ГПЗУ и лежит распознанной рядом.
+   *
+   * Здесь нужен дословный источник — распознанные страницы, — поэтому конспект
+   * отключён. Заодно это возвращает смысл вызову ensureDocumentsStudied выше:
+   * без отключения он грел кэш, которым никто не пользовался.
+   */
+  const { blocks, manifest } = await buildDocumentBlocks(sessionId, registry.documentMode(route), { useDigest: false });
   const messages = [];
   if (manifest.length) messages.push({ role: 'user', content: `<uploaded_files>\n${manifest.join('\n')}\n</uploaded_files>` });
   if (blocks.length) messages.push({ role: 'user', content: blocks });

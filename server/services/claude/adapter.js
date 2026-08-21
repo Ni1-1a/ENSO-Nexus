@@ -149,6 +149,8 @@ function client() {
     const Anthropic = require('@anthropic-ai/sdk');
     _client = new Anthropic({
       apiKey: config.anthropicApiKey,
+      // пусто — SDK сам подставит api.anthropic.com; задано — идём через шлюз
+      ...(config.anthropicBaseUrl ? { baseURL: config.anthropicBaseUrl } : {}),
       timeout: config.anthropicRequestTimeoutMs,
       maxRetries: config.anthropicMaxRetries, // SDK retries 429/5xx/network with exponential backoff
     });
@@ -169,8 +171,10 @@ class AiUnavailableError extends Error {}
  */
 function assertCloudAllowed(providerId, sessionId) {
   if (!cloudAccess.isCloud(providerId)) return;
-  if (cloudAccess.allowedForSession(sessionId)) return;
-  throw new AiUnavailableError(cloudAccess.DENY_MESSAGE);
+  // Провайдер передаётся в проверку: доступ теперь бывает разным у разных
+  // сервисов (владелец открыл Kimi всем, остальное оставил себе).
+  if (cloudAccess.allowedForSession(sessionId, providerId)) return;
+  throw new AiUnavailableError(cloudAccess.denyMessage(providerId));
 }
 
 /**
@@ -231,6 +235,42 @@ function recordUsage(sessionId, usage, route = {}, { internal = false } = {}) {
     `UPDATE sessions SET ${counter} = ${counter} + 1, input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cost_usd = cost_usd + ?, updated_at = ? WHERE id = ?`,
   ).run(input, output, cost, now(), sessionId);
   const cached = (usage?.cache_creation_input_tokens || 0) + (usage?.cache_read_input_tokens || 0);
+
+  /*
+   * Тот же расход — строкой события, для вкладки «Статистика».
+   *
+   * Итог в сессии отвечает «сколько всего» и держит предохранители проекта;
+   * из него нельзя достать ни график по дням, ни разбивку по моделям, ни
+   * расход конкретного человека. Пишем рядом, а не вместо: ломать
+   * предохранители ради отчётности нельзя.
+   *
+   * Провайдер и модель берутся ФАКТИЧЕСКИЕ (resolveModel), а не как записаны в
+   * проекте: у сессии там может стоять пустая строка «по умолчанию», и весь
+   * расход свалился бы в модель без имени.
+   *
+   * Сбой записи не имеет права уронить сам запрос к модели: ответ уже получен
+   * и оплачен, терять его из-за отчётности — худшее, что можно сделать.
+   */
+  try {
+    const owner = db.prepare('SELECT user_id FROM sessions WHERE id = ?').get(sessionId);
+    db.prepare(`INSERT INTO usage_events
+      (session_id, user_id, provider, model, internal, input_tokens, output_tokens,
+       cache_write_tokens, cache_read_tokens, cost_usd, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+      sessionId,
+      (owner && owner.user_id) || '',
+      route.provider || '',
+      resolveModel(route) || route.model || '',
+      internal ? 1 : 0,
+      input, output,
+      usage?.cache_creation_input_tokens || 0,
+      usage?.cache_read_input_tokens || 0,
+      cost, now(),
+    );
+  } catch (err) {
+    console.warn('[usage] событие расхода не записано:', err.message);
+  }
+
   console.log(`[tokens] session=${sessionId}${internal ? ' (служебный)' : ''} in=${input}${cached ? ` (из них кэш ${cached})` : ''} out=${output}${cost ? ` cost=$${cost.toFixed(4)}` : ''}`);
 }
 
@@ -241,7 +281,7 @@ function effectiveProvider(session) {
   // Умолчание не имеет права быть облачным для того, кому облако закрыто.
   // Тихой подмены ВЫБОРА здесь нет: выбора не было — сессия его не хранит,
   // и человек увидит в шапке ровно ту модель, которая будет работать.
-  if (cloudAccess.isCloud(fallback) && !cloudAccess.allowedForSession(session && session.id)) {
+  if (cloudAccess.isCloud(fallback) && !cloudAccess.allowedForSession(session && session.id, fallback)) {
     return { provider: 'lmstudio', model: '' };
   }
   return { provider: fallback, model: '' };
@@ -728,10 +768,19 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     }
     // Приложение с несколькими людьми обязано называть провайдеру конечного
     // пользователя: без этого любое срабатывание модерации у любого из них
-    // ложится на организацию целиком. Уходит хэш, не ФИО. Поле отправляется
-    // только OpenAI: у прочих OpenAI-совместимых его в контракте нет.
+    // ложится на организацию целиком. Уходит хэш, не ФИО.
     const endUser = cloudAccess.safetyIdentifier(sessionId);
     if (endUser) body.safety_identifier = endUser;
+  } else if (providerId === 'kimi') {
+    /*
+     * У Moonshot своего `safety_identifier` в контракте нет, но обычное поле
+     * `user` он принимает (проверено запросом 2026-08-20, HTTP 200). С тех пор
+     * как Kimi открыт всем вошедшим, один ключ обслуживает пятерых, и это
+     * ровно та конфигурация, за которую отключили аккаунт OpenAI. Пусть у
+     * провайдера будет видно, что запросы принадлежат разным людям.
+     */
+    const endUser = cloudAccess.safetyIdentifier(sessionId);
+    if (endUser) body.user = endUser;
   }
 
   progress.set(sessionId, {

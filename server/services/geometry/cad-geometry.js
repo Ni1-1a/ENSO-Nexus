@@ -13,6 +13,7 @@
  */
 const cad = require('../cad');
 const G = require('./site-geometry');
+const gridCrosses = require('./grid-crosses');
 
 /**
  * Правила классификации слоёв живут в geometry/layers.js вместе с перечнем
@@ -299,6 +300,29 @@ function fromDxf(dxfText, source = {}) {
   }
 
   G.recomputeBounds(site);
+
+  /*
+   * Привязка по крестам сетки — до всякой работы с границами участка.
+   *
+   * Подписи сетки уже разобраны вместе с остальными надписями; здесь они
+   * превращаются в ответ на вопрос «какая ось чертежа что несёт и нет ли
+   * сдвига». Это измерение, и оно заменяет прежнюю догадку по габаритам
+   * (см. geometry/grid-crosses.js). Масштаб единиц применяем к точкам подписей
+   * так же, как ко всей остальной геометрии, — иначе чертёж в сантиметрах
+   * даст сетку в метрах.
+   */
+  const gridTexts = (parsed.texts || []).map((t) => (t.at
+    ? { ...t, at: [t.at[0] * scale, t.at[1] * scale] }
+    : t));
+  site.gridRef = gridCrosses.read(gridTexts, site.drawingBounds);
+  if (site.gridRef.ok && (Math.abs(site.gridRef.offsetX) > 0.5 || Math.abs(site.gridRef.offsetY) > 0.5)) {
+    site.warnings.push({
+      code: 'grid-offset',
+      message: `Чертёж «${fileName}» вычерчен со сдвигом относительно системы координат: `
+        + `(${site.gridRef.offsetX.toFixed(2)}; ${site.gridRef.offsetY.toFixed(2)}) м по подписям сетки. `
+        + 'Сдвиг учитывается при переносе координат из документов.',
+    });
+  }
 
   if (site.parcel) {
     for (const c of parcelCandidates) c.chosen = !!(c.object && c.object.id === site.parcel.id);

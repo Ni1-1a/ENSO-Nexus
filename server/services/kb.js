@@ -30,9 +30,70 @@ try { db.exec("ALTER TABLE kb_chunks ADD COLUMN kb TEXT DEFAULT 'main'"); } catc
 const MAX_CHUNK_CHARS = 1400;
 const MIN_CHUNK_CHARS = 80;
 
+/**
+ * Длинный чанк делим, а не обрезаем.
+ *
+ * Обрезка молча уносит хвост, и это опаснее, чем кажется: в нормативной таблице
+ * последняя строка — такое же требование, как первая, а чаще всего нужна именно
+ * она («V степень огнестойкости» стоит внизу). Остальные ветки загрузки чанков
+ * давно делят по кускам; структурированная почему-то одна обрезала.
+ *
+ * У таблицы делим по строкам и повторяем шапку в каждом куске: кусок таблицы
+ * без шапки — это столбик чисел без смысла.
+ */
+function splitChunk(text) {
+  if (text.length <= MAX_CHUNK_CHARS) return [text];
+  const lines = text.split('\n');
+  const tableLines = lines.filter((l) => l.trim().startsWith('|'));
+  const header = tableLines.length >= 2 ? tableLines[0] : null;
+  const pieces = [];
+  let current = [];
+  let length = 0;
+  const start = () => {
+    current = pieces.length && header ? [header] : [];
+    length = current.length ? header.length + 1 : 0;
+  };
+  const flush = () => { if (current.length) { pieces.push(current.join('\n')); start(); } };
+  start();
+  for (const line of lines) {
+    if (line.length + 1 > MAX_CHUNK_CHARS) {
+      // строка сама длиннее предела — режем по знакам, иначе она пропадёт целиком
+      flush();
+      for (let i = 0; i < line.length; i += MAX_CHUNK_CHARS) pieces.push(line.slice(i, i + MAX_CHUNK_CHARS));
+      start();
+      continue;
+    }
+    if (length + line.length + 1 > MAX_CHUNK_CHARS && current.length) flush();
+    current.push(line);
+    length += line.length + 1;
+  }
+  if (current.length) pieces.push(current.join('\n'));
+  // кусок из одной повторённой шапки смысла не несёт
+  return pieces.filter((p) => p.trim().length >= MIN_CHUNK_CHARS && p !== header);
+}
+
 /* ---------------- загрузка исходных чанков из KB_DIR ---------------- */
 function cleanText(t) {
   return String(t || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * То же, но с сохранением переводов строк.
+ *
+ * Для названия документа и номера пункта переносы не нужны, а для текста чанка
+ * нужны: таблица размечена по строкам, и если склеить их в одну, получится
+ * лента «| 6 | 8 | 8 | 10 | 8 | 10 | ...», в которой не видно, где кончается
+ * строка про I степень огнестойкости и начинается про II.
+ */
+function cleanChunkText(t) {
+  return String(t || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[^\S\n]+/g, ' ')
+    .split('\n')
+    .map((l) => l.trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function loadSourceChunks(kbDir) {
@@ -71,15 +132,17 @@ function loadSourceChunks(kbDir) {
       for (const line of lines) {
         try {
           const c = JSON.parse(line);
-          const text = cleanText(c['текст']);
+          const text = cleanChunkText(c['текст']);
           if (text.length < MIN_CHUNK_CHARS) continue;
-          chunks.push({
+          const meta = {
             doc: cleanText(c['документ']) || doc,
             clause: cleanText(c['пункт']),
             priority: cleanText(c['приоритет']),
-            text: text.slice(0, MAX_CHUNK_CHARS),
-          });
-          added++;
+          };
+          for (const piece of splitChunk(text)) {
+            chunks.push({ ...meta, text: piece });
+            added++;
+          }
         } catch { /* пропускаем битые строки */ }
       }
       if (added > 0) seenDocs.add(doc);
@@ -111,43 +174,66 @@ function loadSourceChunks(kbDir) {
   return chunks;
 }
 
-/* ---------------- коллекция НТД для базы Гриши ---------------- */
-/** Нормализация имени документа: у вики-ссылок «/» заменён пробелом и т.п. */
+/* ---------------- верифицированный разбор вытесняет старый ---------------- */
+/** Нормализация имени документа: регистр и разделители не должны разводить пары. */
 function normDoc(s) {
   return String(s).toLowerCase().replace(/[/\\]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-let collCache = null;
-let collMtime = 0;
 /**
- * Документы коллекции из заметки Obsidian (config.kbGrishaCollection):
- * все цели вики-ссылок [[Документ]] / [[Документ|подпись]]. null — коллекции нет.
+ * Документы, разобранные верифицированно, — по каталогу базы, а не по индексу.
+ *
+ * Источником служит сам каталог: индекс может быть собран до того, как база
+ * пополнилась, и тогда старая копия документа снова полезет в ответы. Список
+ * читается один раз за запуск — каталог за время работы сервера не меняется.
  */
-function collectionDocs() {
-  const file = config.kbGrishaCollection;
-  try {
-    if (!file || !fs.existsSync(file)) return null;
-    const mtime = fs.statSync(file).mtimeMs;
-    if (collCache && mtime === collMtime) return collCache;
-    const text = fs.readFileSync(file, 'utf8');
-    const docs = new Set();
-    for (const m of text.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)) docs.add(normDoc(m[1]));
-    collCache = docs.size ? docs : null;
-    collMtime = mtime;
-    return collCache;
-  } catch { return null; }
+let verifiedDocsCache = null;
+function verifiedDocs() {
+  if (verifiedDocsCache) return verifiedDocsCache;
+  const docs = new Set();
+  const base = config.kbBases.find((b) => b.id === 'verified');
+  if (base) {
+    for (const sub of ['09_Векторный-индекс', '04_JSON']) {
+      const dir = path.join(base.dir, sub);
+      if (!fs.existsSync(dir)) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith('.')) docs.add(normDoc(name));
+      }
+    }
+  }
+  verifiedDocsCache = docs;
+  return docs;
 }
 
 /**
- * Принадлежит ли чанк базе. База Гриши = его собственные отметки (kb='grisha')
- * ПЛЮС документы основной базы, перечисленные в коллекции «НТД_Гриша».
+ * Принадлежит ли чанк базе.
+ *
+ * Тринадцать документов лежали в индексе ДВАЖДЫ: старым разбором регулярными
+ * выражениями в общей базе и верифицированным разбором рядом. Регэкспы на этих
+ * же документах и рассыпались — пункты 3.13–3.19 внутри текста 3.12.1, числа из
+ * таблицы в роли номеров пунктов, сорок таблиц при нуле пунктов. Пока обе копии
+ * лежат рядом, поиск с равной вероятностью цитирует битую, и пометки об этом в
+ * ответе не будет.
+ *
+ * Поэтому здесь ЗАМЕЩЕНИЕ, а не вычитание: старый разбор этих документов не
+ * выдаётся никогда, но общая база отдаёт вместо него верифицированный. Простое
+ * вычитание проверялось и оказалось хуже — общая база теряла СП 4.13130,
+ * СП 42.13330, ГрК РФ и СанПиН 1200-03 целиком, то есть ровно те документы,
+ * ради которых её и спрашивают.
+ *
+ * Смысл выбора после этого такой:
+ *   «Общая база»    — все 53 документа, лучший разбор из имеющихся;
+ *   «Верифицировано» — только 13, зато каждый пересчитан по исходнику.
+ *
+ * Файлы и строки индекса целы: изменена только выдача.
  */
 function rowInBase(r, kbId) {
   const kb = r.kb || 'main';
-  if (kbId !== 'grisha') return kb === kbId;
-  if (kb === 'grisha') return true;
-  const coll = collectionDocs();
-  return !!(coll && kb === 'main' && coll.has(normDoc(r.doc)));
+  if (kbId === 'main') {
+    if (kb === 'verified') return true;                        // замена старому разбору
+    return kb === 'main' && !verifiedDocs().has(normDoc(r.doc)); // вытесненный старый разбор — мимо
+  }
+  return kb === kbId;
 }
 
 /* ---------------- эмбеддинги через LM Studio ---------------- */
@@ -190,7 +276,15 @@ async function reindex({ log = () => {} } = {}) {
   if (!config.kbBases.length) throw new Error('KB_DIR не задан');
   const chunks = [];
   for (const base of config.kbBases) {
-    const baseChunks = fs.existsSync(base.dir) ? loadSourceChunks(base.dir) : [];
+    let baseChunks = fs.existsSync(base.dir) ? loadSourceChunks(base.dir) : [];
+    if (base.id === 'main') {
+      // документы, разобранные верифицированно, в общую базу больше не кладём:
+      // иначе следующая сборка вернёт в индекс те самые дубли
+      const before = baseChunks.length;
+      baseChunks = baseChunks.filter((c) => !verifiedDocs().has(normDoc(c.doc)));
+      const dropped = before - baseChunks.length;
+      if (dropped) log(`База «${base.label}»: ${dropped} чанков пропущено — эти документы разобраны верифицированно`);
+    }
     for (const c of baseChunks) c.kb = base.id;
     log(`База «${base.label}»: ${baseChunks.length} чанков`);
     chunks.push(...baseChunks);
@@ -233,24 +327,37 @@ async function reindex({ log = () => {} } = {}) {
   return stats;
 }
 
+/**
+ * Состояние индекса.
+ *
+ * Числа считаются по ТЕМ ЖЕ правилам, по которым идёт поиск: вытесненные
+ * старые копии не входят ни в общий счётчик, ни в счётчик базы. Иначе в
+ * пикере стояло бы «Общая база (9571 фрагм.)» при том, что две с половиной
+ * тысячи из них поиску недоступны, — цифра, которой нельзя верить.
+ */
 function status() {
-  const chunks = db.prepare('SELECT COUNT(*) c FROM kb_chunks').get().c;
-  const docs = db.prepare('SELECT COUNT(DISTINCT doc) c FROM kb_chunks').get().c;
-  const withVectors = db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE embedding IS NOT NULL').get().c;
   const indexedAt = db.prepare("SELECT value FROM kb_meta WHERE key = 'indexed_at'").get()?.value || null;
-  const bases = config.kbBases.map((b) => {
-    let count = db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE kb = ?').get(b.id).c;
-    if (b.id === 'grisha') {
-      const coll = collectionDocs();
-      if (coll) {
-        for (const row of db.prepare("SELECT doc, COUNT(*) c FROM kb_chunks WHERE kb = 'main' GROUP BY doc").all()) {
-          if (coll.has(normDoc(row.doc))) count += row.c;
-        }
-      }
-    }
-    return { id: b.id, label: b.label, chunks: count };
-  });
-  return { enabled: !!config.kbBases.length, chunks, docs, withVectors, indexedAt, bases };
+  const live = new Set(config.kbBases.map((b) => b.id));
+  const rows = db.prepare('SELECT kb, doc, COUNT(*) c, SUM(embedding IS NOT NULL) v FROM kb_chunks GROUP BY kb, doc').all();
+
+  const perBase = new Map(config.kbBases.map((b) => [b.id, 0]));
+  const docs = new Set();
+  let chunks = 0;
+  let withVectors = 0;
+  for (const row of rows) {
+    const kb = row.kb || 'main';
+    // строку могут показывать сразу две базы (верифицированный разбор виден и в
+    // общей) — в счётчик каждой она идёт, в общий итог только один раз
+    for (const b of config.kbBases) if (rowInBase(row, b.id)) perBase.set(b.id, perBase.get(b.id) + row.c);
+    // строки исчезнувших баз и вытесненный старый разбор не считаем нигде
+    if (!live.has(kb) || !config.kbBases.some((b) => rowInBase(row, b.id))) continue;
+    docs.add(normDoc(row.doc));
+    chunks += row.c;
+    withVectors += row.v || 0;
+  }
+
+  const bases = config.kbBases.map((b) => ({ id: b.id, label: b.label, chunks: perBase.get(b.id) || 0 }));
+  return { enabled: !!config.kbBases.length, chunks, docs: docs.size, withVectors, indexedAt, bases };
 }
 
 /* ---------------- поиск ---------------- */

@@ -23,6 +23,7 @@ const state = {
   run: null,                // последний запуск вариантов посадки
   cardsLoading: false,      // защита от повторной загрузки данных карточек
   processing: false,        // запрос на запуск анализа уже ушёл — второй платный прогон не нужен
+  uploads: [],              // файлы, которые прямо сейчас уходят на сервер (имя, размер, процент, исход)
 };
 
 /** Данные карточек привязаны к проекту: при смене проекта их надо забыть. */
@@ -642,14 +643,7 @@ function render() {
   }
 
   // files
-  syncList($('file-list'), v.files.map((f) => `
-    <li class="file-item">
-      <span class="file-ext">${esc(f.ext)}</span>
-      <span class="name">${esc(f.name)}<br><span class="meta">${fmtSize(f.size)} · загружен</span></span>
-      <button class="icon-btn" data-del-file="${f.id}" aria-label="Удалить файл ${esc(f.name)}" title="Удалить">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
-      </button>
-    </li>`));
+  renderFileList();
 
   // настройки анализа (каскад: провайдер → модель)
   const busy = ['queued', 'running'].includes(v.jobStatus);
@@ -1759,6 +1753,93 @@ function managePolling() {
 }
 
 /* ---------------- uploads ---------------- */
+
+/** Расширение файла для плашки формата — то же правило, что на сервере. */
+function extOf(name) {
+  const m = /\.([^.]+)$/.exec(String(name || ''));
+  return m ? m[1] : '?';
+}
+
+/**
+ * Список файлов: сначала уже принятые сервером, следом — уходящие прямо сейчас.
+ *
+ * Строка загружаемого файла появляется ДО отправки и заливается слева направо
+ * по доле реально отправленных байтов. Раньше список рисовался только после
+ * ответа сервера: человек нажимал «выбрать», секунд десять смотрел на пустое
+ * место и жал ещё раз.
+ */
+function renderFileList() {
+  const v = state.view;
+  const done = ((v && v.files) || []).map((f) => `
+    <li class="file-item">
+      <span class="file-ext">${esc(f.ext)}</span>
+      <span class="name">${esc(f.name)}<br><span class="meta">${fmtSize(f.size)} · загружен</span></span>
+      <button class="icon-btn" data-del-file="${f.id}" aria-label="Удалить файл ${esc(f.name)}" title="Удалить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+      </button>
+    </li>`);
+
+  // Строка исчезает не по факту успеха, а когда файл ПРИШЁЛ из refresh():
+  // иначе между ответом сервера и обновлением списка файл пропадает с экрана,
+  // а если убрать её позже — секунду висит двойник.
+  const arrived = new Set(((v && v.files) || []).map((f) => f.name));
+  const pending = state.uploads.filter((u) => !(u.status === 'done' && arrived.has(u.name))).map((u) => {
+    const pct = Math.round(u.pct * 100);
+    const meta = u.status === 'error' ? esc(u.error || 'не загрузился')
+      : u.status === 'done' ? `${fmtSize(u.size)} · загружен`
+        : u.status === 'sent' ? 'проверка на сервере…'
+          : `${fmtSize(u.size)} · ${pct}%`;
+    return `
+    <li class="file-item uploading${u.status === 'error' ? ' failed' : ''}" style="--pct: ${pct}%">
+      <span class="file-ext">${esc(u.ext)}</span>
+      <span class="name">${esc(u.name)}<br><span class="meta">${meta}</span></span>
+    </li>`;
+  });
+
+  syncList($('file-list'), [...done, ...pending]);
+}
+
+/**
+ * Отправка ОДНОГО файла с отслеживанием прогресса.
+ *
+ * Здесь XMLHttpRequest, а не fetch, и это не наследие: у fetch нет события
+ * прогресса ОТПРАВКИ — ни в одном браузере. Проценты взять больше неоткуда.
+ *
+ * По одному файлу за запрос — тоже намеренно: пачкой сервер отвечает одним
+ * числом на всю пачку, и полоса на каждый файл становится невозможной.
+ */
+function uploadOne(file, onProgress) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/sessions/${state.session.id}/files`);
+    for (const [k, val] of Object.entries(authHeaders(state.session.token))) xhr.setRequestHeader(k, val);
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    });
+    xhr.addEventListener('load', () => {
+      let data = null;
+      try { data = JSON.parse(xhr.responseText); } catch { /* не JSON */ }
+      if (data && data.needLogin) { localStorage.removeItem('enso-pilot1-auth'); location.reload(); return; }
+      /*
+       * Причина отказа берётся из errors[] ДО кода ответа, и это не мелочь:
+       * ручка отвечает 400, когда не принят НИ ОДИН файл, — а раз мы шлём по
+       * одному, любой отказ приходит четырёхсотым. Смотреть сначала на статус
+       * значит показывать «ошибка сервера (400)» вместо «Файл не является
+       * текстовым», то есть терять единственное, что человеку тут нужно.
+       */
+      const err = data && data.errors && data.errors[0];
+      if (err) { resolve({ ok: false, error: err.error || 'файл отклонён' }); return; }
+      if (xhr.status >= 200 && xhr.status < 300) { resolve({ ok: true }); return; }
+      resolve({ ok: false, error: (data && data.error) || `ошибка сервера (${xhr.status})` });
+    });
+    xhr.addEventListener('error', () => resolve({ ok: false, error: 'связь оборвалась' }));
+    xhr.addEventListener('abort', () => resolve({ ok: false, error: 'загрузка прервана' }));
+    const fd = new FormData();
+    fd.append('files', file);
+    xhr.send(fd);
+  });
+}
+
 async function uploadFiles(fileList) {
   if (!state.session || state.uploading) return;
   const files = [...fileList];
@@ -1766,22 +1847,57 @@ async function uploadFiles(fileList) {
   state.uploading = true;
   const dz = $('dropzone');
   dz.classList.add('dragover');
-  try {
-    for (let i = 0; i < files.length; i += 5) {
-      const fd = new FormData();
-      files.slice(i, i + 5).forEach((f) => fd.append('files', f));
-      toast(`Файлы загружаются… (${Math.min(i + 5, files.length)}/${files.length})`);
-      const res = await api(`/sessions/${state.session.id}/files`, { method: 'POST', body: fd });
-      for (const e of res.errors || []) toast(`${e.name}: ${e.error}`, 'error');
-      if ((res.uploaded || []).length) toast(`Загружено файлов: ${res.uploaded.length}`);
+
+  /*
+   * Строки появляются все сразу — человек видит, что именно он выбрал.
+   *
+   * Файл лежит НА строке, и цикл идёт по строкам, а не по индексу в
+   * state.uploads. Это не стилистика: массив меняется по ходу дела, и обход по
+   * индексу однажды уже уехал в undefined на третьем файле — цикл падал молча,
+   * оставшиеся файлы не отправлялись, а итог рапортовал «2 из 4».
+   */
+  const rows = files.map((f) => ({
+    file: f, name: f.name, size: f.size, ext: extOf(f.name), pct: 0, status: 'waiting', error: '',
+  }));
+  state.uploads = rows;
+  renderFileList();
+
+  let ok = 0;
+  const failed = [];
+  for (const row of rows) {
+    try {
+      row.status = 'sending';
+      const res = await uploadOne(row.file, (p) => {
+        row.pct = p;
+        if (p >= 1) row.status = 'sent';
+        renderFileList();
+      });
+      if (res.ok) { ok++; row.pct = 1; row.status = 'done'; } else { row.status = 'error'; row.error = res.error; }
+    } catch (err) {
+      row.status = 'error';
+      row.error = err.message || 'не удалось отправить';
     }
-  } catch (err) {
-    toast(err.message, 'error');
-  } finally {
-    state.uploading = false;
-    dz.classList.remove('dragover');
-    await refresh().catch(() => {});
+    // сбой на одном файле не отменяет остальные: раньше единственное исключение
+    // обрывало всю партию
+    if (row.status === 'error') failed.push({ name: row.name, error: row.error });
+    renderFileList();
   }
+
+  state.uploading = false;
+  dz.classList.remove('dragover');
+  await refresh().catch(() => {});           // принятые файлы приходят обычными строками
+  // отклонённые держим ещё несколько секунд: причина отказа должна успеть
+  // прочитаться, иначе файл просто «не загрузился» без объяснения
+  state.uploads = rows.filter((r) => r.status === 'error');
+  renderFileList();
+  if (state.uploads.length) {
+    setTimeout(() => { state.uploads = []; renderFileList(); }, 6000);
+  }
+
+  // ОДНО сообщение на всю партию. Раньше их было по одному на пачку из пяти:
+  // двенадцать файлов давали «5», «5», «2», и последнее число читалось как итог.
+  for (const f of failed) toast(`${f.name}: ${f.error}`, 'error');
+  if (ok) toast(`Загружено файлов: ${ok} из ${files.length}`);
 }
 
 /* ---------------- downloads ---------------- */
@@ -2090,11 +2206,324 @@ async function loadHealth() {
   updateAiBadge();
 }
 
+/* ---------------- Статистика: расход, остатки, доступность ---------------- */
+
+const statsState = { period: 30, who: undefined, data: null, balance: null, people: [], loading: false };
+
+const fmtNum = (n) => Number(n || 0).toLocaleString('ru-RU');
+/** Деньги: у мелких сумм четыре знака — иначе весь расход на локальных моделях выглядит как $0.00. */
+function fmtMoney(v) {
+  const n = Number(v || 0);
+  if (!n) return '$0';
+  const abs = Math.abs(n);
+  return `$${n.toFixed(abs < 0.01 ? 5 : abs < 1 ? 4 : 2)}`;
+}
+function fmtTokens(n) {
+  const v = Number(n || 0);
+  if (v >= 1e6) return `${(v / 1e6).toFixed(v < 1e7 ? 2 : 1)} млн`;
+  if (v >= 1e4) return `${Math.round(v / 1e3)} тыс.`;
+  return fmtNum(v);
+}
+const shortDay = (iso) => {
+  const [, m, d] = String(iso).split('-');
+  return `${d}.${m}`;
+};
+
+async function loadStats({ silent = false } = {}) {
+  if (statsState.loading) return;
+  statsState.loading = true;
+  if (!silent) $('stats-body').innerHTML = '<p class="hint">Загрузка…</p>';
+  try {
+    const q = new URLSearchParams({ days: String(statsState.period) });
+    if (statsState.who !== undefined) q.set('user', statsState.who);
+    const data = await api(`/stats/overview?${q}`);
+    statsState.data = data;
+
+    // список людей и деньги — только тому, кому они положены
+    if (data.scope.canSeeAll) {
+      const [people, balance] = await Promise.all([
+        api('/stats/people').catch(() => ({ people: [] })),
+        api(`/stats/balance?days=${statsState.period || 30}`).catch((e) => ({ error: e.message })),
+      ]);
+      statsState.people = people.people || [];
+      statsState.balance = balance;
+    } else {
+      statsState.people = [];
+      statsState.balance = null;
+    }
+    renderStats();
+  } catch (err) {
+    $('stats-body').innerHTML = `<div class="card"><p class="hint">${esc(err.message)}</p></div>`;
+  } finally {
+    statsState.loading = false;
+  }
+}
+
+/** Столбики по дням. Масштаб — по максимуму периода: абсолютных денег тут нет, есть форма расхода. */
+function barsHtml(byDay, key) {
+  if (!byDay.length) return '<p class="hint">За период запросов не было.</p>';
+  const max = Math.max(...byDay.map((d) => d[key] || 0), 0);
+  const bars = byDay.map((d) => {
+    const v = d[key] || 0;
+    const h = max > 0 ? Math.max(2, Math.round((v / max) * 128)) : 2;
+    const title = key === 'costUsd'
+      ? `${shortDay(d.day)}: ${fmtMoney(v)}, запросов ${d.requests}`
+      : `${shortDay(d.day)}: ${fmtTokens(v)} токенов, запросов ${d.requests}`;
+    return `<div class="bar${v ? '' : ' empty'}" style="--h: ${h}px" title="${esc(title)}"></div>`;
+  }).join('');
+  return `<div class="bars">${bars}</div>
+    <div class="bars-axis"><span>${shortDay(byDay[0].day)}</span>
+      <span>максимум за день: ${key === 'costUsd' ? fmtMoney(max) : fmtTokens(max)}</span>
+      <span>${shortDay(byDay[byDay.length - 1].day)}</span></div>`;
+}
+
+function tableHtml(head, rows) {
+  if (!rows.length) return '<p class="hint">Пусто.</p>';
+  return `<div class="stat-scroll"><table class="stat-table">
+    <thead><tr>${head.map((h, i) => `<th class="${i ? 'num' : 'name'}">${esc(h)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${r.map((c, i) => `<td class="${i ? 'num' : 'name'}">${c}</td>`).join('')}</tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+/** Доступность моделей — из того же /health, что кормит пикер: двух источников правды тут быть не должно. */
+function modelsHtml() {
+  const providers = (state.health && state.health.providers) || [];
+  if (!providers.length) return '<p class="hint">Сведений о провайдерах нет — сервер не ответил.</p>';
+  return providers.filter((p) => p.id !== 'demo').map((p) => {
+    const models = (p.modelsInfo && p.modelsInfo.length ? p.modelsInfo : (p.models || []).map((id) => ({ id })));
+    const rows = models.slice(0, 12).map((m) => {
+      const price = m.price ? `$${m.price.input} / $${m.price.output} за 1 млн` : (p.available ? 'бесплатно' : '');
+      // локальная модель может быть в списке и при этом не влезать в память —
+      // это не «доступна», а «доступна с оговоркой», и оговорку надо показать
+      const cls = !p.available ? 'no' : (m.feasible === false ? 'warn' : '');
+      const note = m.feasible === false ? (m.note || 'не помещается в память') : '';
+      return `<div class="model-row" title="${esc(note)}">
+        <span class="m-dot ${cls}"></span>
+        <span class="m-name">${esc(m.id)}</span>
+        <span class="m-price">${esc(note || price)}</span>
+      </div>`;
+    }).join('');
+    const more = models.length > 12 ? `<p class="hint">…и ещё ${models.length - 12}</p>` : '';
+    return `<div class="prov${p.available ? '' : ' off'}">
+      <div class="prov-head"><span class="prov-dot"></span><span class="prov-name">${esc(p.label)}</span></div>
+      <p class="prov-note">${p.available ? `моделей: ${models.length}` : esc(p.note || 'недоступен')}</p>
+      <div class="model-rows">${rows}</div>${more}
+    </div>`;
+  }).join('');
+}
+
+function balanceHtml() {
+  const b = statsState.balance;
+  if (!b) return '';
+  if (b.error) return `<div class="card"><h2>Остатки на счетах</h2><p class="hint">${esc(b.error)}</p></div>`;
+  const cards = (b.providers || []).map((p) => {
+    const bal = p.balance || {};
+    const money = bal.availableUsd !== undefined ? fmtMoney(bal.availableUsd) : '—';
+    const src = `<span class="src src-${esc(bal.source)}">${esc(bal.source)}</span>`;
+    const lines = [];
+    if (bal.basis) lines.push(bal.basis);
+    if (bal.note) lines.push(bal.note);
+    if (p.toppedUpUsd) lines.push(`внесено ${fmtMoney(p.toppedUpUsd)}`);
+    lines.push(`наш счётчик: ${fmtMoney(p.ownSpentUsd)} за ${fmtNum(p.ownRequests)} запр.`);
+    if (p.billing && p.billing.spentUsd !== undefined && p.billing.spentUsd !== null) {
+      lines.push(`биллинг Anthropic: ${fmtMoney(p.billing.spentUsd)} за ${p.billing.days} дн.`);
+    }
+    if (p.billing && p.billing.error) lines.push(p.billing.error);
+    if (p.billing && p.billing.note) lines.push(p.billing.note);
+    const topups = (p.topups || []).slice(0, 4).map((t) => `
+      <div class="topup-row">
+        <span class="t-when">${esc(String(t.happenedAt).slice(0, 10))}</span>
+        <span class="t-sum">${fmtMoney(t.amountUsd)}</span>
+        <span class="t-note">${esc(t.note || '')}</span>
+        <button class="icon-btn" data-del-topup="${t.id}" aria-label="Удалить пополнение" title="Удалить">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+        </button>
+      </div>`).join('');
+    return `<div class="prov${p.keyConfigured ? '' : ' off'}">
+      <div class="prov-head"><span class="prov-dot"></span><span class="prov-name">${esc(p.label)}</span></div>
+      <div class="prov-money">${money}${src}</div>
+      <p class="prov-note">${lines.map(esc).join('<br>')}</p>
+      <div class="topups">${topups}</div>
+      <button class="btn btn-quiet btn-block" type="button" data-topup="${esc(p.id)}" style="margin-top:8px">Внести пополнение</button>
+    </div>`;
+  }).join('');
+  return `<div class="card">
+    <h2>Остатки на счетах</h2>
+    <p class="hint">Живой баланс по API отдаёт только Kimi. У Anthropic и Gemini остатка в API нет вовсе —
+       там он считается как «внесено минус потрачено» и помечен «оценка». Метка у каждого числа не для красоты:
+       оценка и биллинг расходятся, и решать по ним нужно по-разному.</p>
+    <div class="prov-list">${cards}</div>
+  </div>`;
+}
+
+function renderStats() {
+  const d = statsState.data;
+  if (!d) return;
+  const t = d.totals;
+
+  // переключатель людей — только тому, кто вправе видеть чужое
+  const whoField = $('stats-who-field');
+  whoField.hidden = !d.scope.canSeeAll;
+  if (d.scope.canSeeAll) {
+    const sel = $('stats-who');
+    const cur = statsState.who === undefined ? '' : statsState.who;
+    sel.innerHTML = `<option value="">Все вместе</option>` + statsState.people.map((p) =>
+      `<option value="${esc(p.id)}">${esc(p.name)} — ${fmtMoney(p.costUsd)}</option>`).join('');
+    sel.value = cur;
+  }
+
+  const since = $('stats-since');
+  if (d.since) {
+    since.hidden = false;
+    since.textContent = `История расхода ведётся с ${new Date(d.since).toLocaleString('ru-RU')}. `
+      + 'Прогоны до этого момента остались только итогами в самих проектах — в графики они не попадают.';
+  } else {
+    since.hidden = false;
+    since.textContent = 'Событий расхода ещё нет: график появится после первого обращения к модели.';
+  }
+
+  const tiles = `<div class="card">
+    <div class="stat-tiles">
+      <div class="stat-tile"><div class="val">${fmtMoney(t.costUsd)}</div><div class="lbl">Расход за период</div>
+        <div class="sub">${fmtMoney(t.avgCostPerRequest)} за запрос</div></div>
+      <div class="stat-tile"><div class="val">${fmtNum(t.requests)}</div><div class="lbl">Запросов к моделям</div>
+        <div class="sub">${fmtNum(t.mainRequests)} основных · ${fmtNum(t.internalRequests)} служебных</div></div>
+      <div class="stat-tile"><div class="val">${fmtTokens(t.inputTokens + t.outputTokens)}</div><div class="lbl">Токенов всего</div>
+        <div class="sub">↑ ${fmtTokens(t.inputTokens)} · ↓ ${fmtTokens(t.outputTokens)}</div></div>
+      <div class="stat-tile"><div class="val">${fmtNum(t.projects)}</div><div class="lbl">Проектов задействовано</div>
+        <div class="sub">${fmtNum(t.avgTokensPerRequest)} токенов на запрос</div></div>
+      <div class="stat-tile"><div class="val">${fmtTokens(t.cacheReadTokens)}</div><div class="lbl">Прочитано из кэша</div>
+        <div class="sub">записано ${fmtTokens(t.cacheWriteTokens)}</div></div>
+      <div class="stat-tile"><div class="val">${fmtNum(d.limits.maxAiRequestsPerSession)}</div><div class="lbl">Потолок запросов на проект</div>
+        <div class="sub">токенов: ${fmtTokens(d.limits.maxTokensPerSession)}</div></div>
+    </div>
+  </div>`;
+
+  const chart = `<div class="card">
+    <h2>Расход по дням</h2>
+    ${barsHtml(d.byDay, 'costUsd')}
+    <h2 style="margin-top:16px">Токены по дням</h2>
+    ${barsHtml(d.byDay, 'outputTokens')}
+  </div>`;
+
+  const models = `<div class="card"><h2>Модели</h2>
+    ${tableHtml(['Модель', 'Запросов', 'Входные', 'Выходные', 'Расход'],
+    d.byModel.map((m) => [
+      `${esc(m.model || '—')}<br><span class="meta">${esc(m.provider || '')}</span>`,
+      fmtNum(m.requests), fmtTokens(m.inputTokens), fmtTokens(m.outputTokens), fmtMoney(m.costUsd),
+    ]))}</div>`;
+
+  const projects = `<div class="card"><h2>Проекты</h2>
+    ${tableHtml(['Проект', 'Запросов', 'Токенов', 'Расход', 'Последний'],
+    d.byProject.map((p) => [
+      esc(p.title), fmtNum(p.requests), fmtTokens(p.tokens), fmtMoney(p.costUsd),
+      esc(String(p.lastAt || '').slice(0, 10)),
+    ]))}</div>`;
+
+  const people = d.scope.canSeeAll ? `<div class="card"><h2>Люди</h2>
+    ${tableHtml(['Человек', 'Запросов', 'Токенов', 'Расход'],
+    d.byUser.map((u) => [esc(u.name), fmtNum(u.requests), fmtTokens(u.tokens), fmtMoney(u.costUsd)]))}</div>` : '';
+
+  const availability = `<div class="card"><h2>Доступность моделей</h2>
+    <div class="prov-list">${modelsHtml()}</div></div>`;
+
+  $('stats-body').innerHTML = tiles + balanceHtml() + chart + models + projects + people + availability;
+}
+
+/** Пополнение вносится диалогом, а не формой на экране: вносят его редко. */
+async function addTopup(provider) {
+  const v = await appDialog({
+    title: 'Внести пополнение',
+    message: `Провайдер: ${provider}. Сумма в долларах — столько, сколько вы положили на счёт. `
+      + 'Остаток считается как внесённое минус расход.',
+    fields: [
+      { key: 'amount', label: 'Сумма, $', placeholder: '100', maxLength: 12 },
+      { key: 'note', label: 'Пометка (необязательно)', placeholder: 'пополнение с карты', maxLength: 200 },
+    ],
+    confirmText: 'Внести',
+  });
+  if (!v) return;
+  const amountUsd = Number(String(v.amount).replace(',', '.'));
+  if (!Number.isFinite(amountUsd) || !amountUsd) { toast('Сумма должна быть числом и не нулём', 'error'); return; }
+  try {
+    await api('/stats/topups', { method: 'POST', json: { provider, amountUsd, note: v.note || '' } });
+    toast('Пополнение записано');
+    await loadStats({ silent: true });
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function deleteTopup(id) {
+  const ok = await appDialog({
+    title: 'Удалить запись о пополнении?',
+    message: 'Остаток пересчитается без неё. Деньги у провайдера это не трогает.',
+    confirmText: 'Удалить', danger: true,
+  });
+  if (ok === null) return;
+  try {
+    await api(`/stats/topups/${id}`, { method: 'DELETE' });
+    await loadStats({ silent: true });
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function initStats() {
+  $('stats-period').addEventListener('change', () => {
+    statsState.period = Number($('stats-period').value);
+    loadStats();
+  });
+  $('stats-who').addEventListener('change', () => {
+    statsState.who = $('stats-who').value;
+    loadStats();
+  });
+  $('stats-refresh').addEventListener('click', () => loadStats());
+  $('stats-body').addEventListener('click', (e) => {
+    const add = e.target.closest('[data-topup]');
+    if (add) { addTopup(add.dataset.topup); return; }
+    const del = e.target.closest('[data-del-topup]');
+    if (del) deleteTopup(Number(del.dataset.delTopup));
+  });
+}
+
+/* ---------------- кто вошёл и выход из записи ---------------- */
+
+/**
+ * Подвал панели: имя вошедшего и выход.
+ *
+ * Блока нет вовсе, когда вход на сервере выключен (REQUIRE_LOGIN=0) — кнопка
+ * «выйти» там, где двери нет, обещает несуществующее действие.
+ */
+function renderUserBox() {
+  const box = $('user-box');
+  const u = (window.Auth && window.Auth.user) || null;
+  if (!u || !window.Auth.requireLogin) { box.hidden = true; return; }
+  const last = String(u.lastName || '').trim();
+  const first = String(u.firstName || '').trim();
+  box.hidden = false;
+  $('user-name').textContent = `${last} ${first}`.trim();
+  $('user-initials').textContent = `${last.slice(0, 1)}${first.slice(0, 1)}`.toUpperCase();
+}
+
+/**
+ * Выход. Проекты остаются: они привязаны к человеку и к устройству, а не к
+ * токену входа, — вернувшись, человек застанет их на месте. Об этом и сказано
+ * в вопросе: иначе «выйти» читается как «потерять всё».
+ */
+async function signOut() {
+  const ok = await appDialog({
+    title: 'Выйти из записи?',
+    message: 'Проекты и загруженные файлы останутся на месте — они вернутся при следующем входе.',
+    confirmText: 'Выйти',
+  });
+  if (ok === null) return;
+  window.Auth.signOut();
+}
+
 async function init() {
   // Вход — раньше всего: без него первые же запросы вернут 401.
   // Приложение стартует только после того, как человек внутри.
   window.Auth.init();
   await window.Auth.start();
+  renderUserBox();
+  $('btn-sign-out').addEventListener('click', signOut);
 
   // чисто клиентские обработчики — работают даже при недоступном сервере
   // навигация по экранам (Этап 1 / Нормоконтроль / Настройки)
@@ -2102,8 +2531,12 @@ async function init() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b === btn));
       document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.id === `screen-${btn.dataset.screen}`));
+      // Статистика тянется при открытии вкладки, а не при загрузке страницы:
+      // это три запроса, из них один ходит к провайдерам за балансом
+      if (btn.dataset.screen === 'stats') loadStats({ silent: !!statsState.data });
     });
   }
+  initStats();
   // viewer живёт в отдельном файле, но пользуется общим диалогом и общим api()
   window.appDialog = appDialog;
   window.appToast = toast;

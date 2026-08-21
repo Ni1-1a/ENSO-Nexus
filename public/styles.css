@@ -277,6 +277,28 @@ button { font: inherit; color: inherit; }
 }
 .ai-badge[data-mode="mock"] .ai-dot { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
 
+/* ---------- кто вошёл и выход из записи ---------- */
+/* Имя и выход стоят в подвале панели, а не в «Настройках»: выход ищут там,
+   где написано имя, и нигде больше. Имя обрезается многоточием — фамилии
+   длиннее панели встречаются чаще, чем кажется. */
+.user-box {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 6px 6px 4px; border-top: 1px solid var(--stroke-soft);
+}
+.user-avatar {
+  display: grid; place-items: center; flex-shrink: 0;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent); font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+}
+.user-name {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.icon-btn.user-out { width: 26px; height: 26px; }
+.icon-btn.user-out svg { width: 16px; height: 16px; }
+
 /* Меню проекта: «⋮», двойной клик, долгое нажатие */
 /* подпись под селектором модели: строка возможностей идёт с новой строки */
 #model-note { white-space: pre-line; }
@@ -487,6 +509,26 @@ textarea:focus, select:focus, input:focus {
 }
 .file-item .name, .result-item .name { font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; flex: 1; }
 .file-item .meta, .result-item .meta, .events-log .meta { color: var(--text-3); font-size: 11px; }
+
+/* ---------- файл в процессе загрузки ---------- */
+/* Индикатор — заливка самой строки слева направо: отдельная полоска под именем
+   на узкой панели съедает вторую строку, а строка и так уже занята размером.
+   --pct ставится из JS по доле реально отправленных байтов. */
+.file-item.uploading {
+  background:
+    linear-gradient(to right,
+      color-mix(in srgb, var(--accent) 20%, var(--fill)) 0 var(--pct, 0%),
+      var(--fill) var(--pct, 0%) 100%);
+  transition: background .18s linear;
+}
+.file-item.uploading .name { color: var(--text-2); }
+.file-item.uploading.failed {
+  background: color-mix(in srgb, var(--red) 12%, var(--fill));
+}
+.file-item.uploading.failed .meta { color: var(--red); }
+@media (prefers-reduced-motion: reduce) {
+  .file-item.uploading { transition: none; }
+}
 
 .icon-btn {
   display: grid; place-items: center;
@@ -1453,3 +1495,98 @@ html[data-boot="auth"] .shell { visibility: hidden; }
 /* Хвост легенды ограничений: сколько объектов не поместилось и на сколько метров.
    Полный перечень живёт в ведомости комплекта, а меню слоёв обязано остаться меню. */
 .vw-legend-more { color: var(--text-3); font-style: italic; padding-left: 21px; }
+
+/* ════════════ Статистика: расход, остатки, доступность моделей ════════════ */
+
+.stats-bar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+  margin-bottom: 14px;
+}
+.field-inline { display: flex; flex-direction: column; gap: 4px; }
+.field-inline label { font-size: 11px; color: var(--text-3); }
+.field-inline select { min-width: 150px; }
+.stats-since { margin: -6px 0 14px; }
+
+.stats-grid { display: flex; flex-direction: column; gap: 14px; }
+
+/* Плитки итогов: главное число крупно, подпись под ним мелко. Ряд сам
+   переносится — на телефоне четыре плитки становятся двумя парами. */
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat-tile { padding: 12px 14px; border-radius: var(--radius-sm); background: var(--fill); }
+.stat-tile .val { font-family: var(--font-display); font-size: 22px; line-height: 1.1; }
+.stat-tile .lbl { margin-top: 4px; font-size: 11.5px; color: var(--text-3); }
+.stat-tile .sub { margin-top: 2px; font-size: 11px; color: var(--text-3); }
+
+/* Столбики по дням. Высота задаётся из JS через --h; сама полоса — фон,
+   поэтому на печати и при отключённом CSS ничего не разъезжается. */
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 132px; margin-top: 10px; }
+.bar {
+  flex: 1; min-width: 2px; border-radius: 3px 3px 0 0;
+  height: var(--h, 2px); min-height: 2px;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  transition: background .15s ease;
+}
+.bar:hover { background: var(--accent); }
+.bar.empty { background: var(--fill); }
+.bars-axis { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10.5px; color: var(--text-3); }
+
+/* Таблицы разбивок */
+.stat-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.stat-table th {
+  text-align: left; font-weight: 600; font-size: 11px; color: var(--text-3);
+  padding: 0 8px 6px 0; border-bottom: 1px solid var(--stroke-soft);
+}
+.stat-table td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--stroke-soft); }
+.stat-table tr:last-child td { border-bottom: 0; }
+.stat-table .num { text-align: right; font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
+.stat-table .name { overflow-wrap: anywhere; }
+.stat-scroll { overflow-x: auto; }
+
+/* Карточки провайдеров: остаток и откуда он взялся */
+.prov-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.prov {
+  padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--fill); border: 1px solid transparent;
+}
+.prov.off { opacity: .62; }
+.prov-head { display: flex; align-items: center; gap: 8px; }
+.prov-name { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; }
+.prov-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.prov.off .prov-dot { background: var(--text-3); box-shadow: none; }
+.prov-money { font-family: var(--font-display); font-size: 20px; margin-top: 8px; }
+.prov-note { margin-top: 4px; font-size: 11px; color: var(--text-3); }
+/* Источник числа виден всегда: «оценка» и «биллинг» — разные вещи,
+   и путать их в разговоре о деньгах нельзя. */
+.src {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px;
+  font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em;
+  vertical-align: middle;
+}
+.src-api { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.src-оценка { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
+.src-нет { background: var(--fill-hover); color: var(--text-3); }
+
+/* Доступность моделей */
+.model-rows { display: flex; flex-direction: column; gap: 4px; }
+.model-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: var(--radius-sm); font-size: 12.5px;
+}
+.model-row:hover { background: var(--fill); }
+.model-row .m-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11.5px; }
+.model-row .m-price { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.m-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--green); }
+.m-dot.no { background: var(--text-3); }
+.m-dot.warn { background: var(--orange); }
+
+.topups { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.topup-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.topup-row .t-when { color: var(--text-3); font-size: 11px; white-space: nowrap; }
+.topup-row .t-sum { font-family: var(--font-mono); font-size: 11.5px; }
+.topup-row .t-note { flex: 1; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .stats-bar { gap: 8px; }
+  .field-inline select { min-width: 120px; }
+  .bars { height: 100px; }
+}

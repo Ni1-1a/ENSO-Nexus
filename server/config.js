@@ -38,6 +38,28 @@ const config = {
 
   // Anthropic
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+  /*
+   * Своя точка входа: через неё запросы идут не напрямую, а через шлюз на маке
+   * (`win/mac/ai-gateway.js`, маршрут `/cloud/anthropic`).
+   *
+   * Зачем. Сервер платформы стоит в Москве, а Россия в списке поддерживаемых
+   * стран Anthropic отсутствует — обращение с этой машины нарушает их условия
+   * само по себе, независимо от того, кто его затеял. Мак стоит там, где
+   * владелец, и наружу ходит он. Настоящий ключ при этом остаётся на маке:
+   * сюда достаточно вписать любую непустую строку, чтобы провайдер считался
+   * настроенным, — шлюз всё равно заменит её своим ключом.
+   *
+   * Пусто — прежнее поведение: SDK идёт в api.anthropic.com напрямую.
+   */
+  anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || '',
+  /*
+   * Отдельный ключ администратора организации (sk-ant-admin…) — только для
+   * отчёта о расходе на вкладке «Статистика». Обычный рабочий ключ такие
+   * ручки не открывает, а этот, наоборот, не годится для запросов к моделям:
+   * поэтому два поля, а не одно. Ключ необязателен — без него расход берётся
+   * из собственного счётчика платформы.
+   */
+  anthropicAdminKey: process.env.ANTHROPIC_ADMIN_KEY || '',
   anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-5',
   // Потолок API у моделей Claude — 128000 выходных токенов (больше задать нельзя);
   // ответы идут стримингом, поэтому большие значения безопасны. Thinking у Claude
@@ -123,10 +145,11 @@ const config = {
 
   // Knowledge bases (RAG) — несколько баз, выбор в интерфейсе per session
   kbDir: process.env.KB_DIR || '',
-  kbGrishaDir: process.env.KB_GRISHA_DIR || '',
-  // Заметка-коллекция Obsidian: перечисленные в ней документы основной базы
-  // образуют базу Гриши (вместе с его локальными отметками)
-  kbGrishaCollection: process.env.KB_GRISHA_COLLECTION || '',
+  // База «Верифицировано»: собственный разбор документов по пунктам и таблицам
+  // (Knowledge-Base-Верифицировано, см. её README) — отдельный каталог со
+  // своими чанками. Документы, попавшие сюда, из общей базы больше не
+  // выдаются: старый разбор регэкспами на них и рассыпался (см. kb.js).
+  kbVerifiedDir: process.env.KB_VERIFIED_DIR || '',
   kbEmbeddingModel: process.env.KB_EMBEDDING_MODEL || 'text-embedding-qwen3-embedding-0.6b',
   kbTopK: int('KB_TOP_K', 6),
 
@@ -177,6 +200,20 @@ const config = {
    * и отладке, в боевой конфигурации ставить нельзя.
    */
   cloudAiOpen: process.env.CLOUD_AI_OPEN === '1',
+  /**
+   * Облачные провайдеры, открытые ВСЕМ вошедшим, через запятую.
+   *
+   * Гейт `cloudAi` в users.json — всё или ничего, а решение владельца бывает
+   * тоньше: «Kimi всем, остальное только мне» (2026-08-20). Список именно
+   * белый: провайдер попадает в общий доступ, только если его сюда вписали,
+   * поэтому забытая переменная означает «никому», а не «всем».
+   *
+   *   CLOUD_AI_OPEN_PROVIDERS=kimi
+   */
+  cloudAiOpenProviders: new Set(
+    (process.env.CLOUD_AI_OPEN_PROVIDERS || '')
+      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+  ),
   // Попытки входа лимитируются отдельно и жёстче обычных запросов:
   // вход без пароля — значит перебор имён должен упираться в лимит
   rateLimitAuth: int('RATE_LIMIT_AUTH', 12),
@@ -199,16 +236,37 @@ const config = {
   promptVersion: '1.3.0', // 1.3.x: у уточняющих вопросов появились варианты ответов (options)
 };
 
-// Базы знаний: главная всегда 'main'; база Гриши подключается при наличии каталога.
+// Базы знаний: главная всегда 'main'; остальные подключаются при наличии каталога.
 const path2 = require('path');
+const fs2 = require('fs');
 config.kbBases = [];
 if (config.kbDir) config.kbBases.push({ id: 'main', label: 'Общая база', dir: config.kbDir });
-const grishaDir = config.kbGrishaDir ||
-  (config.kbDir ? path2.join(path2.dirname(config.kbDir), 'Knowledge-Base-Гриша') : '');
-if (grishaDir) config.kbBases.push({ id: 'grisha', label: 'База Гриши (коллекция НТД + отметки)', dir: grishaDir });
-if (!config.kbGrishaCollection && config.kbDir) {
-  config.kbGrishaCollection = path2.join(config.kbDir, '07_Заметки', 'Коллекции', 'НТД_Гриша.md');
+
+/*
+ * «Верифицировано» — документы, разобранные по пунктам и таблицам моделью и
+ * пересчитанные по исходнику. Каталог ищется рядом с основной базой, как и у
+ * базы Гриши, но подключается только если он ЕСТЬ: пустая база в пикере хуже,
+ * чем её отсутствие — человек выберет её и получит поиск ни по чему.
+ */
+const verifiedDir = config.kbVerifiedDir ||
+  (config.kbDir ? path2.join(path2.dirname(config.kbDir), 'Knowledge-Base-Верифицировано') : '');
+if (verifiedDir && fs2.existsSync(verifiedDir)) {
+  config.kbBases.push({ id: 'verified', label: 'Верифицировано (разбор по пунктам и таблицам)', dir: verifiedDir });
 }
+
+/*
+ * База Гриши из выбора убрана.
+ *
+ * Она никогда не была отдельным собранием: это фильтр «коллекция НТД_Гриша»
+ * поверх общей базы плюс его собственные отметки. Список документов у неё тот
+ * же, что у «Верифицировано» (см. README верифицированной базы), а разбор —
+ * старый, регулярными выражениями. В пикере она читалась третьей базой и
+ * выглядела двойником верифицированной; фрагментов собственных отметок в
+ * индексе оставался ровно один.
+ *
+ * Каталог и заметка-коллекция сознательно НЕ удаляются: если понадобится
+ * вернуть, достаточно снова добавить сюда строку.
+ */
 
 // Static resolution; 'auto' may be upgraded mock → local by the startup probe in index.js.
 config.aiMode =

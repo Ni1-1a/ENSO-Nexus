@@ -189,8 +189,10 @@ const CLOUD_CLOSED_NOTE = 'доступно только владельцу пл
  */
 async function listProvidersFor(user) {
   const all = await listProviders();
-  if (cloudAccess.userAllowed(user)) return all;
-  return all.map((p) => (cloudAccess.isCloud(p.id)
+  // Доступ считается по каждому провайдеру отдельно: владелец может открыть
+  // один сервис всем и оставить остальные себе. Общая проверка «пускать ли в
+  // облако вообще» здесь больше не годится.
+  return all.map((p) => (cloudAccess.isCloud(p.id) && !cloudAccess.userAllowed(user, p.id)
     ? { ...p, available: false, note: CLOUD_CLOSED_NOTE }
     : p));
 }

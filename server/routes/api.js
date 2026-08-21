@@ -109,6 +109,90 @@ router.post('/auth/logout', optionalUser, express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- статистика: расход и деньги на счетах ---------- */
+
+/**
+ * Кого разрешено смотреть.
+ *
+ * Правило одно: своё видит каждый, чужое — владелец и допущенные (owner /
+ * statsAll в users.json). Проверка живёт здесь, а не в интерфейсе: кнопку
+ * спрятать легко, а ручку — нет, и запрос с чужим userId придёт рано или
+ * поздно. При выключенном входе (REQUIRE_LOGIN=0) человека нет вовсе —
+ * тогда виден весь расход: разделять не по кому.
+ */
+function statsScope(req) {
+  if (!config.requireLogin) return { all: true, self: '' };
+  const u = req.user;
+  return { all: users.canSeeAllStats(u), self: (u && u.id) || '' };
+}
+
+function askedUser(req, scope) {
+  const asked = req.query.user;
+  if (asked === undefined) return scope.all ? '' : scope.self;   // «все» доступны только допущенным
+  if (scope.all) return String(asked);
+  // чужое запрашивать нельзя, и подменять молча тоже нельзя: молчаливая
+  // подмена показала бы человеку СВОИ числа под чужим именем
+  if (String(asked) !== scope.self) return null;
+  return scope.self;
+}
+
+function askedDays(req) {
+  const d = Number(req.query.days);
+  if (!Number.isFinite(d)) return 30;
+  return Math.min(365, Math.max(0, Math.round(d)));   // 0 — за всё время
+}
+
+router.get('/stats/overview', userAuth, (req, res, next) => {
+  try {
+    const scope = statsScope(req);
+    const userId = askedUser(req, scope);
+    if (userId === null) return res.status(403).json({ error: 'Чужая статистика недоступна' });
+    const data = require('../services/stats').overview({ userId, days: askedDays(req) });
+    res.json({
+      ok: true,
+      scope: { canSeeAll: scope.all, self: scope.self, viewing: userId },
+      ...data,
+    });
+  } catch (err) { next(err); }
+});
+
+router.get('/stats/people', userAuth, (req, res, next) => {
+  try {
+    const scope = statsScope(req);
+    if (!scope.all) return res.json({ ok: true, canSeeAll: false, people: [] });
+    res.json({ ok: true, canSeeAll: true, people: require('../services/stats').people() });
+  } catch (err) { next(err); }
+});
+
+/** Деньги на счетах — только допущенным: это не про проект, а про кошелёк. */
+router.get('/stats/balance', userAuth, async (req, res, next) => {
+  try {
+    const scope = statsScope(req);
+    if (!scope.all) return res.status(403).json({ error: 'Состояние счетов доступно владельцу платформы' });
+    res.json({ ok: true, providers: await require('../services/balance').forProviders(askedDays(req) || 30) });
+  } catch (err) { next(err); }
+});
+
+router.post('/stats/topups', userAuth, express.json(), (req, res, next) => {
+  try {
+    const scope = statsScope(req);
+    if (!scope.all) return res.status(403).json({ error: 'Пополнения вносит владелец платформы' });
+    const { provider, amountUsd, note, happenedAt } = req.body || {};
+    const author = req.user ? `${req.user.lastName} ${req.user.firstName}`.trim() : '';
+    res.json({ ok: true, topups: require('../services/balance').addTopup({ provider, amountUsd, note, happenedAt, author }) });
+  } catch (err) { next(err); }
+});
+
+router.delete('/stats/topups/:id', userAuth, (req, res, next) => {
+  try {
+    const scope = statsScope(req);
+    if (!scope.all) return res.status(403).json({ error: 'Пополнения вносит владелец платформы' });
+    const ok = require('../services/balance').removeTopup(Number(req.params.id));
+    if (!ok) return res.status(404).json({ error: 'Запись о пополнении не найдена' });
+    res.json({ ok: true, topups: require('../services/balance').topups() });
+  } catch (err) { next(err); }
+});
+
 /* ---------- sessions ---------- */
 /** ID устройства: случайная строка, которую браузер хранит у себя. */
 function normDeviceId(v) {
