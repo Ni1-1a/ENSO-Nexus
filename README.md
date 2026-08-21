@@ -17,6 +17,7 @@ Web/
 │   ├── routes/api.js        # REST API (см. API.md)
 │   └── services/
 │       ├── validation.js    # проверка файлов по magic bytes, санитизация имён
+│       ├── prompts.js       # чтение текстов промтов из prompts/*.md (единственное место)
 │       ├── pipeline.js      # асинхронная задача обработки, журнал этапов
 │       ├── outputs.js       # генерация ОТЧЁТ.md / session-data.json / DXF / ZIP
 │       ├── dxf.js           # минимальный DXF-писатель (R12)
@@ -25,7 +26,11 @@ Web/
 │           ├── schema.js    # JSON-схема ответа модели + серверная валидация
 │           ├── memory.js    # память сессии: резюме + факты + Q&A + последние сообщения + документы
 │           └── mock.js      # честный демо-режим (без ключа)
-├── prompts/system-prompt.md # версионируемый системный промт (promptVersion 1.0.0)
+├── prompts/                 # ВСЕ тексты, уходящие модели, — в коде их нет
+│   ├── system-prompt.md     # главный промт анализа (версия — promptVersion в config.js)
+│   ├── chat.md, doc-*.md…   # чат, конспект документа, распознавание, геометрия
+│   ├── tasks/               # тексты заданий: прогон, сравнение, повторы
+│   └── README.md            # карта: какой файл когда уходит модели
 ├── public/                  # frontend (vanilla HTML/CSS/JS, без сборки)
 ├── tests/                   # unit / API / e2e (node:test)
 ├── Dockerfile               # контейнерный деплой

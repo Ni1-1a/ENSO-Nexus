@@ -10,6 +10,7 @@ const modelManager = require('../model-manager');
 const progress = require('../progress');
 const registry = require('../ai/registry');
 const cloudAccess = require('../ai/cloud-access');
+const prompts = require('../prompts');
 
 const AI_ERROR_LOG = path.join(__dirname, '..', '..', '..', 'logs', 'ai-errors.log');
 
@@ -19,6 +20,24 @@ function logAiError(info) {
   try {
     fs.appendFileSync(AI_ERROR_LOG, JSON.stringify({ at: new Date().toISOString(), ...info }) + '\n');
   } catch { /* журнал не должен ронять обработку */ }
+}
+
+/**
+ * Настоящая причина сетевого сбоя. У undici `err.message` ВСЕГДА «fetch failed»
+ * — код (ECONNRESET, ENOTFOUND, UND_ERR_SOCKET, ошибка сертификата) лежит глубже,
+ * в цепочке `err.cause`. Без разворачивания сообщение на экране не говорит
+ * ничего: 21.08.2026 разбор на Kimi упал с «fetch failed», и по нему нельзя было
+ * отличить обрыв сокета от подменённого сертификата.
+ */
+function networkReason(err) {
+  const seen = [];
+  for (let e = err, depth = 0; e && typeof e === 'object' && depth < 5; e = e.cause, depth++) {
+    const piece = [e.code, e.message].filter(Boolean).join(': ');
+    if (piece && !seen.includes(piece)) seen.push(piece);
+  }
+  // само по себе «fetch failed» бесполезно — держим его только если больше нечего сказать
+  const meaningful = seen.filter((piece) => piece !== 'fetch failed');
+  return (meaningful.length ? meaningful : seen).join(' ← ') || 'сеть недоступна';
 }
 
 /** Провайдеры, которые крутятся на машине владельца, а не в облаке. */
@@ -140,8 +159,6 @@ function resolveModel(route) {
   if (route.provider === 'demo') return 'demo';
   return route.model || route.provider;
 }
-
-const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'prompts', 'system-prompt.md'), 'utf8');
 
 let _client = null;
 function client() {
@@ -803,35 +820,62 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   let res;
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  const fetchSignal = signal
-    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal])
-    : AbortSignal.timeout(timeoutMs);
-  try {
-    res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: fetchSignal,
-    });
-  } catch (err) {
-    if (signal && signal.aborted) {
-      throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
-    }
-    const host = baseUrl.replace(/https?:\/\//, '').split('/')[0];
-    // «локальность» определяет ПРОВАЙДЕР, а не адрес: облачный провайдер на
-    // корпоративном прокси 127.0.0.1 — всё равно облачный
-    const isLocal = LOCAL_PROVIDERS.has(providerId);
-    const label = providerLabel(providerId);
-    const waited = humanDuration(timeoutMs);
-    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+  const payload = JSON.stringify(body);
+  /*
+   * Транспортный сбой — это не отказ сервиса: тело запроса сервер ещё не принял,
+   * поэтому повтор безопасен и ничего не дублирует. Раньше повторялись только
+   * ОТВЕТЫ с плохим статусом (модель выгружена, потолок токенов), а одиночный
+   * обрыв сокета валил весь этап — и не оставлял следа, потому что logAiError
+   * звался лишь в ветке `!res.ok`. Проверено 21.08.2026: в ai-errors.log на VPS
+   * не было ни строки про упавший прогон Kimi.
+   */
+  const NET_ATTEMPTS = 2;
+  for (let netAttempt = 1; ; netAttempt++) {
+    // сигнал таймаута одноразовый — на каждую попытку нужен свой
+    const fetchSignal = signal
+      ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal])
+      : AbortSignal.timeout(timeoutMs);
+    try {
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: payload,
+        signal: fetchSignal,
+      });
+      break;
+    } catch (err) {
+      if (signal && signal.aborted) {
+        throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
+      }
+      const host = baseUrl.replace(/https?:\/\//, '').split('/')[0];
+      // «локальность» определяет ПРОВАЙДЕР, а не адрес: облачный провайдер на
+      // корпоративном прокси 127.0.0.1 — всё равно облачный
+      const isLocal = LOCAL_PROVIDERS.has(providerId);
+      const label = providerLabel(providerId);
+      const waited = humanDuration(timeoutMs);
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        logAiError({ where: 'chat/completions', provider: providerId, model: modelId, baseUrl, attempt, netAttempt, detail: `таймаут ${waited}` });
+        throw new AiUnavailableError(isLocal
+          ? `Локальная нейросеть сейчас недоступна: не ответила за ${waited} — вероятно, занята другой задачей. Повторите позже.`
+          : `${label} не ответил за ${waited} (${host}). Запрос прерван по таймауту — повторите позже или выберите модель побыстрее.`);
+      }
+      const reason = redactSecrets(networkReason(err)).slice(0, 200);
+      logAiError({ where: 'chat/completions', provider: providerId, model: modelId, baseUrl, attempt, netAttempt, detail: `сеть: ${reason}` });
+      if (netAttempt < NET_ATTEMPTS) {
+        console.warn(`[${providerId}] обрыв связи с ${host} (${reason}) — повтор ${netAttempt + 1}/${NET_ATTEMPTS} через 2 с`);
+        progress.set(sessionId, {
+          phase: 'waiting_model', model: modelId, provider: providerId,
+          label: `Связь с ${label} оборвалась — повторяю запрос…`,
+        });
+        await new Promise((r) => setTimeout(r, 2000));
+        if (signal && signal.aborted) throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
+        continue;
+      }
       throw new AiUnavailableError(isLocal
-        ? `Локальная нейросеть сейчас недоступна: не ответила за ${waited} — вероятно, занята другой задачей. Повторите позже.`
-        : `${label} не ответил за ${waited} (${host}). Запрос прерван по таймауту — повторите позже или выберите модель побыстрее.`);
+        ? `Локальная нейросеть сейчас недоступна: сервер моделей (LM Studio/Ollama) не отвечает (${host}: ${reason.slice(0, 120)}). Запустите его или выберите облачную модель в «Настройках» — и повторите.`
+        : `Соединение с ${label} оборвалось (${host}: ${reason.slice(0, 120)}). ` +
+          'Проверьте доступ в интернет и повторите попытку.');
     }
-    throw new AiUnavailableError(isLocal
-      ? 'Локальная нейросеть сейчас недоступна: сервер моделей (LM Studio/Ollama) не запущен. Запустите его или выберите облачную модель в «Настройках» — и повторите.'
-      : `Соединение с ${label} оборвалось (${host}: ${redactSecrets(String(err && err.message || 'сеть недоступна')).slice(0, 120)}). ` +
-        'Проверьте доступ в интернет и повторите попытку.');
   }
 
   if (!res.ok) {
@@ -880,7 +924,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     // некоторые модели не принимают json_schema — один повтор в режиме «просто JSON»
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callOpenAiCompat({
-        system: system + '\n\nОтвечай ТОЛЬКО валидным JSON строго по описанной схеме, без пояснений вокруг.',
+        system: system + '\n\n' + prompts.load('tasks/json-only'),
         messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false, signal, progressStep, internal,
       });
     }
@@ -1137,14 +1181,14 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
     if (calls.left <= 0) return null;
     calls.left--; calls.used++;
     try {
-      return await callModel({ system: SYSTEM_PROMPT, messages: msgs, sessionId, route, signal });
+      return await callModel({ system: prompts.load('system-prompt'), messages: msgs, sessionId, route, signal });
     } catch (err) {
       throw wrapApiError(err);
     }
   };
 
   let out = await callWithBudget(messages);
-  out = await continueIfTruncated(out, { system: SYSTEM_PROMPT, messages, sessionId, route, signal, calls });
+  out = await continueIfTruncated(out, { system: prompts.load('system-prompt'), messages, sessionId, route, signal, calls });
 
   progress.set(sessionId, { phase: 'validating', label: 'Проверка структуры ответа модели…' });
   let parsed = tryParse(out.text);
@@ -1176,7 +1220,7 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
     messages.push({ role: 'user', content: correction });
     out = await callWithBudget(messages);
     if (!out) break; // касса кончилась ровно на этом повторе
-    out = await continueIfTruncated(out, { system: SYSTEM_PROMPT, messages, sessionId, route, signal, calls });
+    out = await continueIfTruncated(out, { system: prompts.load('system-prompt'), messages, sessionId, route, signal, calls });
     parsed = tryParse(out.text);
     check = validateResponse(parsed);
     retry++;
@@ -1360,13 +1404,6 @@ async function plainCall({ system, messages, sessionId, route, signal, maxTokens
 }
 
 /* ---------------- свободный чат (без 12-шагового пайплайна) ---------------- */
-const CHAT_SYSTEM =
-  'Ты — помощник Enso-nexus по градостроительному проектированию (генплан, посадка зданий на участок, ' +
-  'ГОСТ 21.508, СП 42.13330, пожарные и санитарные разрывы). Это СВОБОДНЫЙ ДИАЛОГ: отвечай на вопросы ' +
-  'пользователя обычным текстом на русском языке (Markdown), по делу и без воды. НЕ выполняй полный ' +
-  '12-шаговый анализ и НЕ возвращай JSON. Опирайся на материалы сессии (документы, факты, историю), ' +
-  'когда они относятся к вопросу; можно обсуждать и общие темы. Если пользователю нужен полный анализ ' +
-  'с отчётом — предложи нажать «Запустить анализ»: отдельного режима сообщений в интерфейсе нет.';
 
 /**
  * Один ответ в свободном диалоге: обычный текст, без JSON-схемы и выходных
@@ -1406,7 +1443,7 @@ async function chatOnce(sessionId, { text, route, signal }) {
 
   try {
     // единая точка текстовых вызовов: Claude (стриминг), ChatGPT, Kimi, LM Studio, Ollama
-    const out = await plainCall({ system: CHAT_SYSTEM, messages, sessionId, route, signal });
+    const out = await plainCall({ system: prompts.load('chat'), messages, sessionId, route, signal });
     const reply = (out.text || '').trim();
     if (reply) return reply;
     if ((out.reasoning || '').trim()) {
@@ -1444,7 +1481,7 @@ async function maybeCompact(sessionId) {
   }
   try {
     checkBudget(ctx.session);
-    const system = 'Сожми диалог в резюме для памяти AI-ассистента по генплану. Сохрани: требования пользователя, ключевые факты и числа с источниками, принятые решения, ответы на вопросы, открытые вопросы. Без воды.';
+    const system = prompts.load('compact-summary');
     let userText = `${ctx.stateText}\n\nПоследние сообщения:\n${ctx.history.map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : '[документы]'}`).join('\n').slice(0, 30000)}`;
     if (config.aiMode === 'local') {
       // trimToBudget этот формат промпта не режет — укладываем в половину окна модели сами

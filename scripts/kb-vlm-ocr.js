@@ -2,14 +2,26 @@
 /**
  * VLM-OCR проблемных документов базы знаний.
  *
- * Рендерит страницы PDF (pdftoppm) и распознаёт их vision-моделью LM Studio
- * (qwen3-vl) в Markdown с настоящими таблицами. Результат:
+ * Рендерит страницы PDF (pdftoppm) и распознаёт их vision-моделью в Markdown
+ * с настоящими таблицами. Результат:
  *   - KB_DIR/12_VLM-OCR/<Документ>/p<NNN>.md — постраничный текст;
  *   - чанки с приоритетом "высокий (VLM)" добавляются в
  *     KB_DIR/09_Векторный-индекс/<Документ>/чанки.jsonl (старый файл — в .bak).
  *
+ * Транспорта два, выбор через --provider:
+ *   claude    — Anthropic API, по умолчанию claude-sonnet-5. Страницы идут
+ *               параллельно (--concurrency), локальная память не занята.
+ *   lmstudio  — прежний путь через qwen3-vl. Строго последовательно и с
+ *               автопаузой: LM Studio держит один слот, и параллельный вызов
+ *               выбивает модель из памяти на середине очереди.
+ *
+ * Сессионный adapter.plainCall сюда не подходит намеренно: он привязан к
+ * проекту (бюджет, счётчики в sessions, гейт облачного доступа), а это
+ * пакетная обработка базы знаний, у которой проекта нет.
+ *
  * Запуск: node --env-file-if-exists=.env scripts/kb-vlm-ocr.js \
- *   --doc "СП 4.13130.2013" --pdf "/путь/к.pdf" --pages 30-36,193-196 [--dpi 170]
+ *   --doc "СП 4.13130.2013" --pdf "/путь/к.pdf" --pages 30-36,193-196 \
+ *   [--provider claude] [--model claude-sonnet-5] [--concurrency 4] [--dpi 170]
  * После всех документов: npm run kb:index
  */
 const fs = require('fs');
@@ -18,21 +30,32 @@ const os = require('os');
 const { execFileSync } = require('child_process');
 process.chdir(path.join(__dirname, '..'));
 const config = require('../server/config');
+const prompts = require('../server/services/prompts');
 
 function parseArgs() {
   const a = process.argv.slice(2);
   const get = (k) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : null; };
   const doc = get('--doc'), pdf = get('--pdf'), pages = get('--pages');
   const dpi = parseInt(get('--dpi') || '170', 10);
+  const provider = (get('--provider') || 'claude').toLowerCase();
+  const model = get('--model') || (provider === 'claude' ? 'claude-sonnet-5' : config.localAiOcrModel);
+  // у LM Studio один слот: параллель там не ускоряет, а выбивает модель из памяти
+  const concurrency = provider === 'claude' ? Math.max(1, parseInt(get('--concurrency') || '4', 10)) : 1;
   if (!doc || !pdf || !pages) {
     console.error('Нужно: --doc <имя> --pdf <путь> --pages 30-36,193-196'); process.exit(2);
+  }
+  if (!['claude', 'lmstudio'].includes(provider)) {
+    console.error(`Неизвестный --provider «${provider}»: доступны claude, lmstudio`); process.exit(2);
+  }
+  if (provider === 'claude' && !config.anthropicApiKey) {
+    console.error('Нужен ANTHROPIC_API_KEY в .env (или --provider lmstudio)'); process.exit(2);
   }
   const list = [];
   for (const part of pages.split(',')) {
     const [from, to] = part.split('-').map(Number);
     for (let p = from; p <= (to || from); p++) list.push(p);
   }
-  return { doc, pdf, pages: list, dpi };
+  return { doc, pdf, pages: list, dpi, provider, model, concurrency };
 }
 
 function renderPage(pdf, page, dpi) {
@@ -68,12 +91,43 @@ async function waitWhileInteractive() {
   }
 }
 
-const OCR_PROMPT =
-  'Расшифруй эту страницу российского нормативного документа в Markdown максимально дословно. Требования: ' +
-  '1) ВСЕ таблицы — строго в формате Markdown-таблиц с шапкой и разделителем, сохраняя объединённые смыслы ячеек словами; ' +
-  '2) сохраняй номера пунктов (например 6.1.2) и заголовки «Таблица N — …»; ' +
-  '3) сноски и примечания — после таблицы; 4) колонтитулы и номера страниц опусти; ' +
-  '5) не добавляй никаких комментариев от себя — только содержимое страницы. Язык — русский.';
+/**
+ * Правила расшифровки. Пункты 6–8 добавлены под разбивку базы знаний: структура
+ * документа собирается ИЗ ЭТОГО текста, поэтому номер пункта, граница приложения
+ * и содержимое ячейки с рисунком обязаны быть в нём различимы. Прежний парсер
+ * читал слой pdftotext, и оттуда приходило «п. 20 = 20 июня 2022 года».
+ */
+
+/** Расшифровка страницы через Anthropic API — пакетный путь, без сессии и бюджета проекта. */
+let _anthropic = null;
+async function ocrPageClaude(png, model) {
+  if (!_anthropic) {
+    const Anthropic = require('@anthropic-ai/sdk');
+    _anthropic = new Anthropic({
+      apiKey: config.anthropicApiKey,
+      timeout: config.anthropicRequestTimeoutMs,
+      maxRetries: config.anthropicMaxRetries, // 429 и 5xx SDK повторяет сам
+    });
+  }
+  const res = await _anthropic.messages.create({
+    model,
+    max_tokens: 8000,
+    // temperature не задаём: Sonnet 5 отвечает на неё 400 «deprecated for this model»
+    system: prompts.load('kb-ocr'),
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } },
+        { type: 'text', text: 'Расшифруй эту страницу по правилам выше.' },
+      ],
+    }],
+  });
+  return {
+    text: res.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim(),
+    truncated: res.stop_reason === 'max_tokens',
+    usage: res.usage || {},
+  };
+}
 
 async function ocrPage(png, attempt = 1) {
   const res = await fetch(`${config.localAiBaseUrl}/chat/completions`, {
@@ -86,7 +140,7 @@ async function ocrPage(png, attempt = 1) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: OCR_PROMPT },
+          { type: 'text', text: prompts.load('kb-ocr') },
           { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
         ],
       }],
@@ -139,31 +193,73 @@ function chunkPage(doc, page, md) {
 }
 
 (async () => {
-  const { doc, pdf, pages, dpi } = parseArgs();
+  const { doc, pdf, pages, dpi, provider, model, concurrency } = parseArgs();
   if (!config.kbDir) { console.error('KB_DIR не задан'); process.exit(2); }
-  // vision-модель загружается явно, с умеренным контекстом (странице OCR больше не нужно)
-  try {
-    await require('../server/services/model-manager').ensureLoaded(config.localAiOcrModel, {
-      onProgress: (t) => console.log(`  ${t}`),
-    });
-  } catch (err) { console.log(`  (модель загрузится по запросу: ${err.message})`); }
+  if (provider === 'lmstudio') {
+    // vision-модель загружается явно, с умеренным контекстом (странице OCR больше не нужно)
+    try {
+      await require('../server/services/model-manager').ensureLoaded(model, {
+        onProgress: (t) => console.log(`  ${t}`),
+      });
+    } catch (err) { console.log(`  (модель загрузится по запросу: ${err.message})`); }
+  }
   const outDir = path.join(config.kbDir, '12_VLM-OCR', doc);
   fs.mkdirSync(outDir, { recursive: true });
   const allChunks = [];
 
-  for (const page of pages) {
+  const todo = pages.filter((page) => {
+    const f = path.join(outDir, `p${String(page).padStart(3, '0')}.md`);
+    return !(fs.existsSync(f) && fs.statSync(f).size > 0);
+  });
+  const skipped = pages.length - todo.length;
+  console.log(`${doc}: ${todo.length} стр. к распознаванию${skipped ? `, ${skipped} уже готовы` : ''} — ${provider}/${model}${concurrency > 1 ? `, по ${concurrency} параллельно` : ''}`);
+
+  const totals = { input: 0, output: 0, cost: 0, failed: [] };
+  let done = 0;
+
+  async function processPage(page) {
     const outFile = path.join(outDir, `p${String(page).padStart(3, '0')}.md`);
-    if (fs.existsSync(outFile) && fs.statSync(outFile).size > 0) {
-      console.log(`стр. ${page}: уже распознана — пропуск`);
-      continue;
-    }
-    await waitWhileInteractive();
+    // автопауза только для локального пути: облако с LM Studio за память не спорит
+    if (provider === 'lmstudio') await waitWhileInteractive();
     const t0 = Date.now();
     const png = renderPage(pdf, page, dpi);
-    let { text, truncated } = await ocrPage(png);
+    const { text, truncated, usage } = provider === 'claude'
+      ? await ocrPageClaude(png, model)
+      : await ocrPage(png);
     if (truncated) console.log(`  ! стр. ${page}: ответ упёрся в лимит, текст может быть неполным`);
     fs.writeFileSync(outFile, text);
-    console.log(`стр. ${page}: ${text.length} симв., ${(Date.now() - t0) / 1000 | 0} с`);
+    if (usage) {
+      totals.input += (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+      totals.output += usage.output_tokens || 0;
+      totals.cost += require('../server/services/pricing').costUsd(provider, model, usage);
+    }
+    done += 1;
+    console.log(`стр. ${page}: ${text.length} симв., ${(Date.now() - t0) / 1000 | 0} с  [${done}/${todo.length}]`);
+  }
+
+  // Пул воркеров вместо Promise.all по всему списку: на документе в 400 страниц
+  // разом улетело бы 400 запросов, и API ответил бы лимитом, а не расшифровкой.
+  const queue = todo.slice();
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    for (;;) {
+      const page = queue.shift();
+      if (page === undefined) return;
+      try {
+        await processPage(page);
+      } catch (err) {
+        // одна страница не должна ронять прогон: остальные распознаются,
+        // а недостающие подберёт следующий запуск — он идемпотентен
+        totals.failed.push(page);
+        console.error(`  !! стр. ${page}: ${err.message}`);
+      }
+    }
+  }));
+
+  if (totals.failed.length) {
+    console.error(`не распозналось страниц: ${totals.failed.length} (${totals.failed.slice(0, 20).join(', ')}) — повторный запуск возьмёт только их`);
+  }
+  if (totals.cost) {
+    console.log(`токены: вход ${totals.input}, выход ${totals.output}; стоимость $${totals.cost.toFixed(2)}`);
   }
 
   // чанки пересобираются из ВСЕХ распознанных страниц документа — запуск идемпотентен

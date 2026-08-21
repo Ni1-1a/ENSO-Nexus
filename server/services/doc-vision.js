@@ -22,6 +22,7 @@ const config = require('../config');
 const { db, now } = require('../db');
 const modelManager = require('./model-manager');
 const registry = require('./ai/registry');
+const prompts = require('./prompts');
 const { extractPdfText } = require('./claude/memory');
 
 const execFileP = promisify(execFile);
@@ -37,15 +38,6 @@ function popplerBin(name) {
 
 /** Бюджет ответа на одну страницу: расшифровка плотной страницы ТЗ в него укладывается. */
 const VISION_MAX_TOKENS = 4000;
-
-const VISION_PROMPT =
-  'Перед тобой страница или изображение из проектной/нормативной документации. ' +
-  'Если это текстовая страница или скан — расшифруй её в Markdown максимально дословно: ' +
-  'все таблицы строго Markdown-таблицами, сохраняй номера пунктов и заголовки «Таблица N». ' +
-  'Если это чертёж, генплан, схема или фотография — систематически опиши содержимое: ' +
-  'назначение документа, изображённые объекты и здания, все подписи и надписи, размеры и ' +
-  'расстояния, оси, экспликации и таблицы (в Markdown), условные обозначения. ' +
-  'Не добавляй выводов и комментариев от себя — только содержимое. Язык — русский.';
 
 function abortError() {
   return Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
@@ -183,7 +175,7 @@ async function visionOnce(imageBuf, mime, { signal, onProgress }, attempt = 1) {
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: VISION_PROMPT },
+            { type: 'text', text: prompts.load('doc-vision') },
             { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBuf.toString('base64')}` } },
           ],
         }],
@@ -225,7 +217,7 @@ async function recognizeViaRoute(imageBuf, mime, { sessionId, route, signal, lab
   const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   if (session) adapter.checkBudget(session);
   const out = await adapter.plainCall({
-    system: VISION_PROMPT,
+    system: prompts.load('doc-vision'),
     messages: [{
       role: 'user',
       content: [

@@ -1543,3 +1543,67 @@ test('карточка зон: подсказка называет, что ук�
   });
   assert.deepStrictEqual(stages.manualHints(clean, { restrictions: [] }), []);
 });
+
+/* ================= промты: тексты живут в файлах, а не в коде ================= */
+
+/** Все .js проекта, кроме зависимостей и самих тестов. */
+function projectSources() {
+  const fs = require('fs');
+  const path = require('path');
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.js')) out.push(p);
+    }
+  };
+  for (const root of ['server', 'scripts']) walk(path.join(__dirname, '..', root));
+  return out;
+}
+
+test('промты: каждое имя из кода есть файлом в prompts/', () => {
+  const fs = require('fs');
+  const prompts = require('../server/services/prompts');
+
+  // Переименованный или удалённый файл иначе всплывёт не здесь, а посреди живого
+  // прогона: у модели пропадёт задание, а по результату этого не видно.
+  const used = new Set();
+  for (const file of projectSources()) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/prompts\.load\(\s*'([^']+)'/g)) used.add(m[1]);
+  }
+
+  assert.ok(used.size >= 10, `промтов в коде подозрительно мало: ${used.size}`);
+  for (const name of used) {
+    const text = prompts.load(name);
+    assert.ok(text.length > 30, `промт ${name}.md пуст или обрезан`);
+  }
+
+  // и наоборот: файл, который никто не читает, — забытый, а не «про запас»
+  for (const name of prompts.names()) {
+    assert.ok(used.has(name), `prompts/${name}.md не используется ни одним вызовом`);
+  }
+});
+
+test('промты: пропажа файла — внятная остановка, подстановка работает', () => {
+  const prompts = require('../server/services/prompts');
+  assert.throws(() => prompts.load('такого-промта-нет'), /Промт не найден/);
+
+  const text = prompts.load('tasks/restriction-empty-retry', { hints: 'охранная зона 10 м' });
+  assert.ok(text.includes('охранная зона 10 м'), 'подстановка {{hints}} не сработала');
+  assert.ok(!text.includes('{{'), 'в готовом промте не должно остаться подстановок');
+});
+
+test('промты: в коде не осталось зашитых системных текстов', () => {
+  const fs = require('fs');
+  const stuck = [];
+  for (const file of projectSources()) {
+    if (file.endsWith('prompts.js')) continue;
+    const src = fs.readFileSync(file, 'utf8');
+    // const SYSTEM = `…` / const VISION_PROMPT = '…' — ровно то, что мы вынесли
+    if (/\b(?:const|let)\s+[A-Za-z_]*(?:SYSTEM|PROMPT)[A-Za-z_]*\s*=\s*[`']/.test(src)) stuck.push(file);
+  }
+  assert.deepStrictEqual(stuck, [], 'промт вернулся в код — место ему в prompts/*.md');
+});

@@ -16,81 +16,7 @@ const registry = require('../ai/registry');
 const rules = require('./restriction-rules');
 const progress = require('../progress');
 const { db } = require('../../db');
-
-const SYSTEM = `Ты — инженер-градостроитель. Твоя задача — СОПОСТАВИТЬ то, что нарисовано
-на топосъёмке, с тем, что названо ограничением в документах, и выдать правило на каждую пару.
-
-Работа устроена так. В блоке <site_inventory> перечислено, что РЕАЛЬНО есть на чертеже:
-слои, их состав, длины и площади, а также подписи, которые дал объектам человек, — они
-точнее имён слоёв и важнее их. В документах (ГПЗУ, ТЗ) названо, какие охранные зоны,
-ЗОУИТ и разрывы на этом участке действуют. Твоё дело — связать одно с другим:
-
-  слой «07_Объекты электропередачи» + «охранная зона ВЛ 10 кВ» из ГПЗУ
-      → правило: 10 м от объектов этого слоя, основание ПП РФ № 160 п. 8
-
-Иди по КАЖДОМУ инженерному слою из описи и спрашивай себя: какая охранная зона у этой
-сети? Названа ли она в документах? Есть ли она в выдержках нормативной базы? Газопровод,
-теплосеть, водопровод, канализация, кабель связи, ЛЭП — у каждого своя зона и свой
-норматив, и одинаковой ширины у них не бывает. Слой, для которого зону найти не удалось,
-запиши в missingData поимённо: «для слоя X охранная зона в документах не названа».
-
-ОТДЕЛЬНО — ПРОТИВОПОЖАРНЫЕ РАССТОЯНИЯ (шаг 5). Это НЕ охранная зона и по слою их не
-угадать: расстояние берётся из таблицы по двум признакам сразу — степени огнестойкости
-и классу конструктивной пожарной опасности ОБОИХ зданий, проектируемого и соседнего.
-Порядок действий:
-1. возьми степень огнестойкости и класс проектируемого объекта из блока <fire_safety>;
-2. найди в выдержках нормативной базы таблицу расстояний (СП 4.13130) и КЛЕТКУ на
-   пересечении строки и столбца — это и есть искомые метры;
-3. выдай правило kind="fireBreak", operation="bufferOutward", targetSelector="building",
-   в targetHint — имя слоя существующих строений из описи, в basis — шифр и номер
-   таблицы, в quote — строку таблицы, из которой взято число.
-Если степень огнестойкости соседних зданий неизвестна (а так почти всегда и бывает),
-принимай наихудший случай и скажи об этом в note правила: это допущение в запас, а не
-выдумка. Если расстояние по нормативу не нормируется — так и напиши в missingData,
-правило при этом не выдавай.
-
-targetHint пиши так, чтобы приложение нашло объект: точное имя слоя из описи либо точную
-подпись человека. Выдуманное уточнение не найдёт ничего, и ограничение потеряется.
-
-ГЛАВНОЕ ПРАВИЛО: ты формулируешь ПРАВИЛО, а не рисуешь зону.
-Правильно: «охранная зона 10 м от оси ЛЭП, основание — ПП РФ № 160, п. 8».
-Неправильно: перечислять координаты полигона. Координаты и полигоны считает
-геометрический движок приложения, тебе их выдавать запрещено.
-
-Для каждого ограничения укажи:
-- kind — тип ограничения;
-- operation — bufferOutward (полоса наружу от объекта), bufferInward (отступ внутрь
-  от границы участка) или attribute (не геометрия: высота, процент застройки);
-- targetSelector — от чего отсчитывается; targetHint — уточнение (имя слоя, тип сети);
-- value и unit — величину и единицу ровно так, как в нормативе;
-- condition — направление или условие, если оно есть;
-- basis — норматив с пунктом или таблицей;
-- sourceDocument, sourceClause, quote — откуда именно взято, с дословной цитатой;
-- confidence — насколько ты уверен (0…1).
-
-ЗАПРЕЩЕНО придумывать нормативы, пункты и цитаты. Если величина в документах не
-названа и в базе знаний её нет — не выдумывай правило, а запиши недостающее в
-missingData. Отсутствующее ограничение честнее выдуманного: по выдуманному
-построят зону и посадят здание.
-
-Не дублируй одно ограничение несколькими правилами. Если для одного объекта в
-разных документах разные величины — выдай оба правила с их источниками,
-приложение само пометит это конфликтом. В missingData тоже не повторяйся:
-каждый пункт пишется один раз.
-
-ВАЖНО: если величина НАЗВАНА в документе — обязательно выдай по ней правило.
-В missingData попадает только то, чего в документах действительно нет.
-
-Пример правильного правила для фразы «охранная зона ВЛ 10 кВ — 10 метров по обе
-стороны от крайних проводов (ПП РФ № 160, п. 8)», когда на участке есть слой
-«Сети ЛЭП 10кВ»:
-{"kind":"protectionZone","operation":"bufferOutward","targetSelector":"utility",
- "targetHint":"Сети ЛЭП 10кВ","value":10,"unit":"м","condition":"по обе стороны",
- "appliesTo":"newBuilding","basis":"ПП РФ № 160, п. 8","sourceDocument":"ГПЗУ.txt",
- "sourceClause":"3.4","quote":"Охранная зона ВЛ 10 кВ составляет 10 метров","confidence":0.9}
-
-Пример для предельной высоты 20 м: operation "attribute", kind "heightLimit",
-targetSelector "unknown", unit "м".`;
+const prompts = require('../prompts');
 
 /**
  * Формулировки, за которыми почти всегда стоит ограничение. Нужны не для того,
@@ -460,10 +386,7 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
 
   messages.push({
     role: 'user',
-    content: 'Сопоставь объекты участка из описи с ограничениями, названными в документах, '
-      + 'и выдай правило на каждую пару. Верни строго JSON по схеме. '
-      + 'Помни: правило, а не координаты. Чего не хватает — в missingData.'
-      + checklist + fireBlock + extraInstruction,
+    content: prompts.load('tasks/restriction-match') + checklist + fireBlock + extraInstruction,
   });
 
   progress.set(sessionId, {
@@ -472,7 +395,7 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   });
 
   const call = (msgs) => adapter.structuredCall({
-    system: SYSTEM,
+    system: prompts.load('restriction-extract'),
     messages: msgs,
     sessionId,
     route,
@@ -508,9 +431,7 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
         ...lean,
         {
           role: 'user',
-          content: 'Полные тексты документов в этот запрос не вошли — они не помещаются в твой контекст. '
-            + 'Опирайся на опись объектов участка, извлечённые факты и выдержки нормативной базы выше. '
-            + 'Верни строго JSON по схеме, без пояснений вокруг него.',
+          content: prompts.load('tasks/restriction-no-fulltext'),
         },
       ]);
       parsed = adapter.tryParse(out.text || '');
@@ -540,15 +461,13 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   if ((!parsed.rules || !parsed.rules.length) && hints.length) {
     progress.set(sessionId, { phase: 'generating', label: 'Ограничений не найдено — уточняющий повторный запрос…' });
     const retry = await adapter.structuredCall({
-      system: SYSTEM,
+      system: prompts.load('restriction-extract'),
       messages: [
         ...messages,
         { role: 'assistant', content: JSON.stringify(parsed) },
         {
           role: 'user',
-          content: 'Ты вернул пустой список, но в переданных документах встречаются формулировки: '
-            + hints.join('; ') + '. Перечитай документы и выдай правило по КАЖДОЙ найденной величине. '
-            + 'Если какая-то величина в тексте не названа числом — только тогда запиши её в missingData.',
+          content: prompts.load('tasks/restriction-empty-retry', { hints: hints.join('; ') }),
         },
       ],
       sessionId, route, signal,
@@ -580,4 +499,4 @@ async function extract(sessionId, { site, route, signal = null, extraInstruction
   return result;
 }
 
-module.exports = { extract, inventory, hintsInDocuments, rawRulesFromFacts, rulesFromFacts, mergeRules, factNumber, fireFactsOf, SYSTEM };
+module.exports = { extract, inventory, hintsInDocuments, rawRulesFromFacts, rulesFromFacts, mergeRules, factNumber, fireFactsOf };

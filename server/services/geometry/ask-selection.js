@@ -15,19 +15,7 @@ const progress = require('../progress');
 const render = require('../render');
 const pipeline = require('../pipeline');
 const { db } = require('../../db');
-
-const SYSTEM = `Ты — инженер-градостроитель, отвечаешь на вопрос по конкретной области плана участка.
-
-Тебе дают: изображение выделенной области, её точные координаты в метрах, перечень
-объектов и зон ограничений, попавших в рамку, документы проекта и извлечённые факты.
-
-Правила ответа:
-- Опирайся на ЧИСЛА из переданного перечня, а не на вид картинки. Картинка нужна,
-  чтобы понять взаимное расположение, размеры бери из данных.
-- Если для ответа не хватает данных, так и скажи и перечисли, чего именно нет.
-  Придумывать расстояния, нормативы и пункты запрещено.
-- Ссылайся на основания, если они есть в переданных ограничениях.
-- Отвечай по-русски, кратко и по делу. Без вступлений и без пересказа вопроса.`;
+const prompts = require('../prompts');
 
 /**
  * @param {string} sessionId
@@ -115,7 +103,7 @@ async function ask(sessionId, { annotation, site, question, route, signal = null
     label: 'Модель отвечает по выделенной области…',
   });
 
-  const out = await adapter.plainCall({ system: SYSTEM, messages, sessionId, route, signal });
+  const out = await adapter.plainCall({ system: prompts.load('ask-selection'), messages, sessionId, route, signal });
   const answer = (out.text || '').trim() || 'Модель не вернула ответ.';
 
   return {
@@ -143,4 +131,4 @@ function recordInChat(sessionId, { annotation, question, answer }) {
   return { questionMessageId: row && row.id, answerMessageId: reply && reply.id };
 }
 
-module.exports = { ask, recordInChat, SYSTEM };
+module.exports = { ask, recordInChat };

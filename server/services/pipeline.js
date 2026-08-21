@@ -7,6 +7,7 @@ const { materializeOutputs } = require('./outputs');
 const busyFlag = require('./busy-flag');
 const progress = require('./progress');
 const stages = require('./stages');
+const prompts = require('./prompts');
 
 const runningJobs = new Set();
 /** sessionId → AbortController выполняющейся задачи (для «Прервать обработку»). */
@@ -150,9 +151,7 @@ async function runJob(sessionId, instruction, signal, extraInstruction = '', pre
       isDemo ? '' : `${routeNow.provider}: ${adapter.resolveModel(routeNow)}`);
 
     const result = await adapter.runAnalysis(sessionId, {
-      instruction: (instruction ||
-        'Разбери загруженные материалы по порядку работы из блока <workplan>. Извлеки факты, определи ограничения, ' +
-        'при нехватке данных задай уточняющие вопросы, при достаточности данных сформируй итоговый отчёт.')
+      instruction: (instruction || prompts.load('tasks/analysis-run'))
         + (extraInstruction ? `\n\nДополнительное задание пользователя к этому прогону:\n${extraInstruction}` : ''),
       signal,
     });
@@ -798,9 +797,7 @@ async function runComparison(sessionId, routes, instruction, signal) {
   busyFlag.acquire();
   const adapter2 = require('./claude/adapter');
   const { saveResult } = require('./outputs');
-  const task = instruction ||
-    'Разбери загруженные материалы по порядку работы из блока <workplan>: извлеки факты, определи ограничения, ' +
-    'сформируй краткий отчёт. Если данных не хватает — перечисли вопросы, но всё равно верни status=completed с тем, что удалось установить.';
+  const task = instruction || prompts.load('tasks/compare-run');
   const runs = [];
   let aborted = false;
   try {
