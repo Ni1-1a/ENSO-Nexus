@@ -74,6 +74,30 @@ const PROVIDERS = {
     maxOutputTokens: () => config.geminiMaxTokens,
     defaultModel: () => config.geminiModel,
   },
+  gigachat: {
+    id: 'gigachat',
+    label: 'GigaChat (Сбер)',
+    kind: 'openai-compat',
+    cloud: true,
+    keyEnv: 'GIGACHAT_AUTH_KEY',
+    // structuredOutput оптимистичен намеренно: отвергнутая схема ловится
+    // адаптером и повторяется в режиме «просто JSON», а без попытки строгий
+    // ответ не получить вовсе. Зрение у GigaChat есть только через загрузку
+    // файлов — этого пути у адаптера нет, поэтому vision честно false.
+    caps: caps({ streaming: true, structuredOutput: true }),
+    maxOutputTokens: () => config.gigachatMaxTokens,
+    defaultModel: () => config.gigachatModel,
+  },
+  yandexgpt: {
+    id: 'yandexgpt',
+    label: 'YandexGPT (Яндекс)',
+    kind: 'openai-compat',
+    cloud: true,
+    keyEnv: 'YANDEX_API_KEY',
+    caps: caps({ streaming: true, structuredOutput: true }),
+    maxOutputTokens: () => config.yandexMaxTokens,
+    defaultModel: () => config.yandexModel,
+  },
   lmstudio: {
     id: 'lmstudio',
     label: 'LM Studio (локально)',
@@ -215,6 +239,34 @@ const MODEL_NOTES = [
     strengths: ['Дёшево держит длинную переписку и большой комплект'],
     limits: ['Русскую нормативную терминологию знает хуже Claude и Gemini', 'PDF не читает — сканы идут через распознавание'],
     bestFor: 'Долгие диалоги и черновой разбор, когда бюджет важнее точности ссылок.',
+  },
+  {
+    provider: 'gigachat', match: /max/i, tier: 'сильная, облако РФ',
+    summary: 'Старшая модель Сбера: облачная нейросеть, доступная из России напрямую, без шлюзов.',
+    strengths: ['Работает с российского сервера без обходных путей', 'Русский язык и деловая лексика для модели родные'],
+    limits: ['PDF и сканы не читает — документы идут через распознавание', 'Нормативную базу знает поверхностнее Claude и Gemini — опирается на базу знаний'],
+    bestFor: 'Основное облако на адресе .ru: анализ комплекта и диалог, когда западные модели недоступны.',
+  },
+  {
+    provider: 'gigachat', match: /./, tier: 'облако РФ',
+    summary: 'Модель Сбера: облачная нейросеть, доступная из России напрямую, без шлюзов.',
+    strengths: ['Работает с российского сервера без обходных путей', 'Отвечает быстрее и дешевле старшей Max'],
+    limits: ['PDF и сканы не читает — документы идут через распознавание', 'На противоречивых нормах уступает старшим моделям'],
+    bestFor: 'Диалог и разбор текстовых документов на адресе .ru.',
+  },
+  {
+    provider: 'yandexgpt', match: /lite/i, tier: 'быстрая, облако РФ',
+    summary: 'Младшая модель Яндекса: дёшево и быстро, тарифицируется в рублях через Yandex Cloud.',
+    strengths: ['Доступна с российского сервера напрямую', 'Низкая цена при большом объёме переписки'],
+    limits: ['PDF и сканы не читает — документы идут через распознавание', 'Сложный разбор нормативов не для неё'],
+    bestFor: 'Уточняющие вопросы и черновые прогоны на адресе .ru.',
+  },
+  {
+    provider: 'yandexgpt', match: /./, tier: 'облако РФ',
+    summary: 'Модель Яндекса: облачная нейросеть, доступная из России; тарифицируется в рублях через Yandex Cloud.',
+    strengths: ['Доступна с российского сервера напрямую', 'Уверенно держит русскую деловую и нормативную лексику'],
+    limits: ['PDF и сканы не читает — документы идут через распознавание', 'Окно контекста меньше западных флагманов — большой комплект придётся резать'],
+    bestFor: 'Анализ текстовых документов и диалог на адресе .ru.',
   },
   {
     provider: 'lmstudio', match: /-vl|vision|llava/i, tier: 'зрение, локальная',

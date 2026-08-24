@@ -25,6 +25,20 @@ const OPENAI_MODELS = [
 /** Актуальные модели Kimi / Moonshot AI (сводки 2026-08) — запасной список без ключа. */
 const KIMI_MODELS = ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5', 'kimi-latest'];
 
+/**
+ * Модели GigaChat — запасной список: при рабочем ключе берётся из /models.
+ * Семейство GigaChat-2 (справочник Сбера на момент подключения); проба с
+ * живым ключом заменит список сама.
+ */
+const GIGACHAT_MODELS = ['GigaChat-2-Max', 'GigaChat-2-Pro', 'GigaChat-2'];
+
+/**
+ * Модели YandexGPT. Список статический: OpenAI-совместимый слой Yandex Cloud
+ * своих моделей не перечисляет, а полный URI собирается из каталога владельца
+ * (gpt://<folder>/<модель>) уже в адаптере — здесь только короткие имена.
+ */
+const YANDEX_MODELS = ['yandexgpt/latest', 'yandexgpt-lite/latest'];
+
 /** Не-чатовые модели облачных провайдеров, которые не показываем в пикере. */
 const CLOUD_EXCLUDE = /embed|whisper|tts|audio|realtime|image|dall-e|moderation|transcribe|codex|davinci|babbage|instruct|search|vision-preview/i;
 
@@ -72,23 +86,113 @@ let cacheAt = 0;
 async function probeOpenAiCompat(baseUrl, apiKey = '') {
   try {
     const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
-    const res = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(apiKey ? 6000 : 2500) });
+    // сюда приходят только облачные: без ключа listCloudModels до пробы не доходит
+    const res = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(6000) });
     if (!res.ok) return null;
     const data = await res.json();
     return (data.data || []).map((m) => m.id).filter((id) => !/embed/i.test(id));
   } catch { return null; }
 }
 
+/* ---------------- проба локального сервера моделей ---------------- */
+
+const LOCAL_PROBE_TIMEOUT = 2500;
+
+/**
+ * Почему локальный сервер не ответил — человеческим языком.
+ *
+ * Раньше любая неудача пробы превращалась в одну надпись «LM Studio не
+ * запущен», и она уводила не туда: 2026-08-21 LM Studio на маке работала, шлюз
+ * работал, а платформа на VPS ходит к ним через Tailscale, который поднят не
+ * был. Человек по подсказке перезапускал LM Studio — то есть чинил единственное
+ * звено, которое было исправно. «Не запущен», «адрес недостижим» и «шлюз не
+ * пустил» — три разные поломки, и лечатся они в трёх разных местах.
+ *
+ * fetch в Node прячет настоящую ошибку в err.cause — код берём оттуда.
+ */
+function errCode(err) {
+  const seen = new Set();
+  let e = err;
+  while (e && typeof e === 'object' && !seen.has(e)) {
+    seen.add(e);
+    if (e.code) return e.code;
+    // fetch к адресу с несколькими A-записями кладёт настоящие ошибки в AggregateError
+    if (Array.isArray(e.errors) && e.errors.length) { e = e.errors[0]; continue; }
+    e = e.cause;
+  }
+  return '';
+}
+
+function localFailReason(err) {
+  const name = (err && err.name) || '';
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    // молчание в трубку не различает «нет маршрута» и «машина занята» —
+    // честнее перечислить, что проверить, чем назвать одну причину наугад
+    return { note: `не ответил за ${(LOCAL_PROBE_TIMEOUT / 1000).toFixed(1).replace('.', ',')} с`,
+      fix: 'Проверьте: машина с моделями включена, канал до неё поднят (Tailscale или локальная сеть), шлюз запущен.' };
+  }
+  const code = errCode(err);
+  if (code === 'ECONNREFUSED') {
+    return { note: 'соединение отклонено — сервер моделей не запущен',
+      fix: 'Запустите LM Studio и шлюз на маке («Запустить ИИ на маке»).' };
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return { note: 'имя адреса не разрешается', fix: 'Проверьте LOCAL_AI_BASE_URL на сервере платформы.' };
+  }
+  if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH' || code === 'ETIMEDOUT') {
+    return { note: 'адрес недостижим — нет сети до машины с моделями',
+      fix: 'Проверьте канал до неё: Tailscale поднят, адрес не сменился.' };
+  }
+  if (code === 'ECONNRESET' || code === 'EPIPE') {
+    return { note: 'соединение оборвано на полуслове', fix: 'Проверьте шлюз на маке и его журнал.' };
+  }
+  return { note: `нет ответа (${(err && err.message) || 'причина неизвестна'})`,
+    fix: 'Проверьте LOCAL_AI_BASE_URL на сервере платформы и что сервер моделей запущен.' };
+}
+
+/**
+ * Список моделей локального сервера + причина отказа, если не вышло.
+ * Возвращает models: null — не достучались вовсе, [] — ответил, но моделей нет.
+ */
+async function probeLocal(baseUrl) {
+  try {
+    const res = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(LOCAL_PROBE_TIMEOUT) });
+    if (res.status === 401 || res.status === 403) {
+      return { models: null, note: `отвечает, но не пускает (HTTP ${res.status})`,
+        fix: 'Шлюз требует ключ: добавьте адрес сервера платформы в allow шлюза на маке.' };
+    }
+    if (!res.ok) return { models: null, note: `ответил HTTP ${res.status}`, fix: '' };
+    const data = await res.json();
+    const models = (data.data || []).map((m) => m.id).filter((id) => !/embed/i.test(id));
+    if (!models.length) {
+      return { models: [], note: 'отвечает, но ни одной чат-модели не отдаёт',
+        fix: 'Загрузите модель в LM Studio.' };
+    }
+    return { models, note: '', fix: '' };
+  } catch (err) {
+    return { models: null, ...localFailReason(err) };
+  }
+}
+
 async function listProviders() {
   if (cache && Date.now() - cacheAt < 15000) return cache;
-  const [lmModels, ollamaModels, openaiModels, kimiModels, geminiModels] = await Promise.all([
-    probeOpenAiCompat(config.localAiBaseUrl),
-    probeOpenAiCompat(config.ollamaBaseUrl),
+  const [lm, ollama, openaiModels, kimiModels, geminiModels, gigachatModels] = await Promise.all([
+    probeLocal(config.localAiBaseUrl),
+    probeLocal(config.ollamaBaseUrl),
     listCloudModels('chatgpt', config.openaiBaseUrl, config.openaiApiKey, OPENAI_MODELS, /^(gpt-|o\d)/),
     listCloudModels('kimi', config.kimiBaseUrl, config.kimiApiKey, KIMI_MODELS, /^(kimi|moonshot)/),
     // список Gemini берётся только из API аккаунта: имена моделей не зашиты в код
     require('./ai/gemini').listModels().catch(() => []),
+    (async () => {
+      // /models у Сбера требует access_token: ключ авторизации меняется на него
+      // отдельным запросом. Любой сбой обмена — статический список, а не отказ.
+      const token = config.gigachatAuthKey
+        ? await require('./ai/gigachat').accessToken().catch(() => '') : '';
+      return listCloudModels('gigachat', config.gigachatBaseUrl, token, GIGACHAT_MODELS, /gigachat/i);
+    })(),
   ]);
+  const lmModels = lm.models;
+  const ollamaModels = ollama.models;
 
   // Для локальных моделей — оценка: помещается ли модель в память машины
   let lmModelsInfo = [];
@@ -148,18 +252,37 @@ async function listProviders() {
         : (geminiModels.length ? '' : 'ключ задан, но список моделей не получен — проверьте доступ'),
     },
     {
+      id: 'gigachat', label: 'GigaChat (Сбер)',
+      available: !!config.gigachatAuthKey,
+      models: withDefaultFirst(gigachatModels, config.gigachatModel),
+      modelsInfo: cloudModelsInfo('gigachat', withDefaultFirst(gigachatModels, config.gigachatModel)),
+      note: config.gigachatAuthKey ? '' : 'нужен GIGACHAT_AUTH_KEY на сервере',
+    },
+    {
+      id: 'yandexgpt', label: 'YandexGPT (Яндекс)',
+      available: !!(config.yandexApiKey && config.yandexFolderId),
+      models: withDefaultFirst(YANDEX_MODELS, config.yandexModel),
+      modelsInfo: cloudModelsInfo('yandexgpt', withDefaultFirst(YANDEX_MODELS, config.yandexModel)),
+      note: (config.yandexApiKey && config.yandexFolderId)
+        ? '' : 'нужны YANDEX_API_KEY и YANDEX_FOLDER_ID на сервере',
+    },
+    {
       id: 'lmstudio', label: 'LM Studio (локально)',
       available: !!(lmModels && lmModels.length),
       models: lmModels || [],
       modelsInfo: lmModelsInfo,
-      note: lmModels ? '' : 'LM Studio не запущен',
+      // note — что именно не так, fix — что с этим делать, endpoint — куда стучались.
+      // Адрес срезается для неавторизованных в listProvidersFor: /health отвечает
+      // и анониму, а внутренний адрес мака ему знать незачем.
+      note: lm.note, fix: lm.fix, endpoint: config.localAiBaseUrl,
     },
     {
       id: 'ollama', label: 'Ollama (локально)',
       available: !!(ollamaModels && ollamaModels.length),
       models: ollamaModels || [],
       modelsInfo: (ollamaModels || []).map((id) => ({ id, about: registry.describe('ollama', id) })),
-      note: ollamaModels === null ? 'Ollama не запущен' : (ollamaModels.length ? '' : 'нет чат-моделей: ollama pull <модель>'),
+      note: ollamaModels && !ollamaModels.length ? 'нет чат-моделей: ollama pull <модель>' : ollama.note,
+      fix: ollama.fix, endpoint: config.ollamaBaseUrl,
     },
     {
       id: 'demo', label: 'Демо-режим (без AI)', available: true, models: ['demo'],
@@ -187,19 +310,33 @@ const CLOUD_CLOSED_NOTE = 'доступно только владельцу пл
  * то, чего нет, поэтому облачные помечаются недоступными прямо в пикере.
  * Это удобство; настоящий запрет стоит на дне адаптера (ai/cloud-access.js).
  */
-async function listProvidersFor(user) {
+async function listProvidersFor(user, host = '') {
   const all = await listProviders();
   // Доступ считается по каждому провайдеру отдельно: владелец может открыть
   // один сервис всем и оставить остальные себе. Общая проверка «пускать ли в
   // облако вообще» здесь больше не годится.
-  return all.map((p) => (cloudAccess.isCloud(p.id) && !cloudAccess.userAllowed(user, p.id)
-    ? { ...p, available: false, note: CLOUD_CLOSED_NOTE }
-    : p));
+  return all.map((p) => {
+    // адрес локального сервера — только вошедшим: /health открыт и анониму.
+    // При выключенном входе (REQUIRE_LOGIN=0) прятать не от кого — там открыто всё.
+    if (!cloudAccess.isCloud(p.id)) {
+      return (user || !config.requireLogin) ? p : { ...p, endpoint: undefined };
+    }
+    // Имя платформы старше человека: на закрытом адресе привязанного облака
+    // нет ни у кого, и причина отказа там другая — дело не в правах, а в
+    // адресе. Привязка своя у каждого провайдера: западная тройка живёт
+    // только на .com, Kimi и российские облака работают на любом имени.
+    if (!cloudAccess.hostAllowed(host, p.id)) {
+      return { ...p, available: false, note: cloudAccess.hostDenyMessage() };
+    }
+    return cloudAccess.userAllowed(user, p.id)
+      ? p
+      : { ...p, available: false, note: CLOUD_CLOSED_NOTE };
+  });
 }
 
 /** Проверка выбора пользователя; возвращает {ok} или {ok:false, error}. */
-async function validateChoice(providerId, model, user = null) {
-  const providers = await listProvidersFor(user);
+async function validateChoice(providerId, model, user = null, host = '') {
+  const providers = await listProvidersFor(user, host);
   const p = providers.find((x) => x.id === providerId);
   if (!p) return { ok: false, error: 'Неизвестный провайдер' };
   if (!p.available) return { ok: false, error: `«${p.label}» недоступен: ${p.note}` };
@@ -220,4 +357,4 @@ async function validateChoice(providerId, model, user = null) {
   return { ok: true, provider: p, warning: (info && info.heavy && info.note) ? info.note : '' };
 }
 
-module.exports = { listProviders, listProvidersFor, validateChoice, CLOUD_CLOSED_NOTE };
+module.exports = { listProviders, listProvidersFor, validateChoice, probeLocal, CLOUD_CLOSED_NOTE };

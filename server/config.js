@@ -40,7 +40,7 @@ const config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   /*
    * Своя точка входа: через неё запросы идут не напрямую, а через шлюз на маке
-   * (`win/mac/ai-gateway.js`, маршрут `/cloud/anthropic`).
+   * (`mac/ai-gateway.js`, маршрут `/cloud/anthropic`).
    *
    * Зачем. Сервер платформы стоит в Москве, а Россия в списке поддерживаемых
    * стран Anthropic отсутствует — обращение с этой машины нарушает их условия
@@ -183,6 +183,40 @@ const config = {
   geminiBaseUrl: process.env.GEMINI_BASE_URL || '',
   geminiMaxTokens: int('GEMINI_MAX_TOKENS', 65536),
 
+  /**
+   * GigaChat (Сбер) — облачная модель, доступная из России: сервер платформы
+   * стоит в Москве и ходит к ней напрямую, без шлюза на маке.
+   *
+   * Авторизация двухступенчатая: в .env живёт постоянный ключ авторизации
+   * (Basic, выдаёт кабинет developers.sber.ru), а к API ходит короткоживущий
+   * access_token — обменом занимается services/ai/gigachat.js.
+   *
+   * TLS-сертификат у API выдан НУЦ Минцифры, в комплекте Node его нет:
+   * процессу платформы нужен NODE_EXTRA_CA_CERTS с российским корневым
+   * сертификатом, иначе обмен ключа на токен падает на проверке цепочки.
+   */
+  gigachatAuthKey: process.env.GIGACHAT_AUTH_KEY || '',
+  // GIGACHAT_API_PERS — физлицо; GIGACHAT_API_B2B / GIGACHAT_API_CORP — юрлицо
+  gigachatScope: process.env.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS',
+  gigachatModel: process.env.GIGACHAT_MODEL || 'GigaChat-2',
+  gigachatBaseUrl: process.env.GIGACHAT_BASE_URL || 'https://gigachat.devices.sberbank.ru/api/v1',
+  gigachatOauthUrl: process.env.GIGACHAT_OAUTH_URL || 'https://ngw.devices.sberbank.ru:9443/api/v2/oauth',
+  // Потолок ответа в справочнике Сбера не зафиксирован — консервативные 4096
+  // до живой проверки с ключом; обрезанный ответ дочитывается продолжениями
+  gigachatMaxTokens: int('GIGACHAT_MAX_TOKENS', 4096),
+
+  /**
+   * YandexGPT — через OpenAI-совместимый слой Yandex Cloud, тоже напрямую
+   * с российского сервера. Ключ API и каталог (folder) выдаёт консоль
+   * Yandex Cloud; короткое имя модели («yandexgpt/latest») адаптер дополняет
+   * до полного URI gpt://<каталог>/<модель> перед отправкой.
+   */
+  yandexApiKey: process.env.YANDEX_API_KEY || '',
+  yandexFolderId: process.env.YANDEX_FOLDER_ID || '',
+  yandexModel: process.env.YANDEX_MODEL || 'yandexgpt/latest',
+  yandexBaseUrl: process.env.YANDEX_BASE_URL || 'https://llm.api.cloud.yandex.net/v1',
+  yandexMaxTokens: int('YANDEX_MAX_TOKENS', 8000),
+
   // Люди платформы: список ФИО, режим регистрации и последние адреса.
   // Файл лежит в КОРНЕ проекта, а не в public/ — та папка раздаётся статикой.
   usersFile: process.env.USERS_FILE || path.join(__dirname, '..', 'users.json'),
@@ -212,6 +246,42 @@ const config = {
    */
   cloudAiOpenProviders: new Set(
     (process.env.CLOUD_AI_OPEN_PROVIDERS || '')
+      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+  ),
+  /**
+   * Имена платформы, на которых облачные модели вообще предлагаются.
+   *
+   * У платформы два адреса, и за ними разные аудитории: на `.com` работает
+   * облако, `.ru` остаётся на локальных моделях. Разделение по имени, а не по
+   * списку людей: список пришлось бы вести руками на каждого нового человека,
+   * а имя приходит с каждым запросом само (nginx передаёт `Host`).
+   *
+   * Список белый и по умолчанию пустой: не задан — ограничения нет, облако
+   * доступно на любом имени. Так было до появления второго домена, и так
+   * работают чужие копии платформы.
+   *
+   *   CLOUD_AI_HOSTS=enso-nexus.com,www.enso-nexus.com
+   */
+  cloudAiHosts: new Set(
+    (process.env.CLOUD_AI_HOSTS || '')
+      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+  ),
+  /**
+   * Какие облачные провайдеры привязаны к именам из CLOUD_AI_HOSTS.
+   *
+   * Разделение доменов неравномерное: Claude, ChatGPT и Gemini живут только
+   * на `.com` — их условия не поддерживают Россию, и на `.ru` их нет ни у
+   * кого, включая владельца. Kimi, GigaChat и YandexGPT из России доступны,
+   * поэтому к именам не привязываются и работают на любом адресе.
+   *
+   * Пустой список сохраняет прежнее поведение — к именам привязаны ВСЕ
+   * облачные: сужение привязки — осознанное действие владельца, а забытая
+   * переменная не имеет права молча открыть западное облако на `.ru`.
+   *
+   *   CLOUD_AI_HOSTS_PROVIDERS=claude,chatgpt,gemini
+   */
+  cloudAiHostsProviders: new Set(
+    (process.env.CLOUD_AI_HOSTS_PROVIDERS || '')
       .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   ),
   // Попытки входа лимитируются отдельно и жёстче обычных запросов:

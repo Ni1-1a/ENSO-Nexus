@@ -43,7 +43,7 @@ function networkReason(err) {
 /** Провайдеры, которые крутятся на машине владельца, а не в облаке. */
 const LOCAL_PROVIDERS = new Set(['lmstudio', 'ollama', 'openai-compat']);
 /** Маршруты, которые адаптер умеет исполнять. Всё остальное — явная ошибка, а не подмена. */
-const ROUTABLE_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini', 'lmstudio', 'ollama', 'openai-compat', 'demo']);
+const ROUTABLE_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt', 'lmstudio', 'ollama', 'openai-compat', 'demo']);
 
 /** Человеческое имя провайдера для сообщений (берётся из реестра, а не зашито). */
 function providerLabel(providerId) {
@@ -67,6 +67,8 @@ function maxTokensEnv(providerId) {
   if (providerId === 'chatgpt') return 'OPENAI_MAX_TOKENS';
   if (providerId === 'kimi') return 'KIMI_MAX_TOKENS';
   if (providerId === 'gemini') return 'GEMINI_MAX_TOKENS';
+  if (providerId === 'gigachat') return 'GIGACHAT_MAX_TOKENS';
+  if (providerId === 'yandexgpt') return 'YANDEX_MAX_TOKENS';
   if (LOCAL_PROVIDERS.has(providerId)) return 'LOCAL_AI_MAX_TOKENS';
   return '';
 }
@@ -154,6 +156,8 @@ function resolveModel(route) {
   if (route.provider === 'chatgpt') return route.model || config.openaiModel;
   if (route.provider === 'kimi') return route.model || config.kimiModel;
   if (route.provider === 'gemini') return route.model || config.geminiModel || 'gemini';
+  if (route.provider === 'gigachat') return route.model || config.gigachatModel;
+  if (route.provider === 'yandexgpt') return route.model || config.yandexModel;
   if (route.provider === 'lmstudio') return route.model || config.localAiModel;
   if (route.provider === 'ollama') return route.model || '';
   if (route.provider === 'demo') return 'demo';
@@ -192,6 +196,19 @@ function assertCloudAllowed(providerId, sessionId) {
   // сервисов (владелец открыл Kimi всем, остальное оставил себе).
   if (cloudAccess.allowedForSession(sessionId, providerId)) return;
   throw new AiUnavailableError(cloudAccess.denyMessage(providerId));
+}
+
+/**
+ * Токен GigaChat к моменту вызова: постоянный ключ авторизации меняется на
+ * access_token (30 минут, кэшируется в services/ai/gigachat.js). Сбой обмена —
+ * это недоступность сервиса, а не внутренняя ошибка платформы.
+ */
+async function gigachatToken() {
+  try {
+    return await require('../ai/gigachat').accessToken();
+  } catch (err) {
+    throw new AiUnavailableError(`GigaChat: ${err.message}`);
+  }
 }
 
 /**
@@ -322,6 +339,15 @@ async function callModel({ system, messages, sessionId, route, signal }) {
   }
   if (route.provider === 'gemini') {
     return callGemini({ system, messages, sessionId, route, signal, jsonSchema: RESPONSE_SCHEMA });
+  }
+  if (route.provider === 'gigachat') {
+    if (!config.gigachatAuthKey) throw new AiUnavailableError('GigaChat не настроен: нужен GIGACHAT_AUTH_KEY на сервере.');
+    assertCloudAllowed('gigachat', sessionId); // до обмена ключа на токен: гейт раньше любого выхода наружу
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.gigachatBaseUrl, apiKey: await gigachatToken(), model: route.model || config.gigachatModel, provider: 'gigachat', signal });
+  }
+  if (route.provider === 'yandexgpt') {
+    if (!config.yandexApiKey || !config.yandexFolderId) throw new AiUnavailableError('YandexGPT не настроен: нужны YANDEX_API_KEY и YANDEX_FOLDER_ID на сервере.');
+    return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.yandexBaseUrl, apiKey: config.yandexApiKey, model: route.model || config.yandexModel, provider: 'yandexgpt', signal });
   }
   if (route.provider === 'openai-compat') {
     return callOpenAiCompat({ system, messages, sessionId, baseUrl: config.localAiBaseUrl, model: route.model, provider: 'openai-compat', signal });
@@ -658,7 +684,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   const providerId = provider || (isLmStudio ? 'lmstudio' : 'openai-compat');
   assertCloudAllowed(providerId, sessionId);
   // облачным моделям даём не меньше 30 мин: генерация сотен тысяч токенов долгая
-  const isCloud = providerId === 'chatgpt' || providerId === 'kimi';
+  const isCloud = cloudAccess.isCloud(providerId);
   const timeoutMs = isCloud ? Math.max(config.localAiTimeoutMs, 1800000) : config.localAiTimeoutMs;
 
   // Явная загрузка модели с нужным контекстом (вместо непредсказуемого JIT):
@@ -772,6 +798,13 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
 
   // Kimi K2.6+: temperature фиксирована моделью («only 1 is allowed») — не отправляем
   if (providerId === 'kimi') delete body.temperature;
+
+  // Яндекс принимает только полный URI модели: короткое имя из пикера
+  // дополняется каталогом владельца здесь, а везде выше — в журнале, статистике
+  // и шапке прогресса — модель остаётся под коротким именем, без каталога.
+  if (providerId === 'yandexgpt' && !/^(gpt|ds):\/\//.test(body.model)) {
+    body.model = `gpt://${config.yandexFolderId}/${body.model}`;
+  }
 
   // OpenAI: современные модели принимают только max_completion_tokens
   // и температуру по умолчанию (нестандартная возвращает 400).
@@ -1331,6 +1364,15 @@ async function structuredCall({ system, messages, sessionId, route, signal, sche
     if (!config.kimiApiKey) throw new AiUnavailableError('Kimi не настроен: нужен KIMI_API_KEY на сервере.');
     return callOpenAiCompat({ ...opts, baseUrl: config.kimiBaseUrl, apiKey: config.kimiApiKey, model: route.model || config.kimiModel, provider: 'kimi' });
   }
+  if (route.provider === 'gigachat') {
+    if (!config.gigachatAuthKey) throw new AiUnavailableError('GigaChat не настроен: нужен GIGACHAT_AUTH_KEY на сервере.');
+    assertCloudAllowed('gigachat', sessionId); // до обмена ключа на токен
+    return callOpenAiCompat({ ...opts, baseUrl: config.gigachatBaseUrl, apiKey: await gigachatToken(), model: route.model || config.gigachatModel, provider: 'gigachat' });
+  }
+  if (route.provider === 'yandexgpt') {
+    if (!config.yandexApiKey || !config.yandexFolderId) throw new AiUnavailableError('YandexGPT не настроен: нужны YANDEX_API_KEY и YANDEX_FOLDER_ID на сервере.');
+    return callOpenAiCompat({ ...opts, baseUrl: config.yandexBaseUrl, apiKey: config.yandexApiKey, model: route.model || config.yandexModel, provider: 'yandexgpt' });
+  }
   if (route.provider === 'ollama') {
     return callOpenAiCompat({ ...opts, baseUrl: config.ollamaBaseUrl, model: route.model, provider: 'ollama' });
   }
@@ -1385,6 +1427,15 @@ async function plainCall({ system, messages, sessionId, route, signal, maxTokens
   if (route.provider === 'kimi') {
     if (!config.kimiApiKey) throw new AiUnavailableError('Kimi не настроен: нужен KIMI_API_KEY на сервере.');
     return callOpenAiCompat({ ...opts, baseUrl: config.kimiBaseUrl, apiKey: config.kimiApiKey, model: route.model || config.kimiModel, provider: 'kimi' });
+  }
+  if (route.provider === 'gigachat') {
+    if (!config.gigachatAuthKey) throw new AiUnavailableError('GigaChat не настроен: нужен GIGACHAT_AUTH_KEY на сервере.');
+    assertCloudAllowed('gigachat', sessionId); // до обмена ключа на токен
+    return callOpenAiCompat({ ...opts, baseUrl: config.gigachatBaseUrl, apiKey: await gigachatToken(), model: route.model || config.gigachatModel, provider: 'gigachat' });
+  }
+  if (route.provider === 'yandexgpt') {
+    if (!config.yandexApiKey || !config.yandexFolderId) throw new AiUnavailableError('YandexGPT не настроен: нужны YANDEX_API_KEY и YANDEX_FOLDER_ID на сервере.');
+    return callOpenAiCompat({ ...opts, baseUrl: config.yandexBaseUrl, apiKey: config.yandexApiKey, model: route.model || config.yandexModel, provider: 'yandexgpt' });
   }
   if (route.provider === 'ollama') {
     return callOpenAiCompat({ ...opts, baseUrl: config.ollamaBaseUrl, model: route.model, provider: 'ollama' });

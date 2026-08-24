@@ -10,3 +10,7 @@ logs/
 users.json
 users.json.tmp
 users.json.bak
+
+# Ключи шлюза локального ИИ на маке (mac/ai-gateway.js).
+# В репозиторий уезжает только gateway.example.json.
+mac/gateway.json

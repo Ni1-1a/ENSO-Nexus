@@ -71,8 +71,10 @@ const PRICES = [
 ];
 
 // gemini здесь тоже платный: тарифов в справочнике нет, поэтому интерфейс честно
-// предупредит, что расход не попадёт в счётчик — придумывать расценки нельзя
-const PAID_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini']);
+// предупредит, что расход не попадёт в счётчик — придумывать расценки нельзя.
+// GigaChat и YandexGPT тарифицируются в рублях — в долларовый справочник их
+// цены не заносятся, расход по ним считает кабинет провайдера.
+const PAID_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt']);
 
 /** Тариф модели {input, output} в USD за 1 млн токенов, либо null. */
 function priceFor(model) {

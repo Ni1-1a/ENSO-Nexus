@@ -18,7 +18,19 @@ start_server() {
   echo $! > logs/server.pid
 }
 
+# Уже поднятый туннель — любой: и именной из config.yml, и токенный из панели
+# Cloudflare (`cloudflared tunnel run --token …`). Второй коннектор к тому же
+# туннелю не ломает ничего мгновенно, но Cloudflare начинает раскидывать запросы
+# между ними, и отладка превращается в гадание, какой из них ответил.
+tunnel_running() {
+  pgrep -f 'cloudflared tunnel run' > /dev/null 2>&1
+}
+
 start_tunnel() {
+  if tunnel_running; then
+    echo "$PUBLIC_URL"
+    return 0
+  fi
   : > logs/tunnel.log
   cloudflared tunnel run enso-nexus >> logs/tunnel.log 2>&1 &
   echo $! > logs/tunnel.pid
@@ -82,8 +94,10 @@ echo "Старая ссылка https://ni1-1a.github.io/ENSO-Nexus/ перен�
       fi
     fi
     # именной туннель сам держит 4 резервных соединения — чиним только мёртвый процесс
-    # (проверка по публичному URL убрана: при задержках DNS/сети она убивала живой туннель)
-    if ! kill -0 "$(cat logs/tunnel.pid 2>/dev/null)" 2>/dev/null; then
+    # (проверка по публичному URL убрана: при задержках DNS/сети она убивала живой туннель).
+    # Проверяем не свой pid-файл, а наличие любого cloudflared: туннель мог быть
+    # поднят не нами — из панели Cloudflare по токену, — и тогда своего pid нет.
+    if ! tunnel_running; then
       echo "$(date '+%F %T') процесс туннеля умер — перезапуск" >> logs/watchdog.log
       start_tunnel >> logs/watchdog.log
     fi

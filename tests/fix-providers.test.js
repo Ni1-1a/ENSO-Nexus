@@ -825,3 +825,67 @@ test('бюджет окна: документы не режутся ради д�
   assert.ok(sent.length > big.length * 0.9,
     `до модели дошло ${sent.length} символов из ${big.length} — документ обрезан ради ответа`);
 });
+
+/* ================= проба локального сервера: причина отказа ================= */
+/**
+ * Дефект 2026-08-21: любая неудача пробы показывалась как «LM Studio не
+ * запущен». В тот день LM Studio и шлюз на маке работали, а платформа на VPS
+ * ходит к ним через Tailscale, который поднят не был, — и подсказка гнала
+ * перезапускать единственное исправное звено. Причина обязана называться своим
+ * именем: не запущен, не пускает, отдаёт пустой список.
+ */
+
+/** Одноразовый сервер с заданным ответом; возвращает базовый URL и close(). */
+function fakeLocal(handler) {
+  const srv = http.createServer(handler).listen(0, '127.0.0.1');
+  return new Promise((resolve) => {
+    srv.on('listening', () => resolve({
+      url: `http://127.0.0.1:${srv.address().port}/v1`,
+      close: () => new Promise((r) => srv.close(r)),
+    }));
+  });
+}
+
+test('проба: закрытый порт — «не запущен», а не «нет ответа»', async () => {
+  const { probeLocal } = require('../server/services/providers');
+  // 1299 намеренно свободен; порты вроде 9 undici отвергает сам, до сети не доходя
+  const r = await probeLocal('http://127.0.0.1:1299/v1');
+  assert.strictEqual(r.models, null);
+  assert.match(r.note, /не запущен/);
+  assert.ok(r.fix, 'у поломки должна быть подсказка, что делать');
+});
+
+test('проба: 401 от шлюза — про список allow, а не про запуск LM Studio', async () => {
+  const { probeLocal } = require('../server/services/providers');
+  const s = await fakeLocal((q, r) => { r.writeHead(401); r.end('{}'); });
+  const res = await probeLocal(s.url);
+  await s.close();
+  assert.strictEqual(res.models, null);
+  assert.match(res.note, /не пускает \(HTTP 401\)/);
+  assert.match(res.fix, /allow/);
+  assert.doesNotMatch(res.note + res.fix, /не запущен/, 'совет запустить сервер здесь уводит не туда');
+});
+
+test('проба: сервер отвечает, но моделей нет — это не «не запущен»', async () => {
+  const { probeLocal } = require('../server/services/providers');
+  const s = await fakeLocal((q, r) => {
+    r.writeHead(200, { 'content-type': 'application/json' });
+    r.end('{"data":[]}');
+  });
+  const res = await probeLocal(s.url);
+  await s.close();
+  assert.deepStrictEqual(res.models, []);
+  assert.match(res.note, /ни одной чат-модели/);
+});
+
+test('проба: рабочий сервер отдаёт модели и молчит про поломки', async () => {
+  const { probeLocal } = require('../server/services/providers');
+  const s = await fakeLocal((q, r) => {
+    r.writeHead(200, { 'content-type': 'application/json' });
+    r.end('{"data":[{"id":"qwen/qwen3.5-35b-a3b"},{"id":"text-embedding-nomic"}]}');
+  });
+  const res = await probeLocal(s.url);
+  await s.close();
+  assert.deepStrictEqual(res.models, ['qwen/qwen3.5-35b-a3b'], 'эмбеддинги в чат-список не попадают');
+  assert.strictEqual(res.note, '');
+});

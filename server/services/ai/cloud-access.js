@@ -31,10 +31,13 @@ const config = require('../../config');
 const { db } = require('../../db');
 
 /** Провайдеры, которые обращаются к чужому сервису по нашему ключу. */
-const CLOUD_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini']);
+const CLOUD_PROVIDERS = new Set(['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt']);
 
 /** Человеческие имена провайдеров для текста отказа. */
-const PROVIDER_LABELS = { claude: 'Claude', chatgpt: 'ChatGPT', kimi: 'Kimi', gemini: 'Gemini' };
+const PROVIDER_LABELS = {
+  claude: 'Claude', chatgpt: 'ChatGPT', kimi: 'Kimi', gemini: 'Gemini',
+  gigachat: 'GigaChat', yandexgpt: 'YandexGPT',
+};
 
 function isCloud(providerId) {
   return CLOUD_PROVIDERS.has(String(providerId || ''));
@@ -49,6 +52,53 @@ function isCloud(providerId) {
  */
 function openToEveryone(providerId) {
   return config.cloudAiOpenProviders.has(String(providerId || '').toLowerCase());
+}
+
+/** Имя из адреса без порта и регистра: `Enso-Nexus.COM:443` → `enso-nexus.com`. */
+function normHost(host) {
+  return String(host || '').toLowerCase().split(':')[0].trim();
+}
+
+/**
+ * Предлагается ли провайдер на этом имени платформы.
+ *
+ * У платформы два адреса, и западное облако живёт только на одном из них.
+ * Пустой список имён означает «ограничения нет»: иначе забытая переменная
+ * молча выключила бы облачные модели на всех адресах сразу, и это выглядело
+ * бы как поломка.
+ *
+ * Привязка не обязана быть общей на всё облако: CLOUD_AI_HOSTS_PROVIDERS
+ * перечисляет, КОГО именно она касается. Claude, ChatGPT и Gemini живут
+ * только на именах из списка, а Kimi, GigaChat и YandexGPT из России
+ * доступны — им имя не преграда. Вызов без провайдера отвечает за всю
+ * привязку целиком: так спрашивают места, где провайдер ещё не выбран.
+ */
+function hostAllowed(host, providerId = '') {
+  if (!config.cloudAiHosts.size) return true;
+  if (providerId && config.cloudAiHostsProviders.size
+    && !config.cloudAiHostsProviders.has(String(providerId).toLowerCase())) {
+    return true;
+  }
+  return config.cloudAiHosts.has(normHost(host));
+}
+
+/** Имя, с которого работают в проекте; пусто — проект ещё ни разу не открывали. */
+function hostOf(sessionId) {
+  if (!sessionId) return '';
+  try {
+    const row = db.prepare('SELECT origin_host FROM sessions WHERE id = ?').get(sessionId);
+    return row && row.origin_host ? String(row.origin_host) : '';
+  } catch {
+    return ''; // колонки может не быть на старой базе — это отказ, а не сбой
+  }
+}
+
+/** Отказ по имени платформы: человек тут ни при чём, дело в адресе. */
+function hostDenyMessage() {
+  const [first] = [...config.cloudAiHosts];
+  return first
+    ? `Эта модель работает только на ${first} — на этом адресе доступны локальные и работающие из России облачные модели.`
+    : 'Эта модель на этом адресе платформы недоступна — выберите другую в «Настройках».';
 }
 
 /** Текст отказа: называет и то, чем человек может воспользоваться вместо. */
@@ -98,6 +148,15 @@ function userAllowed(user, providerId) {
  */
 function allowedForSession(sessionId, providerId) {
   if (config.cloudAiOpen) return true;
+  /*
+   * Имя платформы решает раньше человека: на закрытом адресе привязанного
+   * провайдера нет ни у кого, включая владельца. Проект, который ещё ни разу
+   * не открывали, имени не имеет — и привязанного облака не получает: пустое
+   * поле не повод считать, что пришли с разрешённого адреса. Имя записывается
+   * при первом же обращении к проекту, поэтому до вызова модели дело доходит
+   * уже с заполненным полем.
+   */
+  if (!hostAllowed(hostOf(sessionId), providerId)) return false;
   const ownerId = ownerOf(sessionId);
   if (!ownerId) return false;
   return userAllowed(require('../users').byId(ownerId), providerId);
@@ -120,4 +179,5 @@ function safetyIdentifier(sessionId) {
 module.exports = {
   CLOUD_PROVIDERS, DENY_MESSAGE, PROVIDER_LABELS,
   isCloud, openToEveryone, denyMessage, userAllowed, allowedForSession, safetyIdentifier, ownerOf,
+  normHost, hostAllowed, hostOf, hostDenyMessage,
 };

@@ -28,10 +28,13 @@ router.get('/health', optionalUser, async (req, res) => {
   let kb = { enabled: false };
   let providers = [];
   try { kb = require('../services/kb').status(); } catch {}
-  // список зависит от того, кто спрашивает: облачные модели видит только тот,
-  // кому они разрешены. Ответ этой ручки уходит и анониму (её опрашивает
-  // страница-вход), поэтому фильтр обязан работать и без токена человека.
-  try { providers = await require('../services/providers').listProvidersFor(req.user); } catch {}
+  // Список зависит и от того, КТО спрашивает, и от того, С КАКОГО АДРЕСА:
+  // облачные модели живут только на одном имени платформы. Ответ этой ручки
+  // уходит и анониму (её опрашивает страница-вход), поэтому фильтр обязан
+  // работать и без токена человека.
+  try {
+    providers = await require('../services/providers').listProvidersFor(req.user, req.hostname);
+  } catch {}
   res.json({
     ok: true,
     kb,
@@ -204,8 +207,11 @@ router.post('/sessions', expensiveLimit, userAuth, express.json(), (req, res) =>
   const id = crypto.randomUUID();
   const token = crypto.randomBytes(32).toString('hex');
   const deviceId = normDeviceId(req.body?.deviceId);
-  db.prepare('INSERT INTO sessions (id, token, device_id, user_id, prompt_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-    .run(id, token, deviceId, (req.user && req.user.id) || '', config.promptVersion, now(), now());
+  // Имя платформы, на котором проект завели: от него зависит доступ к облаку.
+  // Дальше оно обновляется в sessionAuth на каждом обращении к проекту.
+  const originHost = String(req.hostname || '').toLowerCase().split(':')[0].trim();
+  db.prepare('INSERT INTO sessions (id, token, device_id, user_id, prompt_version, origin_host, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, token, deviceId, (req.user && req.user.id) || '', config.promptVersion, originHost, now(), now());
   pipeline.logEvent(id, 'Сессия создана');
   res.status(201).json({ id, token });
 });
@@ -801,7 +807,7 @@ router.post('/sessions/:id/settings', sessionAuth, sessionOwner, express.json(),
         updates.ai_provider = ''; updates.ai_model = '';
       } else {
         const check = await require('../services/providers')
-          .validateChoice(String(aiProvider), aiModel ? String(aiModel) : '', req.user);
+          .validateChoice(String(aiProvider), aiModel ? String(aiModel) : '', req.user, req.hostname);
         if (!check.ok) return res.status(400).json({ error: check.error });
         updates.ai_provider = String(aiProvider);
         updates.ai_model = aiModel ? String(aiModel) : '';
@@ -1221,7 +1227,7 @@ router.post('/sessions/:id/compare', sessionAuth, sessionOwner, expensiveLimit, 
     for (const m of models) {
       const provider = String(m?.provider || '');
       const model = m?.model ? String(m.model) : '';
-      const check = await providersSvc.validateChoice(provider, model, req.user);
+      const check = await providersSvc.validateChoice(provider, model, req.user, req.hostname);
       if (!check.ok) return res.status(400).json({ error: check.error });
       routes.push({ provider, model });
     }

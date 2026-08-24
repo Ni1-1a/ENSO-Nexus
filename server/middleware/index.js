@@ -74,6 +74,21 @@ function sessionAuth(req, res, next) {
     return res.status(404).json({ error: 'Сессия не найдена или токен неверен' });
   }
   req.session = session;
+  /*
+   * Имя платформы, с которого работают в проекте, запоминается при КАЖДОМ
+   * обращении. Гейт облака спрашивает его на дне адаптера, у самого вызова
+   * модели, где никакого запроса уже нет — только идентификатор сессии.
+   * Запись на каждом обращении, а не только при создании: человек может
+   * открыть тот же проект с другого адреса платформы, и правда об адресе
+   * обязана меняться вместе с ним.
+   */
+  const host = String(req.hostname || '').toLowerCase().split(':')[0].trim();
+  if (host && session.origin_host !== host) {
+    try {
+      db.prepare('UPDATE sessions SET origin_host = ? WHERE id = ?').run(host, id);
+      session.origin_host = host;
+    } catch { /* колонки может не быть на старой базе — не повод рвать запрос */ }
+  }
   next();
 }
 

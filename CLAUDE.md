@@ -15,6 +15,16 @@ npm test           # node --test tests/*.test.js
 `enso-nexus.ru`, `www.enso-nexus.ru` и `app.enso-nexus.ru` остаются рабочими и отдают
 то же приложение — редирект на `.com` решено не делать. Вход между адресами не
 переносится: токен в `localStorage`, он свой у каждого домена.
+
+**Домены разделены по моделям (2026-08-24).** На `.ru` живут только нейросети,
+доступные из России: локальные, Kimi, GigaChat и YandexGPT. Claude, ChatGPT и
+Gemini привязаны к `.com` и на `.ru` закрыты ВСЕМ, включая владельца. Привязка —
+`CLOUD_AI_HOSTS` + `CLOUD_AI_HOSTS_PROVIDERS` в `.env`, проверка на дне адаптера
+(`services/ai/cloud-access.js`, `hostAllowed`). GigaChat требует российский
+корневой сертификат (`NODE_EXTRA_CA_CERTS`) и меняет постоянный ключ на
+получасовой токен (`services/ai/gigachat.js`); YandexGPT ходит через
+OpenAI-совместимый слой Yandex Cloud, короткое имя модели дополняется до
+`gpt://<каталог>/<модель>` в адаптере.
 Проверять домен только снаружи: локальный FortiGate подменяет DNS и сертификат,
 изнутри сети живой `.com` выглядит как парковка — см. `DEPLOYMENT.md`.
 Полный перезапуск — `Перезапуск/Перезапустить сервер.command`.
@@ -40,6 +50,8 @@ server/
   services/
     ai/registry.js      возможности и лимиты моделей — единственный источник правды
     ai/gemini.js        нативный адаптер Google Gemini (@google/genai)
+    ai/gigachat.js      OAuth Сбера: ключ авторизации → access_token (30 мин, кэш)
+    ai/cloud-access.js  кто и с какого адреса получает облако; гейт на дне адаптера
     geometry/site-geometry.js       нормализованная модель участка + планарная геометрия
     geometry/cad-geometry.js        CAD parser v2: DXF/DWG → SiteGeometry с provenance
     geometry/parcel-source.js       границы ЗУ по поворотным точкам из ГПЗУ/ЕГРН

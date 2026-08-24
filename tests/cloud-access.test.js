@@ -46,7 +46,12 @@ function startFakeServer() {
       req.on('end', () => {
         let parsed = null;
         try { parsed = JSON.parse(body); } catch { /* тело не JSON */ }
-        requests.push({ url: req.url, body: parsed });
+        requests.push({ url: req.url, body: parsed, auth: req.headers.authorization || '' });
+        // обмен ключа GigaChat: OAuth-точка отвечает токеном, а не completions
+        if (req.url.includes('/oauth')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ access_token: 'giga-test-token', expires_at: Date.now() + 1800000 }));
+        }
         // адаптер по умолчанию просит стриминг — отвечаем тем же, иначе текст
         // приходит пустым и тест ловит не то, что проверяет
         if (parsed && parsed.stream) {
@@ -111,6 +116,13 @@ before(async () => {
   process.env.KIMI_BASE_URL = baseUrl;
   process.env.OPENAI_API_KEY = 'sk-test-fake-key';
   process.env.KIMI_API_KEY = 'sk-kimi-fake-key';
+  // российские облака ходят на тот же поддельный сервер; OAuth Сбера — на /oauth
+  process.env.GIGACHAT_AUTH_KEY = 'giga-fake-auth-key';
+  process.env.GIGACHAT_BASE_URL = baseUrl;
+  process.env.GIGACHAT_OAUTH_URL = baseUrl.replace('/v1', '/oauth');
+  process.env.YANDEX_API_KEY = 'ya-fake-key';
+  process.env.YANDEX_FOLDER_ID = 'b1g-test-folder';
+  process.env.YANDEX_BASE_URL = baseUrl;
   process.env.LOCAL_AI_BASE_URL = baseUrl.replace('/v1', '/lm');
 
   stubModelManager();
@@ -384,6 +396,211 @@ test('пустой список не открывает никого', () => {
     assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), 'kimi'), false,
       'забытая переменная обязана означать «никому», а не «всем»');
   } finally { config.cloudAiOpenProviders = было; }
+});
+
+/* ================= облако живёт только на одном имени платформы ================= */
+
+/*
+ * У платформы два адреса: `.com` и `.ru`. Решение владельца — облачные модели
+ * предлагать только на `.com`. Проверяется то же, что и у остальных запретов:
+ * что он стоит на ДНЕ адаптера, а не только в пикере, и что забытая переменная
+ * означает «ограничения нет», а не «выключить облако везде».
+ */
+async function наИмени(имена, fn) {
+  const config = require('../server/config');
+  const было = config.cloudAiHosts;
+  config.cloudAiHosts = new Set(имена);
+  // именно await, а не return: без него finally возвращает список на место
+  // раньше, чем колбэк дойдёт до первой проверки, и тест меряет не то
+  try { return await fn(); } finally { config.cloudAiHosts = было; }
+}
+
+/** Проект, заведённый на конкретном имени платформы. */
+function makeSessionOn(userId, host) {
+  const sid = makeSession(userId);
+  db.prepare('UPDATE sessions SET origin_host = ? WHERE id = ?').run(host, sid);
+  return sid;
+}
+
+test('пустой список имён ничего не ограничивает', async () => {
+  await наИмени([], () => {
+    assert.strictEqual(cloudAccess.hostAllowed('enso-nexus.ru'), true);
+    assert.strictEqual(cloudAccess.hostAllowed(''), true,
+      'забытая переменная не имеет права выключить облако на всех адресах сразу');
+  });
+});
+
+test('имя платформы решает раньше человека: на закрытом адресе облака нет и у владельца', async () => {
+  await наИмени(['enso-nexus.com'], () => {
+    const владелец = makeUser('Домов', 'Никита', true);
+    assert.strictEqual(cloudAccess.allowedForSession(makeSessionOn(владелец, 'enso-nexus.com')), true);
+    assert.strictEqual(cloudAccess.allowedForSession(makeSessionOn(владелец, 'enso-nexus.ru')), false,
+      'на .ru облако закрыто даже владельцу');
+    assert.strictEqual(cloudAccess.allowedForSession(makeSessionOn(владелец, 'app.enso-nexus.ru')), false);
+  });
+});
+
+test('порт и регистр в адресе не открывают закрытое имя и не закрывают открытое', async () => {
+  await наИмени(['enso-nexus.com'], () => {
+    assert.strictEqual(cloudAccess.hostAllowed('ENSO-Nexus.COM:443'), true);
+    assert.strictEqual(cloudAccess.hostAllowed('enso-nexus.ru:443'), false);
+  });
+});
+
+test('проект, который ещё ни разу не открывали, облака не получает', async () => {
+  await наИмени(['enso-nexus.com'], () => {
+    const владелец = makeUser('Безымянов', 'Пётр', true);
+    assert.strictEqual(cloudAccess.allowedForSession(makeSessionOn(владелец, '')), false,
+      'пустое имя — не повод считать, что пришли с разрешённого адреса');
+  });
+});
+
+test('запрет по имени стоит на дне адаптера, а не только в пикере', async () => {
+  const владелец = makeUser('Днищев', 'Илья', true);
+  const sid = makeSessionOn(владелец, 'enso-nexus.ru');
+  requests = [];
+  await наИмени(['enso-nexus.com'], async () => {
+    await assert.rejects(
+      () => adapter.plainCall({
+        system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+        messages: [{ role: 'user', content: 'привет' }],
+      }),
+      (err) => {
+        assert.ok(err instanceof adapter.AiUnavailableError);
+        return true;
+      },
+    );
+  });
+  assert.strictEqual(requests.length, 0, 'с закрытого адреса к провайдеру не должно уйти ничего');
+});
+
+test('в пикере причина названа адресом, а не правами человека', async () => {
+  const владелец = makeUser('Пикеров', 'Глеб', true);
+  const u = require('../server/services/users');
+  // Проверяем на ChatGPT: ключ у него в этих тестах задан, значит недоступным
+  // он может стать ТОЛЬКО из-за адреса. У Claude ключа нет вовсе, и его отказ
+  // ничего бы не доказывал.
+  const list = await наИмени(['enso-nexus.com'],
+    () => providers.listProvidersFor(u.byId(владелец), 'enso-nexus.ru'));
+  const chatgpt = list.find((p) => p.id === 'chatgpt');
+  assert.strictEqual(chatgpt.available, false, 'на .ru облако закрыто даже владельцу');
+  assert.match(chatgpt.note, /enso-nexus\.com/, 'человеку надо сказать, на каком адресе модель работает');
+
+  const наСвоёмИмени = await наИмени(['enso-nexus.com'],
+    () => providers.listProvidersFor(u.byId(владелец), 'enso-nexus.com'));
+  assert.strictEqual(наСвоёмИмени.find((p) => p.id === 'chatgpt').available, true,
+    'на разрешённом имени владелец обязан видеть облако');
+  assert.strictEqual(наСвоёмИмени.find((p) => p.id === 'demo').available, true,
+    'необлачные маршруты адресом не ограничиваются');
+});
+
+/*
+ * Разделение доменов неравномерное: западная тройка (Claude, ChatGPT, Gemini)
+ * привязана к `.com` списком CLOUD_AI_HOSTS_PROVIDERS, а облака, доступные из
+ * России (Kimi, GigaChat, YandexGPT), работают с любого адреса. Пустой список
+ * провайдеров обязан вести себя по-старому — привязывать всех облачных.
+ */
+async function соПривязкой(имена, провайдеры, fn) {
+  const config = require('../server/config');
+  const былиИмена = config.cloudAiHosts;
+  const былиПровайдеры = config.cloudAiHostsProviders;
+  config.cloudAiHosts = new Set(имена);
+  config.cloudAiHostsProviders = new Set(провайдеры);
+  try { return await fn(); } finally {
+    config.cloudAiHosts = былиИмена;
+    config.cloudAiHostsProviders = былиПровайдеры;
+  }
+}
+
+test('привязка касается только перечисленных: облака, доступные из России, живут и на .ru', async () => {
+  await соПривязкой(['enso-nexus.com'], ['claude', 'chatgpt', 'gemini'], () => {
+    for (const западный of ['claude', 'chatgpt', 'gemini']) {
+      assert.strictEqual(cloudAccess.hostAllowed('enso-nexus.ru', западный), false, `${западный} на .ru закрыт`);
+      assert.strictEqual(cloudAccess.hostAllowed('enso-nexus.com', западный), true, `${западный} на .com открыт`);
+    }
+    for (const доступный of ['kimi', 'gigachat', 'yandexgpt']) {
+      assert.strictEqual(cloudAccess.hostAllowed('enso-nexus.ru', доступный), true, `${доступный} работает и на .ru`);
+    }
+  });
+});
+
+test('пустой список провайдеров привязывает всех облачных — прежнее поведение', async () => {
+  await соПривязкой(['enso-nexus.com'], [], () => {
+    assert.strictEqual(cloudAccess.hostAllowed('enso-nexus.ru', 'kimi'), false,
+      'сужение привязки — осознанное действие владельца, а не следствие забытой переменной');
+  });
+});
+
+test('на .ru владелец работает с российским облаком, а западное закрыто даже ему', async () => {
+  const владелец = makeUser('Разделов', 'Никита', true);
+  await соПривязкой(['enso-nexus.com'], ['claude', 'chatgpt', 'gemini'], () => {
+    const sid = makeSessionOn(владелец, 'enso-nexus.ru');
+    assert.strictEqual(cloudAccess.allowedForSession(sid, 'claude'), false, 'Claude на .ru закрыт даже владельцу');
+    assert.strictEqual(cloudAccess.allowedForSession(sid, 'gigachat'), true, 'GigaChat на .ru работает');
+    assert.strictEqual(cloudAccess.allowedForSession(sid, 'yandexgpt'), true, 'YandexGPT на .ru работает');
+    assert.strictEqual(cloudAccess.allowedForSession(sid, 'kimi'), true, 'Kimi на .ru работает');
+  });
+});
+
+test('пикер на .ru: западная тройка закрыта адресом, российские облака доступны', async () => {
+  const владелец = makeUser('Адресов', 'Матвей', true);
+  const u = require('../server/services/users');
+  const list = await соПривязкой(['enso-nexus.com'], ['claude', 'chatgpt', 'gemini'],
+    () => providers.listProvidersFor(u.byId(владелец), 'enso-nexus.ru'));
+  for (const западный of ['claude', 'chatgpt', 'gemini']) {
+    const p = list.find((x) => x.id === западный);
+    assert.strictEqual(p.available, false, `${западный} на .ru недоступен`);
+    assert.match(p.note, /enso-nexus\.com/, 'причина — адрес, и человеку сказано, где модель работает');
+  }
+  for (const российский of ['gigachat', 'yandexgpt', 'kimi']) {
+    const p = list.find((x) => x.id === российский);
+    assert.strictEqual(p.available, true, `${российский} на .ru доступен владельцу`);
+  }
+});
+
+test('GigaChat: постоянный ключ меняется на токен, к API уходит Bearer токена', async () => {
+  const sid = makeSession(makeUser('Обменов', 'Пётр', true));
+  // кэш токена сбрасывается вместе с модулем: обмен обязан пройти в этом тесте
+  delete require.cache[require.resolve('../server/services/ai/gigachat')];
+  requests = [];
+  const out = await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'gigachat', model: 'GigaChat-2' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  assert.strictEqual(out.text, 'ответ');
+  const oauth = requests.find((r) => r.url.includes('/oauth'));
+  assert.ok(oauth, 'обмен ключа на токен обязан пройти через OAuth-точку');
+  assert.strictEqual(oauth.auth, 'Basic giga-fake-auth-key');
+  const chat = requests.find((r) => r.url.includes('/chat/completions'));
+  assert.strictEqual(chat.auth, 'Bearer giga-test-token',
+    'к API уходит короткоживущий токен, а не постоянный ключ');
+});
+
+test('GigaChat закрыт постороннему ещё до обмена ключа на токен', async () => {
+  const посторонний = makeUser('Стороннев', 'Ким', false);
+  const sid = makeSession(посторонний);
+  delete require.cache[require.resolve('../server/services/ai/gigachat')];
+  requests = [];
+  await assert.rejects(
+    () => adapter.plainCall({
+      system: 'с', sessionId: sid, route: { provider: 'gigachat', model: 'GigaChat-2' },
+      messages: [{ role: 'user', content: 'привет' }],
+    }),
+    (err) => err instanceof adapter.AiUnavailableError,
+  );
+  assert.strictEqual(requests.length, 0, 'наружу — включая OAuth Сбера — не должно уйти ничего');
+});
+
+test('короткое имя модели Яндекса дополняется каталогом до полного URI', async () => {
+  const sid = makeSession(makeUser('Каталогов', 'Ян', true));
+  requests = [];
+  await adapter.plainCall({
+    system: 'с', sessionId: sid, route: { provider: 'yandexgpt', model: 'yandexgpt/latest' },
+    messages: [{ role: 'user', content: 'привет' }],
+  });
+  const тело = requests.at(-1).body;
+  assert.strictEqual(тело.model, 'gpt://b1g-test-folder/yandexgpt/latest',
+    'Яндекс принимает только полный URI: короткое имя дополняется каталогом владельца');
 });
 
 test('Kimi помечает конечного человека полем user', async () => {

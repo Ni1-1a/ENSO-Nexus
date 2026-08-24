@@ -1251,8 +1251,8 @@ async function skipCurrentQuestion() {
 
 /* ---------------- бейдж действующей нейросети ---------------- */
 // короткие имена для бейджа и карточки прогресса (единый принцип: имя продукта)
-const PROVIDER_LABELS = { claude: 'Claude', chatgpt: 'ChatGPT', kimi: 'Kimi', gemini: 'Gemini', lmstudio: 'LM Studio', ollama: 'Ollama', demo: 'Демо-режим' };
-const CLOUD_PROVIDERS = ['claude', 'chatgpt', 'kimi', 'gemini'];
+const PROVIDER_LABELS = { claude: 'Claude', chatgpt: 'ChatGPT', kimi: 'Kimi', gemini: 'Gemini', gigachat: 'GigaChat', yandexgpt: 'YandexGPT', lmstudio: 'LM Studio', ollama: 'Ollama', demo: 'Демо-режим' };
+const CLOUD_PROVIDERS = ['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt'];
 
 function updateAiBadge() {
   const ai = state.view && state.view.ai;
@@ -1416,6 +1416,8 @@ const PROVIDER_MENU = [
   // порядок совпадает с server/services/providers.js: список моделей, доступность
   // и подпись «нужен ключ» приходят живыми из /health, здесь только пункт меню
   { id: 'gemini', label: 'Gemini (Google)' },
+  { id: 'gigachat', label: 'GigaChat (Сбер)' },
+  { id: 'yandexgpt', label: 'YandexGPT (Яндекс)' },
   { id: 'lmstudio', label: 'LM Studio (локально)' },
   { id: 'ollama', label: 'Ollama (локально)' },
   { id: 'demo', label: 'Демо-режим (без AI)' },
@@ -2185,6 +2187,23 @@ function toast(text, type = 'info') {
   toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
 }
 
+/**
+ * Текст плашки о недоступной локальной модели.
+ *
+ * Раньше он был один на все случаи и советовал «запустите LM Studio на
+ * сервере». Но причина бывает разная — сервер не запущен, до машины нет сети,
+ * шлюз не пустил ключом, — и в двух случаях из трёх этот совет уводил не туда:
+ * человек перезапускал LM Studio, которая и так работала. Причину и лечение
+ * присылает /health в полях note, fix и endpoint у провайдера lmstudio.
+ */
+function localAiBannerText(lm) {
+  const why = (lm && lm.note) || 'не отвечает';
+  const where = lm && lm.endpoint ? ` (${lm.endpoint})` : '';
+  const fix = lm && lm.fix ? ` ${lm.fix}` : '';
+  return `⚠️ Сервер локальных моделей${where} ${why}: анализ и диалог на локальной `
+    + `модели работать не будут.${fix} Или выберите облачную модель в «Настройках».`;
+}
+
 /* ---------------- wiring ---------------- */
 /** Загружает /health: список провайдеров и моделей, лимиты; обновляет настройки и бейдж. */
 async function loadHealth() {
@@ -2194,7 +2213,9 @@ async function loadHealth() {
   setBanner('mock-banner', health.aiMode === 'mock');
   // локальная нейросеть не отвечает — предупреждаем, а не роняем ошибку при запуске
   const lm = (health.providers || []).find((p) => p.id === 'lmstudio');
-  setBanner('local-ai-banner', health.aiMode === 'local' && (!lm || !lm.available));
+  const lmDown = health.aiMode === 'local' && (!lm || !lm.available);
+  if (lmDown) $('local-ai-banner').textContent = localAiBannerText(lm);
+  setBanner('local-ai-banner', lmDown);
   // срок хранения в интерфейсе больше не показывается (§13): сам механизм TTL
   // и архив прогонов на сервере работают как раньше
   $('limits-line').textContent =

@@ -200,14 +200,16 @@ test('подпись статуса варианта берётся из жив�
   assert.ok(!/esc\(vv\.statusLabel \|\| vv\.status\)/.test(card), 'замороженная подпись из metrics больше не используется');
 });
 
-test('Gemini есть в меню провайдеров, и порядок совпадает с сервером', () => {
+test('меню провайдеров полное, и порядок совпадает с сервером', () => {
   const menu = /const PROVIDER_MENU = \[[\s\S]*?\];/.exec(appJs)[0];
   const ids = [...menu.matchAll(/id: '([\w-]+)'/g)].map((m) => m[1]);
-  assert.deepStrictEqual(ids, ['claude', 'chatgpt', 'kimi', 'gemini', 'lmstudio', 'ollama', 'demo']);
+  assert.deepStrictEqual(ids, ['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt', 'lmstudio', 'ollama', 'demo']);
   const server = fs.readFileSync(path.join(__dirname, '..', 'server', 'services', 'providers.js'), 'utf8');
   const serverIds = [...server.matchAll(/id: '([\w-]+)', label:/g)].map((m) => m[1]);
   assert.deepStrictEqual(ids, serverIds, 'порядок пунктов обязан совпадать с серверным списком');
   assert.match(appJs, /const CLOUD_PROVIDERS = \[[^\]]*'gemini'/, 'Gemini — облачный провайдер');
+  assert.match(appJs, /const CLOUD_PROVIDERS = \[[^\]]*'gigachat'/, 'GigaChat — облачный провайдер');
+  assert.match(appJs, /const CLOUD_PROVIDERS = \[[^\]]*'yandexgpt'/, 'YandexGPT — облачный провайдер');
 });
 
 test('пустое название проекта не уходит на сервер молча', () => {
