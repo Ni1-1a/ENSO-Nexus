@@ -18,9 +18,14 @@ npm test           # node --test tests/*.test.js
 
 **Домены разделены по моделям (2026-08-24).** На `.ru` живут только нейросети,
 доступные из России: локальные, Kimi, GigaChat и YandexGPT. Claude, ChatGPT и
-Gemini привязаны к `.com` и на `.ru` закрыты ВСЕМ, включая владельца. Привязка —
-`CLOUD_AI_HOSTS` + `CLOUD_AI_HOSTS_PROVIDERS` в `.env`, проверка на дне адаптера
-(`services/ai/cloud-access.js`, `hostAllowed`). GigaChat требует российский
+Gemini привязаны к `.com` и на `.ru` закрыты ВСЕМ, включая владельца; в пикере
+на `.ru` их НЕТ ВООБЩЕ, даже серым (`listProvidersFor` фильтрует список по
+имени, решение владельца 2026-08-24) — а сохранённому в проекте выбору отказ
+называет адрес. Привязка — `CLOUD_AI_HOSTS` + `CLOUD_AI_HOSTS_PROVIDERS` в
+`.env`, проверка на дне адаптера (`services/ai/cloud-access.js`, `hostAllowed`).
+Облачные модели открыты всем вошедшим: `CLOUD_AI_OPEN_PROVIDERS` на VPS
+перечисляет все шесть провайдеров (2026-08-24) — на `.com` этим открыта и
+западная тройка, GigaChat/YandexGPT/Kimi открыты на обоих адресах. GigaChat требует российский
 корневой сертификат (`NODE_EXTRA_CA_CERTS`) и меняет постоянный ключ на
 получасовой токен (`services/ai/gigachat.js`); YandexGPT ходит через
 OpenAI-совместимый слой Yandex Cloud, короткое имя модели дополняется до

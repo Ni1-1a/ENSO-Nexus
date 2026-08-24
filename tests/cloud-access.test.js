@@ -476,17 +476,16 @@ test('запрет по имени стоит на дне адаптера, а �
   assert.strictEqual(requests.length, 0, 'с закрытого адреса к провайдеру не должно уйти ничего');
 });
 
-test('в пикере причина названа адресом, а не правами человека', async () => {
+test('пикер на закрытом адресе привязанную модель не показывает вовсе', async () => {
   const владелец = makeUser('Пикеров', 'Глеб', true);
   const u = require('../server/services/users');
-  // Проверяем на ChatGPT: ключ у него в этих тестах задан, значит недоступным
-  // он может стать ТОЛЬКО из-за адреса. У Claude ключа нет вовсе, и его отказ
-  // ничего бы не доказывал.
+  // Проверяем на ChatGPT: ключ у него в этих тестах задан, значит пропасть из
+  // списка он может ТОЛЬКО из-за адреса. У Claude ключа нет вовсе, и его
+  // отсутствие ничего бы не доказывало.
   const list = await наИмени(['enso-nexus.com'],
     () => providers.listProvidersFor(u.byId(владелец), 'enso-nexus.ru'));
-  const chatgpt = list.find((p) => p.id === 'chatgpt');
-  assert.strictEqual(chatgpt.available, false, 'на .ru облако закрыто даже владельцу');
-  assert.match(chatgpt.note, /enso-nexus\.com/, 'человеку надо сказать, на каком адресе модель работает');
+  assert.strictEqual(list.find((p) => p.id === 'chatgpt'), undefined,
+    'модель, которая здесь не работает ни у кого, не показывается и серым (решение владельца, 2026-08-24)');
 
   const наСвоёмИмени = await наИмени(['enso-nexus.com'],
     () => providers.listProvidersFor(u.byId(владелец), 'enso-nexus.com'));
@@ -494,6 +493,24 @@ test('в пикере причина названа адресом, а не пр
     'на разрешённом имени владелец обязан видеть облако');
   assert.strictEqual(наСвоёмИмени.find((p) => p.id === 'demo').available, true,
     'необлачные маршруты адресом не ограничиваются');
+});
+
+test('выбор спрятанной модели отклоняется с адресом, а не «неизвестным провайдером»', async () => {
+  const владелец = makeUser('Выборов', 'Ян', true);
+  const u = require('../server/services/users');
+  // Сохранённый в проекте выбор переживает смену правил и приходит с закрытого
+  // адреса: человеку называется адрес, где модель работает, — «неизвестный
+  // провайдер» про вчерашний ChatGPT читался бы как поломка.
+  const res = await наИмени(['enso-nexus.com'],
+    () => providers.validateChoice('chatgpt', '', u.byId(владелец), 'enso-nexus.ru'));
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /enso-nexus\.com/, 'причина отказа — адрес');
+
+  const опечатка = await наИмени(['enso-nexus.com'],
+    () => providers.validateChoice('нет-такого', '', u.byId(владелец), 'enso-nexus.ru'));
+  assert.strictEqual(опечатка.ok, false);
+  assert.match(опечатка.error, /Неизвестный провайдер/,
+    'несуществующий идентификатор — по-прежнему «неизвестный провайдер»');
 });
 
 /*
@@ -544,15 +561,14 @@ test('на .ru владелец работает с российским обл�
   });
 });
 
-test('пикер на .ru: западная тройка закрыта адресом, российские облака доступны', async () => {
+test('пикер на .ru: западной тройки нет в списке даже серым, российские облака доступны', async () => {
   const владелец = makeUser('Адресов', 'Матвей', true);
   const u = require('../server/services/users');
   const list = await соПривязкой(['enso-nexus.com'], ['claude', 'chatgpt', 'gemini'],
     () => providers.listProvidersFor(u.byId(владелец), 'enso-nexus.ru'));
   for (const западный of ['claude', 'chatgpt', 'gemini']) {
-    const p = list.find((x) => x.id === западный);
-    assert.strictEqual(p.available, false, `${западный} на .ru недоступен`);
-    assert.match(p.note, /enso-nexus\.com/, 'причина — адрес, и человеку сказано, где модель работает');
+    assert.strictEqual(list.find((x) => x.id === западный), undefined,
+      `${западный} на .ru не работает ни у кого — в списке его нет вовсе`);
   }
   for (const российский of ['gigachat', 'yandexgpt', 'kimi']) {
     const p = list.find((x) => x.id === российский);

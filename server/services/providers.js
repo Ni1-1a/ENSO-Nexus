@@ -315,30 +315,40 @@ async function listProvidersFor(user, host = '') {
   // Доступ считается по каждому провайдеру отдельно: владелец может открыть
   // один сервис всем и оставить остальные себе. Общая проверка «пускать ли в
   // облако вообще» здесь больше не годится.
-  return all.map((p) => {
-    // адрес локального сервера — только вошедшим: /health открыт и анониму.
-    // При выключенном входе (REQUIRE_LOGIN=0) прятать не от кого — там открыто всё.
-    if (!cloudAccess.isCloud(p.id)) {
-      return (user || !config.requireLogin) ? p : { ...p, endpoint: undefined };
-    }
-    // Имя платформы старше человека: на закрытом адресе привязанного облака
-    // нет ни у кого, и причина отказа там другая — дело не в правах, а в
-    // адресе. Привязка своя у каждого провайдера: западная тройка живёт
-    // только на .com, Kimi и российские облака работают на любом имени.
-    if (!cloudAccess.hostAllowed(host, p.id)) {
-      return { ...p, available: false, note: cloudAccess.hostDenyMessage() };
-    }
-    return cloudAccess.userAllowed(user, p.id)
-      ? p
-      : { ...p, available: false, note: CLOUD_CLOSED_NOTE };
-  });
+  return all
+    /*
+     * Провайдер, привязанный к другому имени платформы, здесь НЕ ПОКАЗЫВАЕТСЯ
+     * вовсе (решение владельца, 2026-08-24). Раньше он висел серым с пометкой
+     * «работает на enso-nexus.com», но на закрытом адресе эти модели не
+     * работают НИ У КОГО — строка в пикере ничего не предлагала и только
+     * удлиняла список. Настоящий запрет остаётся на дне адаптера: выбор,
+     * сохранённый в проекте, переживает смену правил, и такому выбору отказ
+     * по-прежнему называет адрес (см. validateChoice и adapter).
+     */
+    .filter((p) => !cloudAccess.isCloud(p.id) || cloudAccess.hostAllowed(host, p.id))
+    .map((p) => {
+      // адрес локального сервера — только вошедшим: /health открыт и анониму.
+      // При выключенном входе (REQUIRE_LOGIN=0) прятать не от кого — там открыто всё.
+      if (!cloudAccess.isCloud(p.id)) {
+        return (user || !config.requireLogin) ? p : { ...p, endpoint: undefined };
+      }
+      return cloudAccess.userAllowed(user, p.id)
+        ? p
+        : { ...p, available: false, note: CLOUD_CLOSED_NOTE };
+    });
 }
 
 /** Проверка выбора пользователя; возвращает {ok} или {ok:false, error}. */
 async function validateChoice(providerId, model, user = null, host = '') {
   const providers = await listProvidersFor(user, host);
   const p = providers.find((x) => x.id === providerId);
-  if (!p) return { ok: false, error: 'Неизвестный провайдер' };
+  if (!p) {
+    // Провайдер существует, но на этом имени платформы спрятан из списка —
+    // причина отказа адрес, а не опечатка в идентификаторе: «неизвестный
+    // провайдер» про сохранённый в проекте Claude читался бы как поломка.
+    const существует = (await listProviders()).some((x) => x.id === providerId);
+    return { ok: false, error: существует ? cloudAccess.hostDenyMessage() : 'Неизвестный провайдер' };
+  }
   if (!p.available) return { ok: false, error: `«${p.label}» недоступен: ${p.note}` };
   if (model && p.models.length && !p.models.includes(model)) {
     return { ok: false, error: `Модель «${model}» недоступна у провайдера «${p.label}»` };
