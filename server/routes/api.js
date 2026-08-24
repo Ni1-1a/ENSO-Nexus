@@ -46,6 +46,8 @@ router.get('/health', optionalUser, async (req, res) => {
     // локальная связка: текстовая модель анализа + vision-модель для графики/сканов
     localBundle: { text: config.localAiModel, vision: config.localAiOcrModel },
     promptVersion: config.promptVersion,
+    // видит ли ЭТОТ человек модуль «Датасет» — по нему клиент показывает пункт меню
+    dataset: { allowed: require('../services/dataset/access').allowed(req.user) },
     limits: {
       maxFileSizeMb: Math.round(config.maxFileSizeBytes / 1048576),
       maxTotalUploadMb: Math.round(config.maxTotalUploadBytes / 1048576),

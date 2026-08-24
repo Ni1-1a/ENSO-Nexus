@@ -1590,3 +1590,113 @@ html[data-boot="auth"] .shell { visibility: hidden; }
   .field-inline select { min-width: 120px; }
   .bars { height: 100px; }
 }
+
+/* ══════════ Модуль «Датасет» ══════════ */
+
+.ds-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.ds-tab {
+  border: 1px solid var(--stroke); background: transparent; color: var(--text-2);
+  padding: 6px 14px; border-radius: 999px; font-size: 13px; cursor: pointer;
+  font-family: var(--font-text);
+}
+.ds-tab:hover { background: var(--fill); }
+.ds-tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+
+.ds-pane[hidden] { display: none; }
+.ds-pane .card + .card { margin-top: 14px; }
+
+/* панель фильтров (валидация и история) */
+.ds-bar { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.ds-bar .field-inline select, .ds-bar .field-inline input { min-width: 130px; }
+.ds-search-field input { min-width: 220px; }
+.ds-bar-spacer { flex: 1; }
+
+/* документы */
+.ds-doc { display: flex; align-items: flex-start; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--stroke-soft); }
+.ds-doc:last-child { border-bottom: 0; }
+.ds-doc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ds-doc-name { font-weight: 600; font-size: 13.5px; overflow-wrap: anywhere; }
+.ds-doc-meta { font-size: 11.5px; }
+.ds-doc-error { color: var(--red); font-size: 12px; }
+.ds-doc-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.ds-busy { opacity: .55; pointer-events: none; }
+
+/* статусные чипы: пары и документы */
+.ds-status {
+  display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+  white-space: nowrap; background: var(--fill); color: var(--text-2); flex-shrink: 0;
+}
+.ds-status-validated, .ds-status-ready, .ds-status-done { background: rgba(79, 125, 88, .15); color: var(--green); }
+.ds-status-rejected, .ds-status-failed { background: rgba(169, 62, 44, .12); color: var(--red); }
+.ds-status-pending, .ds-status-generating, .ds-status-chunking, .ds-status-queued { background: rgba(176, 126, 54, .14); color: var(--orange); }
+.ds-status-draft { background: var(--fill); color: var(--text-2); }
+
+/* экран валидации: список — текст — пары */
+.ds-val-grid {
+  display: grid; grid-template-columns: 230px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px; align-items: start;
+}
+.ds-el-list {
+  list-style: none; margin: 0; padding: 0; max-height: 70vh; overflow-y: auto;
+  border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm); background: var(--panel);
+}
+.ds-el-item {
+  display: flex; align-items: baseline; gap: 6px; padding: 7px 9px; cursor: pointer;
+  border-bottom: 1px solid var(--stroke-soft); font-size: 12px;
+}
+.ds-el-item:last-child { border-bottom: 0; }
+.ds-el-item:hover { background: var(--fill); }
+.ds-el-item.active { background: var(--fill-hover); }
+.ds-el-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--text-3); }
+.ds-el-dot[data-state="in_progress"] { background: var(--orange); }
+.ds-el-dot[data-state="done"] { background: var(--green); }
+.ds-el-dot[data-state="deferred"] { background: var(--data); }
+.ds-el-no { color: var(--text-3); font-size: 11px; flex-shrink: 0; }
+.ds-el-prev { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+
+.ds-el-view, .ds-pair-panel { max-height: 70vh; overflow-y: auto; }
+.ds-el-content {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap;
+  overflow-wrap: anywhere; overflow-x: auto; margin: 0; color: var(--text);
+}
+
+.ds-pair { border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm); padding: 10px; margin-bottom: 10px; }
+.ds-pair-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ds-pair-label { display: block; font-size: 11.5px; color: var(--text-3); margin-bottom: 8px; }
+.ds-pair textarea, .ds-hist-table textarea {
+  display: block; width: 100%; margin-top: 4px; resize: vertical;
+  font-family: var(--font-text); font-size: 13px; color: var(--text);
+  background: var(--panel-solid); border: 1px solid var(--stroke); border-radius: var(--radius-sm); padding: 7px 9px;
+}
+.ds-pair-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.ds-el-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 6px; }
+.ds-del:hover { color: var(--red); }
+
+/* история */
+.ds-table-wrap { overflow-x: auto; }
+.ds-hist-table td { vertical-align: top; max-width: 260px; }
+.ds-hist-table .ds-cell-q, .ds-hist-table .ds-cell-a { overflow-wrap: anywhere; }
+.ds-el-open {
+  border: 0; background: none; padding: 0; color: var(--data); cursor: pointer; text-align: left;
+  font-size: 12.5px; font-family: var(--font-text); text-decoration: underline; text-underline-offset: 2px;
+}
+.ds-row-actions { white-space: nowrap; }
+.ds-pager { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+
+/* настройки */
+.ds-prompt {
+  width: 100%; resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  color: var(--text); background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm); padding: 10px;
+}
+.ds-set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 12px; }
+
+@media (max-width: 1100px) {
+  .ds-val-grid { grid-template-columns: 200px minmax(0, 1fr); }
+  .ds-pair-panel { grid-column: 1 / -1; max-height: none; }
+}
+@media (max-width: 760px) {
+  .ds-val-grid { grid-template-columns: 1fr; }
+  .ds-el-list { max-height: 30vh; }
+  .ds-el-view { max-height: 40vh; }
+}

@@ -422,4 +422,6 @@ async function excerptsFor(query, kbId = 'main') {
     found.map((f) => `- [${f.doc}${f.clause ? `, п. ${f.clause}` : ''}] ${f.text.slice(0, 700)}`).join('\n');
 }
 
-module.exports = { reindex, search, status, excerptsFor, loadSourceChunks, cosine, keywordScore };
+// splitChunk открыт для модуля «Датасет»: он режет свои элементы ТЕМ ЖЕ
+// механизмом, что и база знаний (таблицы — по строкам, с повтором шапки)
+module.exports = { reindex, search, status, excerptsFor, loadSourceChunks, splitChunk, cosine, keywordScore, MAX_CHUNK_CHARS, MIN_CHUNK_CHARS };

@@ -1602,4 +1602,6 @@ module.exports = {
   // открыто для тестов: поведение, которое обязано оставаться проверяемым
   humanizeProviderError, toOpenAiContent, redactSecrets, maxTokensEnv, providerLabel, recordUsage,
   unionTypesToAnyOf, isLocalGrammarEngine,
+  // единая оценка «символы → токены» платформы: ей же считает модуль «Датасет»
+  CHARS_PER_TOKEN,
   ROUTABLE_PROVIDERS, MAX_ANALYSIS_CALLS, MAX_CONTINUATIONS, ensureDocumentsStudied };

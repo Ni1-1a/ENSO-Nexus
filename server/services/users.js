@@ -42,7 +42,8 @@ let cacheMtimeMs = 0;  // отпечаток файла на момент чте
 const emptyStore = () => ({
   registration: 'free',
   comment: 'registration: free — вход сразу после регистрации; approval — сначала поставьте approved: true нужному человеку. '
-    + 'cloudAi: true — разрешить человеку облачные модели (Claude, ChatGPT, Kimi, Gemini); без него доступны только локальные',
+    + 'cloudAi: true — разрешить человеку облачные модели (Claude, ChatGPT, Kimi, Gemini); без него доступны только локальные. '
+    + 'dataset: true — доступ к модулю «Датасет»; пока модуль открыт всем (DATASET_OPEN=0 на сервере включает проверку этого флага)',
   updatedAt: new Date().toISOString(),
   users: [],
 });
@@ -98,6 +99,10 @@ function normalizeStore(raw) {
         // разрешение тратить деньги и разрешение видеть, кто их тратит, —
         // разные вещи.
         statsAll: u.statsAll === true,
+        // Модуль «Датасет» (сбор обучающих пар). Пока модуль открыт всем
+        // вошедшим (DATASET_OPEN), флаг ни на что не влияет; при закрытии
+        // модуля доступ остаётся у владельца и людей с этой отметкой.
+        dataset: u.dataset === true,
         note: String(u.note || '').slice(0, 200),
         id: String(u.id || `u_${crypto.randomBytes(8).toString('hex')}`),
         createdAt: String(u.createdAt || new Date().toISOString()),
@@ -219,6 +224,8 @@ function publicUser(u) {
     owner: u.owner === true,
     // допущен к чужой статистике без прочих прав владельца
     statsAll: u.statsAll === true,
+    // допуск к модулю «Датасет» (личный флаг; открыт ли модуль всем — знает сервер)
+    dataset: u.dataset === true,
   };
 }
 

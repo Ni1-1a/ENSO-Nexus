@@ -6,7 +6,7 @@
   <title>Enso-nexus — платформа автоматического проектирования</title>
   <meta name="description" content="Платформа автоматического проектирования: анализ исходных данных, запретные зоны, посадка здания на участок и выгрузка чертежа">
   <meta name="theme-color" content="#f3efe6">
-  <link rel="stylesheet" href="styles.css?v=54">
+  <link rel="stylesheet" href="styles.css?v=55">
   <script src="boot.js?v=1"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
 </head>
@@ -85,6 +85,15 @@
             <path d="M6 3h9l4 4v14H6z" stroke-linejoin="round"/><path d="M15 3v4h4"/><path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           Нормоконтроль
+        </button>
+        <!-- «Датасет» скрыт, пока сервер не подтвердит допуск (health → dataset.allowed) -->
+        <button class="nav-item" data-screen="dataset" type="button" id="nav-dataset" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M4 6c0-1.5 3.6-2.5 8-2.5s8 1 8 2.5-3.6 2.5-8 2.5S4 7.5 4 6z" stroke-linejoin="round"/>
+            <path d="M4 6v6c0 1.5 3.6 2.5 8 2.5s8-1 8-2.5V6" stroke-linecap="round"/>
+            <path d="M4 12v6c0 1.5 3.6 2.5 8 2.5s8-1 8-2.5v-6" stroke-linecap="round"/>
+          </svg>
+          Датасет
         </button>
         <button class="nav-item" data-screen="stats" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
@@ -305,6 +314,196 @@
              по ГОСТ 21.508, СП 42.13330 и требованиям пожарной безопасности:
              комплектность, оформление, ссылки на нормативы, контроль ТЭП.</p>
           <button class="btn btn-quiet" type="button" disabled>Загрузить комплект — скоро</button>
+        </div>
+      </section>
+
+      <!-- ══════════ Экран: Датасет ══════════ -->
+      <section id="screen-dataset" class="screen" aria-label="Датасет для дообучения моделей">
+        <header class="toolbar">
+          <h1>Датасет</h1>
+          <p class="toolbar-sub">Пары «вопрос → эталонный ответ» из документов, каждая подтверждается человеком</p>
+        </header>
+
+        <div class="ds-tabs" role="tablist">
+          <button class="ds-tab active" data-ds-tab="docs" type="button">Документы</button>
+          <button class="ds-tab" data-ds-tab="validate" type="button">Валидация</button>
+          <button class="ds-tab" data-ds-tab="history" type="button">История</button>
+          <button class="ds-tab" data-ds-tab="settings" type="button">Настройки</button>
+        </div>
+
+        <!-- ─── Документы ─── -->
+        <div id="ds-pane-docs" class="ds-pane">
+          <div class="card">
+            <h2>Загрузка документа</h2>
+            <div id="ds-dropzone" class="dropzone" tabindex="0" role="button"
+                 aria-label="Загрузить документ в датасет: перетащите сюда или нажмите для выбора">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" class="dz-icon">
+                <path d="M12 15V5m0 0L8 9m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v1.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V17" stroke-linecap="round"/>
+              </svg>
+              <p><strong>Перетащите файл</strong> или нажмите для выбора</p>
+              <p id="ds-limits" class="hint">Форматы и лимиты — те же, что при анализе</p>
+              <input id="ds-file-input" type="file" hidden
+                     accept=".pdf,.dwg,.dxf,.docx,.txt,.md,.json,.csv,.png,.jpg,.jpeg">
+            </div>
+            <p class="hint">Текстовые элементы получат черновики пар от модели; таблицы размечаются только вручную.</p>
+          </div>
+          <div class="card">
+            <h2>Документы датасета</h2>
+            <div id="ds-doc-list"><p class="hint">Загрузка…</p></div>
+          </div>
+        </div>
+
+        <!-- ─── Валидация ─── -->
+        <div id="ds-pane-validate" class="ds-pane" hidden>
+          <div class="ds-bar">
+            <div class="field field-inline">
+              <label for="ds-val-doc">Документ</label>
+              <select id="ds-val-doc"></select>
+            </div>
+            <div class="field field-inline">
+              <label for="ds-val-state">Элементы</label>
+              <select id="ds-val-state">
+                <option value="">все</option>
+                <option value="no_pairs">без пары</option>
+                <option value="in_progress">в работе</option>
+                <option value="done">пройденные</option>
+                <option value="deferred">отложенные</option>
+              </select>
+            </div>
+            <span id="ds-val-progress" class="hint"></span>
+          </div>
+          <div class="ds-val-grid">
+            <ul id="ds-el-list" class="ds-el-list" aria-label="Элементы документа"></ul>
+            <div class="card ds-el-view">
+              <h2 id="ds-el-title">Элемент</h2>
+              <pre id="ds-el-content" class="ds-el-content">Выберите элемент слева</pre>
+            </div>
+            <div class="card ds-pair-panel">
+              <h2>Пары</h2>
+              <div id="ds-pairs"></div>
+              <div class="ds-el-actions">
+                <button id="ds-add-pair" class="btn btn-quiet btn-sm" type="button" disabled>+ Добавить пару</button>
+                <button id="ds-defer" class="btn btn-quiet btn-sm" type="button" disabled>Пропустить</button>
+                <button id="ds-next" class="btn btn-quiet btn-sm" type="button" disabled>Следующий</button>
+              </div>
+              <p class="hint">Ctrl/⌘+Enter — подтвердить · Ctrl/⌘+⌫ — отклонить · Ctrl/⌘+. — пропустить · Ctrl/⌘+→ — следующий</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ─── История ─── -->
+        <div id="ds-pane-history" class="ds-pane" hidden>
+          <div class="ds-bar">
+            <div class="field field-inline ds-search-field">
+              <label for="ds-hist-q">Поиск</label>
+              <input id="ds-hist-q" type="search" placeholder="по вопросу, ответу, тексту элемента">
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-status">Статус</label>
+              <select id="ds-hist-status">
+                <option value="">все</option>
+                <option value="draft">черновик</option>
+                <option value="pending">на валидации</option>
+                <option value="validated">валидирован</option>
+                <option value="rejected">отклонён</option>
+              </select>
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-doc">Документ</label>
+              <select id="ds-hist-doc"><option value="">все</option></select>
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-validator">Валидировал</label>
+              <select id="ds-hist-validator"><option value="">все</option></select>
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-kind">Тип</label>
+              <select id="ds-hist-kind">
+                <option value="">все</option>
+                <option value="text">текст</option>
+                <option value="table">таблица</option>
+              </select>
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-origin">Происхождение</label>
+              <select id="ds-hist-origin">
+                <option value="">все</option>
+                <option value="auto">модель</option>
+                <option value="manual">вручную</option>
+              </select>
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-from">Изменены с</label>
+              <input id="ds-hist-from" type="date">
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-to">по</label>
+              <input id="ds-hist-to" type="date">
+            </div>
+            <div class="field field-inline">
+              <label for="ds-hist-sort">Сортировка</label>
+              <select id="ds-hist-sort">
+                <option value="updated">по изменению</option>
+                <option value="validated">по дате валидации</option>
+                <option value="created">по созданию</option>
+                <option value="status">по статусу</option>
+              </select>
+            </div>
+            <span class="ds-bar-spacer"></span>
+            <!-- Экспорт всегда выгружает ВЕСЬ валидированный набор, фильтры выше на него не влияют -->
+            <button id="ds-export" class="btn btn-primary btn-sm" type="button" disabled
+                    title="Валидированных пар пока нет">Экспорт JSONL</button>
+            <button id="ds-export-split" class="btn btn-quiet btn-sm" type="button" disabled
+                    title="Валидированных пар пока нет">train / valid (zip)</button>
+          </div>
+          <div class="card">
+            <p id="ds-hist-summary" class="hint"></p>
+            <div class="ds-table-wrap">
+              <table class="stat-table ds-hist-table">
+                <thead><tr>
+                  <th>Элемент</th><th>Описание</th><th>Вопрос</th><th>Эталонный ответ</th>
+                  <th>Статус</th><th>Валидировал</th><th>Дата валидации</th><th></th>
+                </tr></thead>
+                <tbody id="ds-hist-body"></tbody>
+              </table>
+            </div>
+            <div class="ds-pager">
+              <button id="ds-hist-prev" class="btn btn-quiet btn-sm" type="button" disabled>← Назад</button>
+              <span id="ds-hist-page" class="hint"></span>
+              <button id="ds-hist-next" class="btn btn-quiet btn-sm" type="button" disabled>Вперёд →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ─── Настройки ─── -->
+        <div id="ds-pane-settings" class="ds-pane" hidden>
+          <div class="card">
+            <h2>Промпт генерации черновиков</h2>
+            <p class="hint">Версия <span id="ds-set-prompt-version">—</span> пишется в каждую созданную пару. Правка текста поднимает версию.</p>
+            <textarea id="ds-set-prompt" class="ds-prompt" rows="14" spellcheck="false"></textarea>
+          </div>
+          <div class="card">
+            <h2>Генерация и экспорт</h2>
+            <div class="ds-set-grid">
+              <div class="field">
+                <label for="ds-set-provider">Провайдер (локальный)</label>
+                <select id="ds-set-provider">
+                  <option value="lmstudio">LM Studio</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="openai-compat">OpenAI-совместимый</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="ds-set-model">Модель</label>
+                <input id="ds-set-model" type="text" placeholder="qwen/qwen3-coder-30b">
+              </div>
+              <div class="field">
+                <label for="ds-set-seed">Seed разбиения train/valid</label>
+                <input id="ds-set-seed" type="number" step="1" value="42">
+              </div>
+            </div>
+            <button id="ds-set-save" class="btn btn-primary" type="button">Сохранить настройки</button>
+          </div>
         </div>
       </section>
 
@@ -670,6 +869,22 @@
     </div>
   </div>
 
+  <!-- Полный текст элемента датасета -->
+  <div id="ds-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ds-modal-title">
+      <div class="modal-head">
+        <h3 id="ds-modal-title">Элемент</h3>
+        <button id="ds-modal-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p id="ds-modal-meta" class="hint"></p>
+        <pre id="ds-modal-content" class="ds-el-content"></pre>
+      </div>
+    </div>
+  </div>
+
   <!-- Информационное окно (значок «i») -->
   <div id="info-modal" class="modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="info-modal-title">
@@ -688,5 +903,6 @@
   <script src="zone-style.js?v=4"></script>
   <script src="viewer.js?v=19"></script>
   <script src="app.js?v=54"></script>
+  <script src="dataset.js?v=1"></script>
 </body>
 </html>

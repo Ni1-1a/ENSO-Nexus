@@ -46,6 +46,9 @@ function createApp() {
   app.use(securityHeaders);
   app.use(cors);
   app.use(express.json({ limit: '256kb' }));
+  // модуль «Датасет» — отдельный роутер: свои таблицы, свой доступ, вне сессий
+  app.use('/api/dataset', logErrorResponses, require('./routes/dataset').router);
+  // модуль «Нормоконтроль» — свой роутер и СВОЯ БД (PostgreSQL + pgvector, порт 5433)
   app.use('/api', logErrorResponses, apiRouter);
   // Cache-Control: no-cache — браузер ОБЯЗАН ревалидировать по ETag (304); без
   // заголовка вступает в силу эвристическое кэширование и правки фронта доходят с опозданием
