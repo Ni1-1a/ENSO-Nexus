@@ -195,6 +195,11 @@ function assertCloudAllowed(providerId, sessionId) {
   // Провайдер передаётся в проверку: доступ теперь бывает разным у разных
   // сервисов (владелец открыл Kimi всем, остальное оставил себе).
   if (cloudAccess.allowedForSession(sessionId, providerId)) return;
+  // Причина отказа называется честно. Адрес старше прав: владельцу на .ru
+  // «доступно только владельцу» читалось бы как поломка, а дело в имени.
+  if (!cloudAccess.hostAllowed(cloudAccess.hostOf(sessionId), providerId)) {
+    throw new AiUnavailableError(cloudAccess.hostDenyMessage());
+  }
   throw new AiUnavailableError(cloudAccess.denyMessage(providerId));
 }
 

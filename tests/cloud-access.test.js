@@ -467,6 +467,8 @@ test('запрет по имени стоит на дне адаптера, а �
       }),
       (err) => {
         assert.ok(err instanceof adapter.AiUnavailableError);
+        assert.match(err.message, /enso-nexus\.com/,
+          'причина отказа — адрес, а не права: «только владельцу» здесь читалось бы как поломка');
         return true;
       },
     );
