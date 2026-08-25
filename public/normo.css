@@ -1,0 +1,248 @@
+/* Нормоконтроль — стили страницы модуля ПОВЕРХ styles.css.
+   Правило платформы: styles.css не трогаем, всё своё живёт здесь.
+   Палитра — только токены темы: тёмная подхватывается сама.
+   Серьёзности замечаний: critical — красный, major — терракота (акцент),
+   minor — серый, remark — бледный. */
+
+/* ---------- каркас страницы ---------- */
+.nm-shell { display: block; min-height: 100vh; }
+
+.nm-top {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 18px;
+  background: var(--sidebar);
+  -webkit-backdrop-filter: blur(30px) saturate(1.3);
+  backdrop-filter: blur(30px) saturate(1.3);
+  border-bottom: 1px solid var(--stroke-soft);
+}
+.nm-back {
+  display: flex; align-items: center; gap: 7px;
+  color: var(--text); text-decoration: none;
+  padding: 4px 8px; margin-left: -8px; border-radius: var(--radius-sm);
+  transition: background .15s ease;
+}
+.nm-back:hover { background: var(--fill); }
+.nm-back svg { width: 16px; height: 16px; color: var(--text-2); }
+.nm-module {
+  font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px; padding: 3px 10px;
+}
+.nm-spacer { flex: 1; }
+.nm-user { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.nm-main {
+  max-width: 1080px; margin: 0 auto;
+  padding: 26px 30px 60px;
+}
+
+/* ---------- экраны и путь ---------- */
+.nm-screen { display: none; }
+.nm-screen.active { display: block; animation: nm-in .22s ease; }
+@keyframes nm-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.nm-crumbs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin: -6px 0 14px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+}
+.nm-crumbs a { color: var(--text-2); text-decoration: none; padding: 2px 4px; border-radius: 5px; }
+.nm-crumbs a:hover { color: var(--accent); background: var(--fill); }
+.nm-crumbs .sep { color: var(--text-3); opacity: .6; }
+.nm-crumbs .here { color: var(--text); }
+
+.nm-bar { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+.nm-error { margin-top: 12px; font-size: 12.5px; color: var(--red); line-height: 1.5; }
+
+/* ---------- список проектов ---------- */
+.nm-projects-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.nm-proj-card {
+  display: flex; flex-direction: column; gap: 8px; text-align: left;
+  padding: 16px 18px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--stroke-soft);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.nm-proj-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: var(--shadow-pop); transform: translateY(-1px);
+}
+.nm-proj-name { font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--text); }
+.nm-proj-customer { font-size: 12.5px; color: var(--text-2); }
+.nm-proj-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+}
+.nm-proj-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+
+/* ---------- бейджи и чипы ---------- */
+.nm-badge {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap;
+}
+.nm-badge.ok      { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.nm-badge.warn    { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
+.nm-badge.bad     { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+.nm-badge.muted   { background: var(--fill); color: var(--text-2); }
+.nm-badge.sev-critical { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+.nm-badge.sev-major    { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.nm-badge.sev-minor    { background: var(--fill); color: var(--text-2); }
+.nm-badge.sev-remark   { background: color-mix(in srgb, var(--fill) 55%, transparent); color: var(--text-3); }
+
+.nm-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: -8px 0 16px; }
+.nm-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border: 1px solid var(--stroke-soft); border-radius: 999px;
+  background: var(--panel); font-size: 11.5px; color: var(--text-2);
+}
+.nm-chip b { color: var(--text); font-weight: 590; }
+
+/* ---------- таблицы ---------- */
+.nm-table-wrap { overflow-x: auto; }
+.stat-table .nm-code { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+tr.nm-row-link { cursor: pointer; transition: background .12s ease; }
+tr.nm-row-link:hover { background: var(--fill); }
+.stat-table td.nm-actions { text-align: right; white-space: nowrap; }
+
+/* ---------- версия: две карточки рядом ---------- */
+.nm-cols {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  margin-bottom: 16px;
+}
+.nm-cols .card + .card { margin-top: 0; }
+.nm-run-head { display: flex; align-items: center; gap: 10px; }
+.nm-run-head h2 { margin: 0; }
+.nm-run-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+/* ---------- замечания ---------- */
+.nm-findings-head {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.nm-findings-head h2 { margin: 0; }
+.nm-counts { display: inline-flex; gap: 5px; flex-wrap: wrap; padding-bottom: 1px; }
+
+.nm-group { margin-top: 14px; }
+.nm-group:first-child { margin-top: 0; }
+.nm-group-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 640; margin-bottom: 8px;
+}
+.nm-group-head .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.nm-group.sev-critical .nm-group-head { color: var(--red); }
+.nm-group.sev-critical .dot { background: var(--red); }
+.nm-group.sev-major .nm-group-head { color: var(--accent); }
+.nm-group.sev-major .dot { background: var(--accent); }
+.nm-group.sev-minor .nm-group-head { color: var(--text-2); }
+.nm-group.sev-minor .dot { background: var(--text-2); }
+.nm-group.sev-remark .nm-group-head { color: var(--text-3); }
+.nm-group.sev-remark .dot { background: var(--text-3); }
+
+.nm-finding {
+  border: 1px solid var(--stroke-soft); border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  padding: 12px 14px; margin-bottom: 10px;
+  background: var(--panel);
+}
+.nm-finding.sev-critical { border-left-color: var(--red); }
+.nm-finding.sev-major    { border-left-color: var(--accent); }
+.nm-finding.sev-minor    { border-left-color: var(--text-3); }
+.nm-finding.sev-remark   { border-left-color: var(--stroke); }
+/* закрытые (не open) — приглушены: глаз сначала идёт к живым */
+.nm-finding.settled { opacity: .62; }
+
+.nm-f-top {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+}
+.nm-f-rule { color: var(--data); }
+.nm-f-wording { font-size: 13.5px; line-height: 1.5; color: var(--text); }
+.nm-quote {
+  margin: 8px 0 0; padding: 8px 12px;
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--text-2); background: var(--fill);
+  border-left: 2px solid var(--stroke);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  white-space: pre-wrap; overflow-x: auto;
+}
+.nm-f-ntd { margin-top: 8px; font-size: 12px; color: var(--text-2); }
+.nm-f-ntd b { color: var(--text); font-weight: 590; }
+.nm-f-loc { margin-top: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--text-3); overflow-wrap: anywhere; }
+.nm-f-fix { margin-top: 8px; font-size: 12px; color: var(--text-2); }
+.nm-f-fix::before { content: '→ '; color: var(--accent); }
+
+.nm-f-controls {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke-soft);
+}
+.nm-f-controls .btn.picked {
+  background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green);
+}
+.nm-f-controls .btn.picked-no {
+  background: color-mix(in srgb, var(--red) 13%, transparent); color: var(--red);
+}
+.nm-f-controls select { padding: 5px 8px; font-size: 12px; }
+.nm-f-status-label { font-size: 11px; color: var(--text-3); }
+
+/* ---------- журнал прогона ---------- */
+/* .card-fold из styles.css обнуляет padding карточки — содержимому возвращаем поля */
+#v-journal-card > .hint { padding: 0 16px; margin: 2px 0 8px; }
+#v-journal-card > .nm-table-wrap { padding: 0 16px 14px; }
+.out-ok      { color: var(--green); }
+.out-finding { color: var(--accent); font-weight: 590; }
+.out-skipped { color: var(--text-3); }
+.out-error   { color: var(--red); font-weight: 590; }
+.nm-skip-reason { color: var(--text-3); font-size: 11.5px; }
+
+/* ---------- diff ---------- */
+.nm-diff-controls { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.nm-diff-controls select { min-width: 90px; }
+#sec-diff-body pre {
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--text-2); white-space: pre-wrap; overflow-x: auto;
+}
+#sec-diff-body .nm-diff-item {
+  padding: 8px 0; border-bottom: 1px solid var(--stroke-soft); font-size: 12.5px;
+}
+#sec-diff-body .nm-diff-item:last-child { border-bottom: 0; }
+
+/* ---------- формы модальных окон ---------- */
+.nm-form .field:first-child { margin-top: 0; }
+.nm-form input[type="date"] {
+  font: inherit; color: var(--text);
+  background: var(--panel-solid);
+  border: 1px solid var(--stroke); border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.nm-form input[type="date"]:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.nm-check {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-top: 16px; cursor: pointer;
+}
+.nm-check input { margin-top: 3px; accent-color: var(--accent); }
+.nm-check-title { display: block; font-size: 12.5px; font-weight: 590; color: var(--text); }
+.nm-check .hint { display: block; margin-top: 2px; }
+.nm-modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--stroke-soft);
+}
+.nm-form .dropzone { margin-top: 2px; }
+
+/* ---------- телефон ---------- */
+@media (max-width: 720px) {
+  .nm-main { padding: 18px 14px 48px; }
+  .nm-cols { grid-template-columns: 1fr; }
+  .nm-module { display: none; }
+  .nm-findings-head { align-items: flex-start; flex-direction: column; }
+  .nm-findings-head .nm-spacer { display: none; }
+}

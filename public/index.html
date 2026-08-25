@@ -80,12 +80,15 @@
           </svg>
           Анализ ТЗ
         </button>
-        <button class="nav-item" data-screen="normo" type="button">
+        <!-- Нормоконтроль — отдельная страница со своим модулем (/normo.html),
+             поэтому ссылка, а не data-screen. Инлайновый style гасит подчёркивание:
+             styles.css не правим по правилу платформы, а .nav-item писался для button. -->
+        <a class="nav-item" href="/normo.html" style="text-decoration: none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
             <path d="M6 3h9l4 4v14H6z" stroke-linejoin="round"/><path d="M15 3v4h4"/><path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           Нормоконтроль
-        </button>
+        </a>
         <!-- «Датасет» скрыт, пока сервер не подтвердит допуск (health → dataset.allowed) -->
         <button class="nav-item" data-screen="dataset" type="button" id="nav-dataset" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
@@ -297,25 +300,8 @@
         </div>
       </section>
 
-      <!-- ══════════ Экран: Нормоконтроль ══════════ -->
-      <section id="screen-normo" class="screen" aria-label="Нормоконтроль">
-        <header class="toolbar">
-          <h1>Нормоконтроль</h1>
-          <p class="toolbar-sub">Проверка комплекта документации на соответствие нормативным требованиям</p>
-        </header>
-        <div class="normo-hero card">
-          <div class="normo-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
-              <path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <h2>Раздел в разработке</h2>
-          <p>Здесь появится автоматическая проверка чертежей и текстовых документов
-             по ГОСТ 21.508, СП 42.13330 и требованиям пожарной безопасности:
-             комплектность, оформление, ссылки на нормативы, контроль ТЭП.</p>
-          <button class="btn btn-quiet" type="button" disabled>Загрузить комплект — скоро</button>
-        </div>
-      </section>
+      <!-- Экран-заглушка «Нормоконтроль» удалён: модуль живёт на своей
+           странице /normo.html, пункт навигации ведёт туда ссылкой. -->
 
       <!-- ══════════ Экран: Датасет ══════════ -->
       <section id="screen-dataset" class="screen" aria-label="Датасет для дообучения моделей">

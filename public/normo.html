@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Нормоконтроль — Enso-nexus</title>
+  <meta name="description" content="Модуль нормоконтроля: проекты, версии разделов, автоматические проверки и замечания с привязкой к НТД">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=55">
+  <link rel="stylesheet" href="normo.css?v=2">
+  <!-- boot.js решает, что показать первым — вход или модуль; общий с платформой -->
+  <script src="boot.js?v=1"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
+</head>
+<body>
+  <div class="shell nm-shell" id="shell">
+    <!-- ══════════ Шапка модуля ══════════
+         Отдельная страница, поэтому вместо сайдбара — узкая полоса:
+         бренд ведёт назад на платформу, рядом имя модуля. -->
+    <header class="nm-top">
+      <a class="nm-back" href="/" title="Вернуться на платформу">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">Enso-nexus</span>
+      </a>
+      <span class="nm-module">Нормоконтроль</span>
+      <span class="nm-spacer"></span>
+      <div id="nm-user" class="nm-user" hidden>
+        <span class="user-avatar" id="nm-user-initials" aria-hidden="true"></span>
+        <span class="user-name" id="nm-user-name"></span>
+        <button id="nm-sign-out" class="icon-btn user-out" type="button"
+                aria-label="Выйти из записи" title="Выйти из записи">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="nm-main">
+      <nav id="nm-crumbs" class="nm-crumbs" aria-label="Путь по модулю" hidden></nav>
+
+      <!-- ══════════ Экран: список проектов ══════════ -->
+      <section id="nm-s-projects" class="nm-screen active" aria-label="Проекты нормоконтроля">
+        <header class="toolbar">
+          <h1>Нормоконтроль</h1>
+          <p class="toolbar-sub">Проверка комплекта документации на соответствие нормативным требованиям</p>
+        </header>
+        <div class="nm-bar">
+          <button id="nm-new-project" class="btn btn-primary" type="button">Новый проект</button>
+          <span id="nm-health" class="hint"></span>
+        </div>
+        <div id="nm-projects" class="nm-projects-grid" aria-live="polite"></div>
+        <p id="nm-projects-empty" class="empty-state" hidden>
+          Проектов пока нет. Нажмите «Новый проект» — состав разделов по ГОСТ Р 21.101
+          заведётся автоматически, останется загружать версии на проверку.
+        </p>
+        <p id="nm-projects-error" class="nm-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: карточка проекта ══════════ -->
+      <section id="nm-s-project" class="nm-screen" aria-label="Карточка проекта">
+        <header class="toolbar">
+          <h1 id="pj-name">Проект</h1>
+          <p id="pj-sub" class="toolbar-sub"></p>
+        </header>
+        <div id="pj-meta" class="nm-meta"></div>
+        <div class="card">
+          <h2>Состав разделов</h2>
+          <p class="hint">Клик по строке — история версий раздела. Загрузка новой версии сразу запускает автоматическую проверку.</p>
+          <div class="nm-table-wrap">
+            <table class="stat-table nm-sections-table">
+              <thead><tr>
+                <th>Шифр</th><th>Наименование</th><th>Актуальная версия</th><th>Открытых замечаний</th><th></th>
+              </tr></thead>
+              <tbody id="pj-sections"></tbody>
+            </table>
+          </div>
+          <p id="pj-sections-empty" class="empty-state" hidden>Состав разделов пуст.</p>
+        </div>
+        <p id="pj-error" class="nm-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: история версий раздела ══════════ -->
+      <section id="nm-s-section" class="nm-screen" aria-label="История версий раздела">
+        <header class="toolbar">
+          <h1 id="sec-title">Раздел</h1>
+          <p id="sec-sub" class="toolbar-sub"></p>
+        </header>
+        <div class="nm-bar">
+          <button id="sec-upload" class="btn btn-primary" type="button">Загрузить версию</button>
+          <div id="sec-diff-controls" class="nm-diff-controls" hidden>
+            <div class="field-inline">
+              <label for="sec-diff-from">Сравнить: с версии</label>
+              <select id="sec-diff-from"></select>
+            </div>
+            <div class="field-inline">
+              <label for="sec-diff-to">по версию</label>
+              <select id="sec-diff-to"></select>
+            </div>
+            <button id="sec-diff-btn" class="btn btn-quiet" type="button">Сравнить версии</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Версии</h2>
+          <div class="nm-table-wrap">
+            <table class="stat-table">
+              <thead><tr>
+                <th>№</th><th>Стадия</th><th>Загружена</th><th>Автор</th><th>Открытых замечаний</th><th></th>
+              </tr></thead>
+              <tbody id="sec-versions"></tbody>
+            </table>
+          </div>
+          <p id="sec-empty" class="empty-state" hidden>
+            Версий ещё не загружали. Нажмите «Загрузить версию» — файлы сохранятся
+            и сразу уйдут на автоматическую проверку по каталогу правил.
+          </p>
+        </div>
+        <div id="sec-diff" class="card" hidden>
+          <h2>Сравнение версий</h2>
+          <div id="sec-diff-body"></div>
+        </div>
+        <p id="sec-error" class="nm-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: версия раздела ══════════ -->
+      <section id="nm-s-version" class="nm-screen" aria-label="Версия раздела">
+        <header class="toolbar">
+          <h1 id="v-title">Версия</h1>
+          <p id="v-sub" class="toolbar-sub"></p>
+        </header>
+        <div class="nm-cols">
+          <div class="card">
+            <h2>Файлы версии</h2>
+            <ul id="v-files" class="file-list"></ul>
+          </div>
+          <div class="card">
+            <div class="nm-run-head">
+              <h2>Прогон проверки</h2>
+              <span id="v-run-status" class="nm-badge nm-run-badge">—</span>
+            </div>
+            <p id="v-run-note" class="hint">Загрузка…</p>
+            <div class="nm-run-actions">
+              <button id="v-recheck" class="btn btn-quiet btn-sm" type="button"
+                      title="Запустить проверку заново, не используя кэш прогона">Перепроверить</button>
+              <button id="v-report" class="btn btn-primary btn-sm" type="button">Скачать заключение (.docx)</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="nm-findings-head">
+            <h2>Замечания</h2>
+            <span id="v-counts" class="nm-counts"></span>
+            <span class="nm-spacer"></span>
+            <div class="field-inline">
+              <label for="vf-status">Статус</label>
+              <select id="vf-status">
+                <option value="">все</option>
+                <option value="open">открытые</option>
+                <option value="fixed">устранённые</option>
+                <option value="rejected">отклонённые</option>
+                <option value="accepted_with_deviation">принятые с отступлением</option>
+              </select>
+            </div>
+            <div class="field-inline">
+              <label for="vf-severity">Серьёзность</label>
+              <select id="vf-severity">
+                <option value="">все</option>
+                <option value="critical">критические</option>
+                <option value="major">значительные</option>
+                <option value="minor">незначительные</option>
+                <option value="remark">примечания</option>
+              </select>
+            </div>
+          </div>
+          <div id="v-findings" aria-live="polite"></div>
+          <p id="v-findings-empty" class="empty-state" hidden></p>
+        </div>
+        <details id="v-journal-card" class="card card-fold">
+          <summary class="fold-summary">
+            <span class="fold-title">Журнал прогона</span>
+            <span class="fold-count" id="v-journal-count"></span>
+            <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </summary>
+          <p class="hint">Каждое правило выборки — со своим исходом: молчаливых пропусков в прогоне нет.</p>
+          <div class="nm-table-wrap">
+            <table class="stat-table">
+              <thead><tr>
+                <th>Правило</th><th>Итог</th><th>Пояснение</th><th class="num">мс</th>
+              </tr></thead>
+              <tbody id="v-journal"></tbody>
+            </table>
+          </div>
+        </details>
+        <p id="v-error" class="nm-error" role="alert" hidden></p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ══════════ Новый проект ══════════ -->
+  <div id="np-modal" class="modal-backdrop" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="np-title">
+      <div class="modal-head">
+        <h3 id="np-title">Новый проект</h3>
+        <button id="np-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <form id="np-form" class="modal-body nm-form" novalidate>
+        <div class="field">
+          <label for="np-name">Название проекта</label>
+          <input id="np-name" type="text" maxlength="300" required placeholder="Например: Цех вакцин, Горбунки">
+        </div>
+        <div class="field">
+          <label for="np-customer">Заказчик</label>
+          <input id="np-customer" type="text" maxlength="300" placeholder="Организация-заказчик">
+        </div>
+        <div class="field">
+          <label for="np-stage">Стадия</label>
+          <select id="np-stage">
+            <option value="П">П — проектная документация</option>
+            <option value="Р">Р — рабочая документация</option>
+            <option value="П+Р">П+Р — обе стадии</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="np-kind">Вид объекта</label>
+          <select id="np-kind">
+            <option value="непроизводственный">непроизводственный</option>
+            <option value="производственный">производственный</option>
+            <option value="линейный">линейный</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="np-date">Дата начала разработки</label>
+          <input id="np-date" type="date" required>
+          <p class="hint">От неё считается действовавшая редакция нормативов.</p>
+        </div>
+        <label class="nm-check">
+          <input id="np-local" type="checkbox">
+          <span>
+            <span class="nm-check-title">Только локальные модели (local_only)</span>
+            <span class="hint">Документы этого проекта не уходят в облачные нейросети:
+            смысловые проверки выполняются только моделями на машине владельца.
+            Детерминированные проверки работают в любом случае.</span>
+          </span>
+        </label>
+        <p id="np-error" class="nm-error" role="alert" hidden></p>
+        <div class="nm-modal-foot">
+          <button id="np-cancel" class="btn btn-quiet" type="button">Отмена</button>
+          <button id="np-submit" class="btn btn-primary" type="submit">Создать проект</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════ Загрузка версии раздела ══════════ -->
+  <div id="up-modal" class="modal-backdrop" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="up-title">
+      <div class="modal-head">
+        <h3 id="up-title">Загрузить версию</h3>
+        <button id="up-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <form id="up-form" class="modal-body nm-form" novalidate>
+        <div id="up-dropzone" class="dropzone" tabindex="0" role="button"
+             aria-label="Файлы версии: перетащите сюда или нажмите для выбора">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" class="dz-icon">
+            <path d="M12 15V5m0 0L8 9m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v1.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V17" stroke-linecap="round"/>
+          </svg>
+          <p><strong>Перетащите файлы</strong> или нажмите для выбора</p>
+          <p class="hint">До 40 файлов, до 90 МБ каждый. Новая версия сразу уходит на проверку.</p>
+          <input id="up-files" type="file" multiple hidden>
+        </div>
+        <ul id="up-list" class="file-list"></ul>
+        <div class="field">
+          <label for="up-stage">Стадия версии</label>
+          <select id="up-stage">
+            <option value="П">П — проектная документация</option>
+            <option value="Р">Р — рабочая документация</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="up-author">Автор</label>
+          <input id="up-author" type="text" maxlength="200" placeholder="Кто подготовил версию">
+        </div>
+        <div class="field">
+          <label for="up-note">Примечание</label>
+          <input id="up-note" type="text" maxlength="500" placeholder="Что изменилось в этой версии">
+        </div>
+        <p id="up-error" class="nm-error" role="alert" hidden></p>
+        <div class="nm-modal-foot">
+          <button id="up-cancel" class="btn btn-quiet" type="button">Отмена</button>
+          <button id="up-submit" class="btn btn-primary" type="submit" disabled>Загрузить и проверить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════ Вход на платформу — тот же, что на главной странице ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true"
+       aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Модуль «Нормоконтроль»</p>
+
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off"
+                 autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off"
+                 autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">
+          Войти на платформу
+        </button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=4"></script>
+  <script src="normo.js?v=2"></script>
+</body>
+</html>

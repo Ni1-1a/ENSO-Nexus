@@ -320,6 +320,14 @@ const config = {
 
   promptVersion: '1.3.0', // 1.3.x: у уточняющих вопросов появились варианты ответов (options)
 
+  // Модуль «Нормоконтроль»: своя БД PostgreSQL + pgvector (порт 5433 — на 5432
+  // живёт системный PostgreSQL 18 без pgvector) и своё файловое хранилище.
+  // База знаний модуля (rules/, templates/, knowledge/) — каталог «нормоконтроль» в корне Web.
+  normoDatabaseUrl: process.env.NORMO_DATABASE_URL || 'postgresql://127.0.0.1:5433/enso_normo',
+  normoDataDir: process.env.NORMO_DATA_DIR || path.join(__dirname, '..', 'data', 'normo'),
+  normoKbDir: process.env.NORMO_KB_DIR || path.join(__dirname, '..', 'нормоконтроль'),
+  // NORMO_LLM=0 выключает смысловые LLM-проверки (детерминированный слой работает всегда)
+  normoLlmEnabled: process.env.NORMO_LLM !== '0',
 };
 
 // Базы знаний: главная всегда 'main'; остальные подключаются при наличии каталога.

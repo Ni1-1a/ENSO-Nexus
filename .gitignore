@@ -14,3 +14,10 @@ users.json.bak
 # Ключи шлюза локального ИИ на маке (mac/ai-gateway.js).
 # В репозиторий уезжает только gateway.example.json.
 mac/gateway.json
+
+# Нормоконтроль / Этап 0-Б: сырьё из Telegram и авторизация MTProto.
+# Сессия = полный доступ к аккаунту Telegram — в репозиторий никогда.
+нормоконтроль/_raw/
+нормоконтроль/tools/telegram/.venv/
+*.session
+*.session-journal
