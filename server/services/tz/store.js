@@ -194,11 +194,13 @@ function runById(id, { withText = false } = {}) {
 }
 
 function listRuns(projectId) {
+  // nullif: у прогона без результата (queued/failed) result_json — пустая строка,
+  // и json_extract на ней бросает «malformed JSON», роняя весь список
   return db.prepare(`SELECT id, project_id, status, progress, error_text, provider, model, checklist,
       document_sha256, started_by_name, created_at, finished_at,
-      json_extract(result_json, '$.verdict.status') AS verdict_status,
-      json_extract(result_json, '$.verdict.readiness_percent') AS readiness_percent,
-      json_extract(result_json, '$.verdict.blocking_count') AS blocking_count
+      json_extract(nullif(result_json, ''), '$.verdict.status') AS verdict_status,
+      json_extract(nullif(result_json, ''), '$.verdict.readiness_percent') AS readiness_percent,
+      json_extract(nullif(result_json, ''), '$.verdict.blocking_count') AS blocking_count
       FROM tz_runs WHERE project_id = ? ORDER BY created_at DESC`).all(projectId);
 }
 

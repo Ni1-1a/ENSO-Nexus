@@ -268,6 +268,19 @@ test('анализ ТЗ: решение по находке ставит чел�
   assert.match(doc, /не проверялась/, 'офлайн-пометка обязана быть в DOCX');
 });
 
+test('анализ ТЗ: упавший прогон без результата не роняет список прогонов', async () => {
+  // регресс боевого бага: json_extract('') бросал «malformed JSON», и карточка
+  // проекта с любым failed-прогоном отвечала 500
+  const project = tzStore.projectById(projectId);
+  const failed = tzStore.createRun(project, null);
+  tzStore.setRunStatus(failed.id, 'failed', { error: 'terminated (тест)' });
+  const r = await api(`/api/tz/projects/${projectId}`, { headers: asUser() });
+  assert.strictEqual(r.status, 200);
+  const row = r.body.runs.find((x) => x.id === failed.id);
+  assert.ok(row, 'упавший прогон пропал из списка');
+  assert.strictEqual(row.verdict_status, null);
+});
+
 test('анализ ТЗ: удаление проекта мягкое — прогон остаётся читаемым', async () => {
   const created = await api('/api/tz/projects', { method: 'POST', ...json({ name: 'На удаление', checklist: 'housing' }) });
   const id = created.body.project.id;

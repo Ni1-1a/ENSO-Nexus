@@ -195,6 +195,21 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
     why: 'в этой версии модуль работает без внешних источников — статусы НПА и параметры площадки не сверялись',
   });
 
+  // Один ретрай и только на транспортную ошибку (правило датасета): обрыв
+  // потока через реле тайлнета — штатное событие, а не повод ронять прогон.
+  // Содержательная ошибка (отказ провайдера, кончился бюджет) не повторяется.
+  const TRANSPORT_RE = /terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout|socket hang up|network|обрыв|aborted|fetch failed/i;
+  const callWithRetry = async (args, stage) => {
+    try {
+      return await call(args);
+    } catch (err) {
+      if (!TRANSPORT_RE.test(String(err && err.message))) throw err;
+      store.setRunProgress(runId, `обрыв связи на шаге «${stage}» — повтор…`);
+      await new Promise((r) => setTimeout(r, 2000));
+      return call(args);
+    }
+  };
+
   const parse = (out, stage) => {
     if (out.truncated) {
       throw new Error(`Ответ модели на шаге «${stage}» оборван лимитом токенов — повторите прогон или выберите модель с большим окном`);
@@ -206,11 +221,11 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
 
   // 1. Классификация
   store.setRunProgress(runId, 'классификация объекта (1/3)…');
-  const clsOut = await call({
+  const clsOut = await callWithRetry({
     system: prompts.load('tz-classify'),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
     sessionId, route, schema: CLASSIFY_SCHEMA, schemaName: 'tz_classify', maxTokens: 2000,
-  });
+  }, 'классификация');
   const cls = parse(clsOut, 'классификация');
 
   // Чек-лист: выбор человека в проекте сильнее догадки модели
@@ -228,7 +243,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
 
   // 2. Полнота по чек-листу
   store.setRunProgress(runId, 'полнота состава по чек-листу (2/3)…');
-  const compOut = await call({
+  const compOut = await callWithRetry({
     system: prompts.load('tz-completeness', {
       checklistLabel: checklist.label,
       checklistSection: checklist.section,
@@ -236,7 +251,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
     }),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
     sessionId, route, schema: completenessSchema(checklist), schemaName: 'tz_completeness', maxTokens: 8000,
-  });
+  }, 'полнота');
   const comp = parse(compOut, 'полнота');
 
   // Матрица собирается по ЧЕК-ЛИСТУ, а не по ответу: пропущенный моделью пункт —
@@ -257,11 +272,11 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
 
   // 3. Дефекты формулировок, противоречия, ссылки, ИРД
   store.setRunProgress(runId, 'формулировки, противоречия, ссылки (3/3)…');
-  const findOut = await call({
+  const findOut = await callWithRetry({
     system: prompts.load('tz-findings', { objectSummary: objectSummary(cls, project.object || {}) }),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
     sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'tz_findings', maxTokens: 12000,
-  });
+  }, 'дефекты');
   const found = parse(findOut, 'дефекты');
 
   const modelFindings = (Array.isArray(found.findings) ? found.findings : [])
