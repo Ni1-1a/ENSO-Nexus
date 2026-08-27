@@ -224,7 +224,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
   const clsOut = await callWithRetry({
     system: prompts.load('tz-classify'),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
-    sessionId, route, schema: CLASSIFY_SCHEMA, schemaName: 'tz_classify', maxTokens: 2000,
+    sessionId, route, schema: CLASSIFY_SCHEMA, schemaName: 'tz_classify', maxTokens: 8000,
   }, 'классификация');
   const cls = parse(clsOut, 'классификация');
 
@@ -250,7 +250,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
       checklistItems: checklistItemsText(checklist),
     }),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
-    sessionId, route, schema: completenessSchema(checklist), schemaName: 'tz_completeness', maxTokens: 8000,
+    sessionId, route, schema: completenessSchema(checklist), schemaName: 'tz_completeness', maxTokens: 24000,
   }, 'полнота');
   const comp = parse(compOut, 'полнота');
 
@@ -275,7 +275,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
   const findOut = await callWithRetry({
     system: prompts.load('tz-findings', { objectSummary: objectSummary(cls, project.object || {}) }),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
-    sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'tz_findings', maxTokens: 12000,
+    sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'tz_findings', maxTokens: 32000,
   }, 'дефекты');
   const found = parse(findOut, 'дефекты');
 
