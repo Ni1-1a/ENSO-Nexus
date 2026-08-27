@@ -24,11 +24,34 @@ const db = require('../db');
 
 // Версия LLM-слоя входит в ключ кэша прогона (как deterministic.VERSION):
 // изменение фильтров/промпта обязано перепроверять уже загруженные версии.
-const VERSION = 3;
+const VERSION = 4;
 
 const BATCH = 4;
 const DOC_TEXT_CAP = 48000;
 const MAX_TOKENS = 8000;
+
+const COMPACT_HINT = 'ОТВЕЧАЙ ПРЕДЕЛЬНО КОМПАКТНО: только самые значимые находки, '
+  + 'wording до 200 символов, цитаты до 150 символов, без повторов.';
+
+/** Обрыв соединения до модели — не ошибка правила: такие вызовы повторяются. */
+function transient(err) {
+  return /оборвал|terminated|ECONNRESET|socket hang up|fetch failed|timeout|ETIMEDOUT/i
+    .test(err && err.message ? err.message : '');
+}
+
+async function withRetry(fn, attempts = 3) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      last = err;
+      if (!transient(err) || i === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+    }
+  }
+  throw last;
+}
 
 const SCHEMA = {
   type: 'object',
@@ -159,12 +182,13 @@ async function runLlmRules({ project, version, files, rules }) {
         schemaName: 'normo_findings',
         maxTokens: MAX_TOKENS,
       });
-      let res = await call(null);
+      // Соединение до модели может оборваться на середине ответа: на VPS запрос
+      // идёт через шлюз мака по DERP-реле, и длинная генерация рвётся. Это не
+      // ошибка правила — повторяем, компактный ответ рвётся заметно реже.
+      let res = await withRetry(() => call(null));
       parsed = adapter.tryParse(res.text);
       if (!parsed || res.truncated) {
-        // ответ обрезался или не разобрался — один повтор с требованием компактности
-        res = await call('ОТВЕЧАЙ ПРЕДЕЛЬНО КОМПАКТНО: только самые значимые находки, '
-          + 'wording до 200 символов, цитаты до 150 символов, без повторов.');
+        res = await withRetry(() => call(COMPACT_HINT));
         parsed = adapter.tryParse(res.text) || parsed;
       }
     } catch (err) {
