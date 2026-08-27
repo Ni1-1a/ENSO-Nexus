@@ -100,38 +100,59 @@ async function loadDocument({ code, file, system, edition, title, note }) {
   const text = fs.readFileSync(abs, 'utf8');
   const clauses = parseClauses(text);
   await db.migrate();
-  const doc = await db.query(
-    `INSERT INTO ntd_docs (code, title, edition, system, status, role, source)
-     VALUES ($1,$2,$3,$4,'действует (по корпусу)',$5,'корпус')
-     ON CONFLICT (code) DO UPDATE SET title = EXCLUDED.title, updated_at = now()
-     RETURNING id`,
-    [code, title || code, edition || null, system || null, note || null]);
-  const docId = doc.rows[0].id;
-  await db.query('DELETE FROM ntd_chunks WHERE doc_id = $1', [docId]);
 
-  let inserted = 0;
   const batch = [];
+  // Номер пункта в тексте встречается не один раз: «5.4.3» может стоять и в
+  // оглавлении, и в теле, а «1»/«2» — ещё и как номера в перечислениях. chunk_no
+  // считается СКВОЗНЫМ по каждому номеру пункта, иначе ON CONFLICT молча затирает
+  // одно вхождение другим (так терялась треть корпуса), и поиск пункта отдаёт
+  // случайный обрывок вместо требования. Все вхождения хранятся, findClause
+  // возвращает их вместе — верификатор ищет цитату по любому из них.
+  const perClause = new Map();
   for (const c of clauses) {
     const parent = c.clause.includes('.') ? c.clause.split('.').slice(0, -1).join('.') : null;
-    splitChunks(c.body).forEach((body, chunkNo) => {
+    for (const body of splitChunks(c.body)) {
+      const chunkNo = perClause.get(c.clause) || 0;
+      perClause.set(c.clause, chunkNo + 1);
       batch.push({ clause: c.clause, parent, body, chunkNo });
-    });
+    }
   }
+
+  // Эмбеддинги считаются ДО единой транзакции записи: обрыв LM Studio на середине
+  // не должен оставлять документ без чанков. Прежний порядок (сначала DELETE,
+  // потом эмбеддинги) при падении модели стирал корпус документа целиком.
   for (let i = 0; i < batch.length; i += 32) {
     const slice = batch.slice(i, i + 32);
     const vectors = await embed(slice.map((b) => b.body));
-    for (let j = 0; j < slice.length; j++) {
-      const b = slice[j];
-      await db.query(
-        `INSERT INTO ntd_chunks (doc_id, clause, parent, body, chunk_no, embedding)
-         VALUES ($1,$2,$3,$4,$5,$6::vector)
-         ON CONFLICT (doc_id, clause, chunk_no) DO UPDATE
-           SET body = EXCLUDED.body, embedding = EXCLUDED.embedding`,
-        [docId, b.clause, b.parent, b.body, b.chunkNo, toVectorLiteral(vectors[j])]);
-      inserted++;
-    }
+    slice.forEach((b, j) => { b.vector = toVectorLiteral(vectors[j]); });
   }
-  return { docId, clauses: clauses.length, chunks: inserted };
+
+  const docId = await db.tx(async (client) => {
+    const doc = await client.query(
+      `INSERT INTO ntd_docs (code, title, edition, system, status, role, source)
+       VALUES ($1,$2,$3,$4,'действует (по корпусу)',$5,'корпус')
+       ON CONFLICT (code) DO UPDATE SET title = EXCLUDED.title, updated_at = now()
+       RETURNING id`,
+      [code, title || code, edition || null, system || null, note || null]);
+    const id = doc.rows[0].id;
+    await client.query('DELETE FROM ntd_chunks WHERE doc_id = $1', [id]);
+    for (const b of batch) {
+      await client.query(
+        `INSERT INTO ntd_chunks (doc_id, clause, parent, body, chunk_no, embedding)
+         VALUES ($1,$2,$3,$4,$5,$6::vector)`,
+        [id, b.clause, b.parent, b.body, b.chunkNo, b.vector]);
+    }
+    // Сколько собрали, столько и должно лечь: расхождение означает потерю чанков
+    // на конфликте ключа — откатываем целиком, молчать об этом нельзя.
+    const stored = await client.query(
+      'SELECT count(*)::int AS n FROM ntd_chunks WHERE doc_id = $1', [id]);
+    if (stored.rows[0].n !== batch.length) {
+      throw new Error(`${code}: собрано ${batch.length} чанков, в базе ${stored.rows[0].n}`);
+    }
+    return id;
+  });
+
+  return { docId, clauses: clauses.length, chunks: batch.length };
 }
 
 async function loadAll() {
