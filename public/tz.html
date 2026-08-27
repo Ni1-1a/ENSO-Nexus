@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Анализ ТЗ — Enso-nexus</title>
+  <meta name="description" content="Модуль анализа задания на проектирование: полнота состава по чек-листу, качество формулировок, противоречия и вердикт готовности">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=55">
+  <link rel="stylesheet" href="tz.css?v=1">
+  <!-- boot.js решает, что показать первым — вход или модуль; общий с платформой -->
+  <script src="boot.js?v=1"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M30 15h32l14 14v56H30z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M62 15v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M40 48h22M40 60h16' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/></svg>">
+</head>
+<body>
+  <div class="shell tz-shell" id="shell">
+    <!-- ══════════ Шапка модуля ══════════ -->
+    <header class="tz-top">
+      <a class="tz-back" href="/" title="Вернуться на платформу">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">Enso-nexus</span>
+      </a>
+      <span class="tz-module">Анализ ТЗ</span>
+      <span class="tz-spacer"></span>
+      <div id="tz-user" class="tz-user" hidden>
+        <span class="user-avatar" id="tz-user-initials" aria-hidden="true"></span>
+        <span class="user-name" id="tz-user-name"></span>
+        <button id="tz-sign-out" class="icon-btn user-out" type="button"
+                aria-label="Выйти из записи" title="Выйти из записи">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="tz-main">
+      <nav id="tz-crumbs" class="tz-crumbs" aria-label="Путь по модулю" hidden></nav>
+
+      <!-- ══════════ Экран: список проектов ══════════ -->
+      <section id="tz-s-projects" class="tz-screen active" aria-label="Проекты анализа ТЗ">
+        <header class="toolbar">
+          <h1>Анализ ТЗ</h1>
+          <p class="toolbar-sub">Проверка задания на проектирование: полнота состава, качество формулировок, противоречия и вердикт готовности</p>
+        </header>
+        <div class="tz-bar">
+          <button id="tz-new-project" class="btn btn-primary" type="button">Новый проект</button>
+          <span id="tz-note" class="hint">Нормативная актуальность ссылок в этой версии не сверяется с внешними источниками — это честно помечается в каждом отчёте.</span>
+        </div>
+        <div id="tz-projects" class="tz-projects-grid" aria-live="polite"></div>
+        <p id="tz-projects-empty" class="empty-state" hidden>
+          Проектов пока нет. Нажмите «Новый проект», выберите тип объекта и модель,
+          вставьте текст ЗнП — и запустите проверку.
+        </p>
+        <p id="tz-projects-error" class="tz-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: карточка проекта ══════════ -->
+      <section id="tz-s-project" class="tz-screen" aria-label="Карточка проекта">
+        <header class="toolbar">
+          <h1 id="pj-name">Проект</h1>
+          <p id="pj-sub" class="toolbar-sub"></p>
+        </header>
+
+        <div class="tz-cols">
+          <div class="card">
+            <h2>Документ ЗнП</h2>
+            <div id="pj-doc-state" class="tz-doc-state"></div>
+            <div id="pj-dropzone" class="dropzone" tabindex="0" role="button"
+                 aria-label="Файл ЗнП: перетащите сюда или нажмите для выбора">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" class="dz-icon">
+                <path d="M12 15V5m0 0L8 9m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v1.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V17" stroke-linecap="round"/>
+              </svg>
+              <p><strong>Перетащите файл ЗнП</strong> или нажмите для выбора</p>
+              <p class="hint">DOCX, PDF с текстовым слоем, TXT или MD. Сканы в этой версии не распознаются — вставьте текст ниже.</p>
+              <input id="pj-file" type="file" accept=".docx,.pdf,.txt,.md" hidden>
+            </div>
+            <details class="tz-paste-fold">
+              <summary>Вставить текст ЗнП вручную</summary>
+              <textarea id="pj-text" rows="8" placeholder="Полный текст задания на проектирование…"></textarea>
+              <button id="pj-text-save" class="btn btn-quiet btn-sm" type="button">Сохранить текст</button>
+            </details>
+          </div>
+
+          <div class="card">
+            <h2>Настройки проверки</h2>
+            <div class="field">
+              <label for="pj-checklist">Чек-лист состава</label>
+              <select id="pj-checklist"></select>
+              <p class="hint">Пилотный охват — производственные объекты и жилищный фонд (МР № 357, разделы II и IV). Выбор человека сильнее догадки модели.</p>
+            </div>
+            <div class="field">
+              <label for="pj-provider">Нейросеть</label>
+              <select id="pj-provider"></select>
+              <p id="pj-provider-note" class="hint" hidden></p>
+            </div>
+            <div class="field">
+              <label for="pj-model">Модель</label>
+              <select id="pj-model"></select>
+            </div>
+            <div class="field">
+              <label for="pj-funding">Финансирование</label>
+              <select id="pj-funding">
+                <option value="">определит модель по тексту</option>
+                <option value="бюджет">бюджет</option>
+                <option value="внебюджет">внебюджет</option>
+                <option value="смешанное">смешанное</option>
+              </select>
+              <p class="hint">Для бюджетных объектов отсутствие пункта формы 307/пр — блокер.</p>
+            </div>
+            <button id="pj-save" class="btn btn-quiet btn-sm" type="button">Сохранить настройки</button>
+            <p id="pj-settings-note" class="hint" hidden></p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="tz-run-head">
+            <h2>Прогоны проверки</h2>
+            <span class="tz-spacer"></span>
+            <button id="pj-analyze" class="btn btn-primary" type="button">Проверить ТЗ</button>
+          </div>
+          <div class="tz-table-wrap">
+            <table class="stat-table">
+              <thead><tr>
+                <th>Запущен</th><th>Модель</th><th>Статус</th><th>Вердикт</th><th>Готовность</th><th></th>
+              </tr></thead>
+              <tbody id="pj-runs"></tbody>
+            </table>
+          </div>
+          <p id="pj-runs-empty" class="empty-state" hidden>Проверок ещё не было.</p>
+        </div>
+        <div class="tz-bar">
+          <span class="tz-spacer"></span>
+          <button id="pj-delete" class="btn btn-quiet btn-sm tz-danger" type="button">Удалить проект</button>
+        </div>
+        <p id="pj-error" class="tz-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: прогон / отчёт ══════════ -->
+      <section id="tz-s-run" class="tz-screen" aria-label="Отчёт проверки ТЗ">
+        <header class="toolbar">
+          <h1 id="r-title">Проверка ТЗ</h1>
+          <p id="r-sub" class="toolbar-sub"></p>
+        </header>
+
+        <div id="r-progress" class="card tz-progress" hidden>
+          <h2>Выполняется проверка</h2>
+          <p id="r-progress-text" class="hint">подготовка…</p>
+        </div>
+
+        <div id="r-report" hidden>
+          <div id="r-verdict" class="card tz-verdict"></div>
+          <div class="card">
+            <div class="tz-findings-head">
+              <h2>Находки</h2>
+              <span id="r-counts" class="tz-counts"></span>
+              <span class="tz-spacer"></span>
+              <div class="field-inline">
+                <label for="rf-severity">Серьёзность</label>
+                <select id="rf-severity">
+                  <option value="">все</option>
+                  <option value="БЛОКЕР">блокеры</option>
+                  <option value="СУЩЕСТВЕННО">существенные</option>
+                  <option value="ЗАМЕЧАНИЕ">замечания</option>
+                  <option value="РЕКОМЕНДАЦИЯ">рекомендации</option>
+                </select>
+              </div>
+              <div class="field-inline">
+                <label for="rf-category">Категория</label>
+                <select id="rf-category">
+                  <option value="">все</option>
+                  <option value="полнота">полнота</option>
+                  <option value="формулировка">формулировка</option>
+                  <option value="противоречие">противоречие</option>
+                  <option value="нормативная_база">нормативная база</option>
+                  <option value="ИРД">ИРД</option>
+                </select>
+              </div>
+            </div>
+            <div id="r-findings" aria-live="polite"></div>
+            <p id="r-findings-empty" class="empty-state" hidden>По выбранным фильтрам находок нет.</p>
+          </div>
+
+          <details class="card card-fold" open>
+            <summary class="fold-summary">
+              <span class="fold-title">Матрица полноты по чек-листу</span>
+              <span class="fold-count" id="r-matrix-count"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="tz-table-wrap">
+              <table class="stat-table">
+                <thead><tr>
+                  <th>Пункт состава ЗнП</th><th>Статус</th><th>Где в ЗнП</th><th>Комментарий</th>
+                </tr></thead>
+                <tbody id="r-matrix"></tbody>
+              </table>
+            </div>
+          </details>
+
+          <details class="card card-fold">
+            <summary class="fold-summary">
+              <span class="fold-title">Не удалось проверить</span>
+              <span class="fold-count" id="r-unverified-count"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <p class="hint">Честный перечень пробелов прогона — не считать это «соответствием».</p>
+            <ul id="r-unverified" class="tz-unverified"></ul>
+          </details>
+
+          <div class="tz-bar">
+            <button id="r-export-xlsx" class="btn btn-quiet" type="button">Реестр замечаний (.xlsx)</button>
+            <button id="r-export-docx" class="btn btn-primary" type="button">Заключение (.docx)</button>
+          </div>
+        </div>
+        <p id="r-error" class="tz-error" role="alert" hidden></p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ══════════ Новый проект ══════════ -->
+  <div id="np-modal" class="modal-backdrop" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="np-title">
+      <div class="modal-head">
+        <h3 id="np-title">Новый проект</h3>
+        <button id="np-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <form id="np-form" class="modal-body tz-form" novalidate>
+        <div class="field">
+          <label for="np-name">Название проекта</label>
+          <input id="np-name" type="text" maxlength="200" required placeholder="Например: ТЗ цеха вакцин, Горбунки">
+        </div>
+        <div class="field">
+          <label for="np-checklist">Тип объекта (чек-лист состава)</label>
+          <select id="np-checklist"></select>
+        </div>
+        <div class="field">
+          <label for="np-provider">Нейросеть</label>
+          <select id="np-provider"></select>
+        </div>
+        <div class="field">
+          <label for="np-model">Модель</label>
+          <select id="np-model"></select>
+        </div>
+        <p id="np-error" class="tz-error" role="alert" hidden></p>
+        <div class="tz-modal-foot">
+          <button id="np-cancel" class="btn btn-quiet" type="button">Отмена</button>
+          <button id="np-submit" class="btn btn-primary" type="submit">Создать проект</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════ Вход на платформу — тот же, что на главной странице ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true"
+       aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Модуль «Анализ ТЗ»</p>
+
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off"
+                 autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off"
+                 autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">
+          Войти на платформу
+        </button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=4"></script>
+  <script src="tz.js?v=1"></script>
+</body>
+</html>

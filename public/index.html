@@ -73,13 +73,14 @@
           </svg>
           Этап 1
         </button>
-        <button class="nav-item" data-screen="tz" type="button">
+        <!-- Анализ ТЗ — отдельная страница со своим модулем (/tz.html), как Нормоконтроль -->
+        <a class="nav-item" href="/tz.html" style="text-decoration: none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
             <path d="M6 3h9l4 4v14H6z" stroke-linejoin="round"/><path d="M15 3v4h4"/>
             <path d="M9 12h6M9 16h4" stroke-linecap="round"/>
           </svg>
           Анализ ТЗ
-        </button>
+        </a>
         <!-- Нормоконтроль — отдельная страница со своим модулем (/normo.html),
              поэтому ссылка, а не data-screen. Инлайновый style гасит подчёркивание:
              styles.css не правим по правилу платформы, а .nav-item писался для button. -->
@@ -278,27 +279,8 @@
         </div>
       </section>
 
-      <!-- ══════════ Экран: Анализ ТЗ ══════════ -->
-      <section id="screen-tz" class="screen" aria-label="Анализ технического задания">
-        <header class="toolbar">
-          <h1>Анализ ТЗ</h1>
-          <p class="toolbar-sub">Разбор технического задания на проверяемые требования</p>
-        </header>
-        <div class="normo-hero card">
-          <div class="normo-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
-              <path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/>
-              <path d="M9 12h6M9 16h4" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <h2>Раздел в разработке</h2>
-          <p>Здесь появится разбор технического задания: текст ТЗ раскладывается
-             на пронумерованные требования — каждое с дословной цитатой и страницей,
-             с пометкой противоречий, пробелов и отсылок к нормативам, которые
-             в задании названы, но не раскрыты.</p>
-          <button class="btn btn-quiet" type="button" disabled>Загрузить ТЗ — скоро</button>
-        </div>
-      </section>
+      <!-- Экран-заглушка «Анализ ТЗ» удалён: модуль живёт на своей странице
+           /tz.html, пункт навигации ведёт туда ссылкой (как Нормоконтроль). -->
 
       <!-- Экран-заглушка «Нормоконтроль» удалён: модуль живёт на своей
            странице /normo.html, пункт навигации ведёт туда ссылкой. -->
