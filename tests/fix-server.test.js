@@ -94,10 +94,28 @@ function startFakeModel() {
 
 let modelSrv, server, base, app, pipeline, stages, config, db;
 
+/**
+ * Менеджер моделей запускает CLI `lms` и грузит модели в LM Studio владельца.
+ * Тестам он не нужен и вреден: прогон выгружал бы чужие модели и ждал минуты.
+ * Поддельная модель прикидывается LM Studio (раньше — Ollama, но её из списка
+ * провайдеров убрали 2026-08-28), поэтому путь model-manager надо перекрыть.
+ */
+function stubModelManager() {
+  const p = require.resolve('../server/services/model-manager');
+  require.cache[p] = {
+    id: p, filename: p, loaded: true, exports: {
+      ensureLoaded: async () => {}, acquireUse: () => {}, releaseUse: () => {},
+      unload: async () => {}, desiredContext: () => 32768, listLoaded: async () => [],
+      feasibility: async () => ({ feasible: true, note: '' }),
+    },
+  };
+}
+
 before(async () => {
   modelSrv = await startFakeModel();
   // адрес поддельной модели обязан попасть в конфиг ДО первого require('../server/config')
-  process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${modelSrv.address().port}/v1`;
+  process.env.LOCAL_AI_BASE_URL = `http://127.0.0.1:${modelSrv.address().port}/v1`;
+  stubModelManager();
   app = require('../server/app');
   pipeline = require('../server/services/pipeline');
   stages = require('../server/services/stages');
@@ -151,7 +169,7 @@ async function upload(s, name, content, type = 'text/plain') {
 /** Перевод проекта на поддельную модель: только так видны гонки очереди. */
 async function useFakeModel(s) {
   const r = await api(`/api/sessions/${s.id}/settings`, {
-    method: 'POST', headers: J(auth(s)), body: JSON.stringify({ aiProvider: 'ollama', aiModel: 'slow-model' }),
+    method: 'POST', headers: J(auth(s)), body: JSON.stringify({ aiProvider: 'lmstudio', aiModel: 'slow-model' }),
   });
   assert.strictEqual(r.status, 200, `провайдер не выбран: ${JSON.stringify(r.body)}`);
 }
@@ -323,7 +341,7 @@ test('журнал не называет демо-режимом прогон н
   const started = view.events.find((e) => e.stage.startsWith('Выполняется анализ'));
   assert.ok(started, 'события о запуске анализа нет');
   assert.ok(!/демо-режим/.test(started.stage), `на платной модели в журнале «${started.stage}»`);
-  assert.match(started.detail, /ollama/, 'в журнале не видно, какая модель работала');
+  assert.match(started.detail, /lmstudio/, 'в журнале не видно, какая модель работала');
 });
 
 /* ================= 3 и 9. границы доступа ================= */

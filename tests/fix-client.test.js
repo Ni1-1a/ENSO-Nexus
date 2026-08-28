@@ -203,7 +203,7 @@ test('подпись статуса варианта берётся из жив�
 test('меню провайдеров полное, и порядок совпадает с сервером', () => {
   const menu = /const PROVIDER_MENU = \[[\s\S]*?\];/.exec(appJs)[0];
   const ids = [...menu.matchAll(/id: '([\w-]+)'/g)].map((m) => m[1]);
-  assert.deepStrictEqual(ids, ['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt', 'lmstudio', 'ollama', 'demo']);
+  assert.deepStrictEqual(ids, ['claude', 'chatgpt', 'kimi', 'gemini', 'gigachat', 'yandexgpt', 'lmstudio', 'demo']);
   const server = fs.readFileSync(path.join(__dirname, '..', 'server', 'services', 'providers.js'), 'utf8');
   const serverIds = [...server.matchAll(/id: '([\w-]+)', label:/g)].map((m) => m[1]);
   assert.deepStrictEqual(ids, serverIds, 'порядок пунктов обязан совпадать с серверным списком');

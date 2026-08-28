@@ -176,9 +176,8 @@ async function probeLocal(baseUrl) {
 
 async function listProviders() {
   if (cache && Date.now() - cacheAt < 15000) return cache;
-  const [lm, ollama, openaiModels, kimiModels, geminiModels, gigachatModels] = await Promise.all([
+  const [lm, openaiModels, kimiModels, geminiModels, gigachatModels] = await Promise.all([
     probeLocal(config.localAiBaseUrl),
-    probeLocal(config.ollamaBaseUrl),
     listCloudModels('chatgpt', config.openaiBaseUrl, config.openaiApiKey, OPENAI_MODELS, /^(gpt-|o\d)/),
     listCloudModels('kimi', config.kimiBaseUrl, config.kimiApiKey, KIMI_MODELS, /^(kimi|moonshot)/),
     // список Gemini берётся только из API аккаунта: имена моделей не зашиты в код
@@ -192,7 +191,6 @@ async function listProviders() {
     })(),
   ]);
   const lmModels = lm.models;
-  const ollamaModels = ollama.models;
 
   // Для локальных моделей — оценка: помещается ли модель в память машины
   let lmModelsInfo = [];
@@ -275,14 +273,6 @@ async function listProviders() {
       // Адрес срезается для неавторизованных в listProvidersFor: /health отвечает
       // и анониму, а внутренний адрес мака ему знать незачем.
       note: lm.note, fix: lm.fix, endpoint: config.localAiBaseUrl,
-    },
-    {
-      id: 'ollama', label: 'Ollama (локально)',
-      available: !!(ollamaModels && ollamaModels.length),
-      models: ollamaModels || [],
-      modelsInfo: (ollamaModels || []).map((id) => ({ id, about: registry.describe('ollama', id) })),
-      note: ollamaModels && !ollamaModels.length ? 'нет чат-моделей: ollama pull <модель>' : ollama.note,
-      fix: ollama.fix, endpoint: config.ollamaBaseUrl,
     },
     {
       id: 'demo', label: 'Демо-режим (без AI)', available: true, models: ['demo'],
