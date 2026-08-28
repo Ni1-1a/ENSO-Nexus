@@ -1336,7 +1336,7 @@ async function continueIfTruncated(out, { system, messages, sessionId, route, si
  * мероприятия. Возвращает { text, truncated, reasoning } — разбор и валидация
  * остаются за вызывающим, который знает свою схему.
  */
-async function structuredCall({ system, messages, sessionId, route, signal, schema, schemaName = 'structured_output', maxTokens }) {
+async function structuredCall({ system, messages, sessionId, route, signal, schema, schemaName = 'structured_output', maxTokens, internal = false }) {
   if (route.provider === 'claude') {
     if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
     const claudeModel = route.model || config.anthropicModel;
@@ -1351,16 +1351,16 @@ async function structuredCall({ system, messages, sessionId, route, signal, sche
         messages: sanitizeMessages(messages),
       },
     });
-    recordUsage(sessionId, response.usage, { provider: 'claude', model: claudeModel });
+    recordUsage(sessionId, response.usage, { provider: 'claude', model: claudeModel }, { internal });
     return {
       text: response.content.find((b) => b.type === 'text')?.text || '',
       truncated: response.stop_reason === 'max_tokens',
     };
   }
   if (route.provider === 'gemini') {
-    return callGemini({ system, messages, sessionId, route, signal, jsonSchema: schema, maxTokens });
+    return callGemini({ system, messages, sessionId, route, signal, jsonSchema: schema, maxTokens, internal });
   }
-  const opts = { system, messages, sessionId, jsonSchema: { name: schemaName, schema }, maxTokens, signal };
+  const opts = { system, messages, sessionId, jsonSchema: { name: schemaName, schema }, maxTokens, signal, internal };
   if (route.provider === 'chatgpt') {
     if (!config.openaiApiKey) throw new AiUnavailableError('ChatGPT не настроен: нужен OPENAI_API_KEY на сервере.');
     return callOpenAiCompat({ ...opts, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel, provider: 'chatgpt' });
@@ -1464,8 +1464,13 @@ async function plainCall({ system, messages, sessionId, route, signal, maxTokens
 /**
  * Один ответ в свободном диалоге: обычный текст, без JSON-схемы и выходных
  * документов. Использует контекст сессии (документы, факты, история, база знаний).
+ *
+ * `revision` — доработка по замечаниям проверяющего (см. claude/adversary.js):
+ * к тому же контексту дописываются черновик ответа и задание устранить
+ * замечания. Контекст собирается заново тем же кодом — модель дорабатывает
+ * ответ, видя те же документы и факты, что и при первом ответе.
  */
-async function chatOnce(sessionId, { text, route, signal }) {
+async function chatOnce(sessionId, { text, route, signal, revision = null }) {
   if (!route || !ROUTABLE_PROVIDERS.has(route.provider)) throw unknownProviderError(route && route.provider);
   const session0 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
   const docMode = registry.documentMode(route);
@@ -1496,10 +1501,16 @@ async function chatOnce(sessionId, { text, route, signal }) {
   if (ctx.docBlocks.length) messages.push({ role: 'user', content: ctx.docBlocks });
   for (const m of ctx.history) messages.push(m);
   messages.push({ role: 'user', content: text });
+  if (revision) {
+    messages.push({ role: 'assistant', content: revision.draft });
+    messages.push({ role: 'user', content: require('./adversary').reviseInstruction(revision.issues) });
+  }
 
   try {
-    // единая точка текстовых вызовов: Claude (стриминг), ChatGPT, Kimi, LM Studio, Ollama
-    const out = await plainCall({ system: prompts.load('chat'), messages, sessionId, route, signal });
+    // единая точка текстовых вызовов: Claude (стриминг), ChatGPT, Kimi, LM Studio, Ollama.
+    // Доработка по замечаниям проверяющего — служебное обращение: человек задал
+    // один вопрос, и второй запрос ради того же ответа его счётчик не расходует.
+    const out = await plainCall({ system: prompts.load('chat'), messages, sessionId, route, signal, internal: !!revision });
     const reply = (out.text || '').trim();
     if (reply) return reply;
     if ((out.reasoning || '').trim()) {

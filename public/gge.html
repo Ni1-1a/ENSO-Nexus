@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Входной контроль ГГЭ — Enso-nexus</title>
+  <meta name="description" content="Реквизитно-форматная проверка комплекта перед подачей в экспертизу: имена файлов по 783/пр, текстовый слой, посимвольная сверка реквизитов, развилки по датам.">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=55">
+  <link rel="stylesheet" href="mod.css?v=1">
+  <script src="boot.js?v=1"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M25 20h36l14 14v46H25z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M61 20v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M34 56l8 8 16-18' fill='none' stroke='%23B95740' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+  <div class="shell mod-shell" id="shell">
+    <header class="mod-top">
+      <a class="mod-back" href="/" title="Вернуться на платформу">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">Enso-nexus</span>
+      </a>
+      <span class="mod-name">Входной контроль ГГЭ</span>
+      <span class="mod-spacer"></span>
+      <div id="gg-user" class="mod-user" hidden>
+        <span class="user-avatar" id="gg-user-initials" aria-hidden="true"></span>
+        <span class="user-name" id="gg-user-name"></span>
+        <button id="gg-sign-out" class="icon-btn user-out" type="button" aria-label="Выйти из записи" title="Выйти из записи">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="mod-main">
+      <header class="toolbar">
+        <h1>Входной контроль перед ГГЭ</h1>
+        <p class="toolbar-sub">Отказ в приёме — это реквизиты, подписи и формат, а не инженерия. Проверка целиком детерминированная: имена по 783/пр, текстовый слой, посимвольная сверка реквизитов, развилки по датам. Нейросеть не участвует.</p>
+      </header>
+
+      <div class="mod-cols">
+        <div class="card">
+          <h2>Файлы комплекта</h2>
+          <div id="f-dz" class="mod-dz-mini" tabindex="0" role="button">
+            <strong>Добавить файлы</strong> (PDF, DOCX, TXT) или перетащите сюда — можно несколько
+          </div>
+          <input id="f-input" type="file" accept=".pdf,.docx,.txt,.md" multiple hidden>
+          <ul id="f-list" class="mod-files-list"></ul>
+        </div>
+
+        <div class="card">
+          <h2>Эталонные реквизиты</h2>
+          <p class="mod-h2-note">Как в задании на проектирование — посимвольно. Регистр, пробелы и кавычки значимы: «похоже» не считается совпадением.</p>
+          <div id="kv-box"></div>
+          <button id="kv-add" class="btn btn-quiet btn-sm" type="button">Добавить реквизит</button>
+          <h2 style="margin-top: 18px;">Развилки по датам</h2>
+          <div class="mod-kv">
+            <input value="Дата утверждения задания" disabled>
+            <input id="dt-task" placeholder="ДД.ММ.ГГГГ">
+          </div>
+          <div class="mod-kv">
+            <input value="Дата данных ФГИС ЦС" disabled>
+            <input id="dt-fgis" placeholder="ДД.ММ.ГГГГ">
+          </div>
+        </div>
+      </div>
+
+      <div class="mod-bar">
+        <button id="gg-run" class="btn btn-primary" type="button">Проверить комплект</button>
+        <span id="gg-note" class="hint"></span>
+      </div>
+
+      <div id="gg-result" hidden>
+        <div class="card">
+          <h2>Имена файлов и текстовый слой</h2>
+          <div class="mod-table-wrap">
+            <table class="stat-table">
+              <thead><tr><th>Файл</th><th>Имя по 783/пр</th><th>Текстовый слой</th></tr></thead>
+              <tbody id="gg-files"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" id="gg-req-card">
+          <h2>Сверка реквизитов</h2>
+          <div id="gg-reqs"></div>
+        </div>
+
+        <div class="card">
+          <h2>Развилки по датам</h2>
+          <p class="mod-h2-note">Правила регламента входного контроля v1.0; каждое объяснено сравнением дат, чужие даты не используются.</p>
+          <ul id="gg-forks" class="mod-unverified"></ul>
+          <ul id="gg-forks-missing" class="mod-unverified"></ul>
+        </div>
+
+        <div class="card">
+          <h2>Замечания к проверке</h2>
+          <ul id="gg-notes" class="mod-unverified"></ul>
+        </div>
+      </div>
+      <p id="gg-error" class="mod-error" role="alert" hidden></p>
+    </main>
+  </div>
+
+  <!-- ══════════ Вход — тот же, что на главной ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Модуль «Входной контроль ГГЭ»</p>
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">Войти на платформу</button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=4"></script>
+  <script src="gge.js?v=1"></script>
+</body>
+</html>

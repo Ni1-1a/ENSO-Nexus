@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверка документа — Enso-nexus</title>
+  <meta name="description" content="Загрузите документ — система определит, что это, запустит нужный проверочный промпт и соберёт перечень ссылок на НТД. Плюс протокол замены оборудования A → B.">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=55">
+  <link rel="stylesheet" href="mod.css?v=1">
+  <script src="boot.js?v=1"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M30 15h32l14 14v56H30z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M62 15v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><circle cx='46' cy='55' r='11' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M54 63l10 10' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/></svg>">
+</head>
+<body>
+  <div class="shell mod-shell" id="shell">
+    <header class="mod-top">
+      <a class="mod-back" href="/" title="Вернуться на платформу">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">Enso-nexus</span>
+      </a>
+      <span class="mod-name">Проверка документа</span>
+      <span class="mod-spacer"></span>
+      <div id="dc-user" class="mod-user" hidden>
+        <span class="user-avatar" id="dc-user-initials" aria-hidden="true"></span>
+        <span class="user-name" id="dc-user-name"></span>
+        <button id="dc-sign-out" class="icon-btn user-out" type="button" aria-label="Выйти из записи" title="Выйти из записи">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="mod-main">
+      <nav id="dc-crumbs" class="mod-crumbs" aria-label="Путь по модулю" hidden></nav>
+
+      <!-- ══════════ Экран: списки ══════════ -->
+      <section id="dc-s-list" class="mod-screen active" aria-label="Проверки документов">
+        <header class="toolbar">
+          <h1>Проверка документа</h1>
+          <p class="toolbar-sub">Загрузите документ — система определит, что это за объект, запустит нужный проверочный промпт из библиотеки канала и соберёт перечень ссылок на НТД</p>
+        </header>
+        <div class="mod-bar">
+          <button id="dc-new" class="btn btn-primary" type="button">Новая проверка</button>
+          <span class="hint">Тип документа и промпт можно поменять руками — выбор человека сильнее автоматики.</span>
+        </div>
+        <div id="dc-checks" class="mod-grid" aria-live="polite"></div>
+        <p id="dc-checks-empty" class="empty-state" hidden>
+          Проверок пока нет. Нажмите «Новая проверка», выберите модель и загрузите документ —
+          прогон запустится сам.
+        </p>
+
+        <div class="mod-bar" style="margin-top: 34px;">
+          <h2 style="margin: 0;">Замена оборудования A → B</h2>
+          <span class="mod-spacer"></span>
+          <button id="ab-new" class="btn btn-quiet" type="button">Новое сравнение</button>
+        </div>
+        <p class="mod-h2-note">Протокол сравнения по требованиям проекта: четыре статуса, источник у каждого значения, вердикт о допустимости замены не выдаётся — решение за инженером.</p>
+        <div id="ab-list" class="mod-grid" aria-live="polite"></div>
+        <p id="ab-empty" class="empty-state" hidden>Сравнений ещё не было.</p>
+        <p id="dc-list-error" class="mod-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: карточка проверки ══════════ -->
+      <section id="dc-s-check" class="mod-screen" aria-label="Карточка проверки">
+        <header class="toolbar">
+          <h1 id="c-name">Проверка</h1>
+          <p id="c-sub" class="toolbar-sub"></p>
+        </header>
+
+        <div class="mod-cols">
+          <div class="card">
+            <h2>Документ</h2>
+            <div id="c-doc-state" class="mod-doc-state"></div>
+            <div id="c-dropzone" class="dropzone" tabindex="0" role="button" aria-label="Файл документа: перетащите сюда или нажмите для выбора">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" class="dz-icon">
+                <path d="M12 15V5m0 0L8 9m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v1.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V17" stroke-linecap="round"/>
+              </svg>
+              <p><strong>Перетащите файл</strong> или нажмите для выбора — проверка запустится сама</p>
+              <p class="hint">DOCX, PDF с текстовым слоем, TXT, MD или XML (график MS Project). Сканы не распознаются — вставьте текст ниже.</p>
+              <input id="c-file" type="file" accept=".docx,.pdf,.txt,.md,.xml" hidden>
+            </div>
+            <details class="mod-paste-fold">
+              <summary>Вставить текст вручную</summary>
+              <textarea id="c-text" rows="8" placeholder="Полный текст документа…"></textarea>
+              <button id="c-text-save" class="btn btn-quiet btn-sm" type="button">Сохранить и проверить</button>
+            </details>
+          </div>
+
+          <div class="card">
+            <h2>Настройки</h2>
+            <div class="field">
+              <label for="c-type">Тип документа</label>
+              <select id="c-type"></select>
+              <p id="c-type-note" class="hint"></p>
+            </div>
+            <div class="field">
+              <label for="c-prompt">Проверочный промпт</label>
+              <select id="c-prompt"></select>
+              <p class="hint">Основной промпт типа — по умолчанию; альтернативы — другие проверки того же документа.</p>
+            </div>
+            <div class="field">
+              <label for="c-provider">Нейросеть</label>
+              <select id="c-provider"></select>
+              <p id="c-provider-note" class="hint" hidden></p>
+            </div>
+            <div class="field">
+              <label for="c-model">Модель</label>
+              <select id="c-model"></select>
+            </div>
+            <button id="c-save" class="btn btn-quiet btn-sm" type="button">Сохранить настройки</button>
+            <p id="c-settings-note" class="hint" hidden></p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="mod-run-head">
+            <h2>Прогоны</h2>
+            <span class="mod-spacer"></span>
+            <button id="c-analyze" class="btn btn-primary" type="button">Проверить снова</button>
+          </div>
+          <div class="mod-table-wrap">
+            <table class="stat-table">
+              <thead><tr>
+                <th>Запущен</th><th>Модель</th><th>Тип / промпт</th><th>Статус</th><th>Находок</th><th></th>
+              </tr></thead>
+              <tbody id="c-runs"></tbody>
+            </table>
+          </div>
+          <p id="c-runs-empty" class="empty-state" hidden>Прогонов ещё не было.</p>
+        </div>
+        <div class="mod-bar">
+          <span class="mod-spacer"></span>
+          <button id="c-delete" class="btn btn-quiet btn-sm mod-danger" type="button">Удалить проверку</button>
+        </div>
+        <p id="c-error" class="mod-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: прогон ══════════ -->
+      <section id="dc-s-run" class="mod-screen" aria-label="Результат проверки">
+        <header class="toolbar">
+          <h1 id="r-title">Результат проверки</h1>
+          <p id="r-sub" class="toolbar-sub"></p>
+        </header>
+
+        <div id="r-progress" class="card" hidden>
+          <h2>Выполняется проверка</h2>
+          <p id="r-progress-text" class="hint">подготовка…</p>
+        </div>
+
+        <div id="r-report" hidden>
+          <div class="card">
+            <div id="r-class" class="mod-class"></div>
+          </div>
+
+          <div class="card" id="r-findings-card">
+            <div class="mod-run-head">
+              <h2>Находки</h2>
+              <span id="r-counts" class="hint"></span>
+            </div>
+            <p class="mod-h2-note">Стандарт и пункт показаны раздельно; пункт — гипотеза с флагом уверенности, действующую редакцию проверяет инженер. «Проверить» ≠ «переделать».</p>
+            <div id="r-findings" aria-live="polite"></div>
+            <p id="r-findings-empty" class="empty-state" hidden>Профильная проверка находок не дала или не запускалась.</p>
+            <div id="r-missing" hidden>
+              <h3 style="margin-bottom: 4px;">Чего не хватило для полной проверки</h3>
+              <ul id="r-missing-list" class="mod-unverified"></ul>
+            </div>
+          </div>
+
+          <details class="card card-fold" open>
+            <summary class="fold-summary">
+              <span class="fold-title">Ссылки на НТД в документе</span>
+              <span class="fold-count" id="r-refs-count"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <p class="hint">Перечень собран кодом, статусы — из реестра модуля «Нормоконтроль». «Нет в реестре» — сверить вручную, а не «документа не существует».</p>
+            <div class="mod-table-wrap">
+              <table class="stat-table">
+                <thead><tr><th>Шифр</th><th>Упоминаний</th><th>Статус по реестру</th><th>Первое место</th></tr></thead>
+                <tbody id="r-refs"></tbody>
+              </table>
+            </div>
+          </details>
+
+          <details class="card card-fold">
+            <summary class="fold-summary">
+              <span class="fold-title">Не удалось проверить</span>
+              <span class="fold-count" id="r-unverified-count"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <ul id="r-unverified" class="mod-unverified"></ul>
+          </details>
+
+          <div class="mod-bar">
+            <button id="r-export" class="btn btn-primary" type="button">Реестр находок (.xlsx)</button>
+          </div>
+        </div>
+        <p id="r-error" class="mod-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ══════════ Экран: замена A→B ══════════ -->
+      <section id="dc-s-ab" class="mod-screen" aria-label="Замена оборудования A → B">
+        <header class="toolbar">
+          <h1 id="ab-name">Замена A → B</h1>
+          <p id="ab-sub" class="toolbar-sub"></p>
+        </header>
+
+        <div class="mod-cols">
+          <div class="card">
+            <h2>Документы</h2>
+            <p class="mod-h2-note">Требования проекта/ТЗ, документы проектной модели A и предлагаемой модели B. Файлов может быть несколько на каждую группу.</p>
+            <div id="ab-docs"></div>
+          </div>
+          <div class="card">
+            <h2>Модель для протокола</h2>
+            <div class="field">
+              <label for="ab-provider">Нейросеть</label>
+              <select id="ab-provider"></select>
+            </div>
+            <div class="field">
+              <label for="ab-model">Модель</label>
+              <select id="ab-model"></select>
+            </div>
+            <button id="ab-save" class="btn btn-quiet btn-sm" type="button">Сохранить</button>
+            <div class="mod-bar">
+              <button id="ab-run" class="btn btn-primary" type="button">Собрать протокол</button>
+              <span id="ab-status" class="hint"></span>
+            </div>
+          </div>
+        </div>
+
+        <div id="ab-result" hidden>
+          <div class="card">
+            <div class="mod-run-head">
+              <h2>Протокол сравнения</h2>
+              <span id="ab-summary" class="hint"></span>
+              <span class="mod-spacer"></span>
+              <button id="ab-export" class="btn btn-quiet btn-sm" type="button">Протокол (.xlsx)</button>
+            </div>
+            <p class="mod-h2-note">«Нет данных» ≠ «соответствует». Решение по каждой строке ставит инженер — оно уходит в выгрузку с ФИО и датой.</p>
+            <div class="mod-table-wrap">
+              <table class="stat-table">
+                <thead><tr>
+                  <th>Категория</th><th>Параметр</th><th>Требование</th><th>A</th><th>B</th><th>Ед.</th>
+                  <th>Источник B</th><th>Статус</th><th>Риск</th><th>Решение инженера</th>
+                </tr></thead>
+                <tbody id="ab-rows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h2>К доработке</h2>
+            <ul id="ab-lists" class="mod-unverified"></ul>
+          </div>
+        </div>
+        <div class="mod-bar">
+          <span class="mod-spacer"></span>
+          <button id="ab-delete" class="btn btn-quiet btn-sm mod-danger" type="button">Удалить сравнение</button>
+        </div>
+        <p id="ab-error" class="mod-error" role="alert" hidden></p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ══════════ Новая проверка / новое сравнение ══════════ -->
+  <div id="nc-modal" class="modal-backdrop" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="nc-title">
+      <div class="modal-head">
+        <h3 id="nc-title">Новая проверка</h3>
+        <button id="nc-close" class="icon-btn" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <form id="nc-form" class="modal-body mod-form" novalidate>
+        <div class="field">
+          <label for="nc-name">Название</label>
+          <input id="nc-name" type="text" maxlength="200" required placeholder="Например: ПЗ КЖ, корпус 2">
+        </div>
+        <div class="field">
+          <label for="nc-provider">Нейросеть</label>
+          <select id="nc-provider"></select>
+        </div>
+        <div class="field">
+          <label for="nc-model">Модель</label>
+          <select id="nc-model"></select>
+        </div>
+        <p id="nc-error" class="mod-error" role="alert" hidden></p>
+        <div class="mod-modal-foot">
+          <button id="nc-cancel" class="btn btn-quiet" type="button">Отмена</button>
+          <button id="nc-submit" class="btn btn-primary" type="submit">Создать</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════ Вход — тот же, что на главной ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Модуль «Проверка документа»</p>
+
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">Войти на платформу</button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=4"></script>
+  <script src="doccheck.js?v=1"></script>
+</body>
+</html>

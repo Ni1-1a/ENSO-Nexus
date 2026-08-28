@@ -79,6 +79,42 @@ function addMessage(sessionId, role, kind, content, { fromJob = false } = {}) {
   }
 }
 
+/**
+ * Проверка черновика ответа перед отправкой пользователю (claude/adversary.js).
+ *
+ * Порядок: проверить черновик → при вердикте «revise» один раз доработать
+ * функцией `revise(issues)` → отправить лучшее из полученного. Любой сбой
+ * проверки или доработки — событие в журнале и ИСХОДНЫЙ черновик: проверка не
+ * имеет права ни съесть ответ, ни подменить его молча. Прерывание пользователем
+ * летит наружу как обычно.
+ */
+async function reviewBeforeSend(sessionId, { userText, draft, route, signal, revise, factsText = null, what = 'ответа' }) {
+  const adversary = require('./claude/adversary');
+  if (!adversary.enabled(route) || !(draft || '').trim()) return draft;
+  try {
+    logEvent(sessionId, `Проверка ${what} перед отправкой`);
+    const review = await adversary.review(sessionId, { userText, draft, factsText, route, signal });
+    if (!review) return draft;
+    if (review.verdict === 'ok') {
+      logEvent(sessionId, `Проверка ${what}: можно отправлять`,
+        review.issues.length ? `замечаний вне вердикта: ${review.issues.length}` : '');
+      return draft;
+    }
+    logEvent(sessionId, `Проверка ${what}: нужна доработка`, adversary.issuesText(review.issues).slice(0, 1500), 'warn');
+    const revised = ((await revise(review.issues)) || '').trim();
+    if (!revised) {
+      logEvent(sessionId, `Проверка ${what}: доработка не удалась — отправлен исходный ответ`, '', 'warn');
+      return draft;
+    }
+    logEvent(sessionId, `Проверка ${what}: отправлен доработанный ответ`);
+    return revised;
+  } catch (err) {
+    if (isAbort(err, signal)) throw err;
+    logEvent(sessionId, `Проверка ${what} не удалась — отправлен исходный ответ`, err.message, 'warn');
+    return draft;
+  }
+}
+
 function applyModelResult(sessionId, result) {
   for (const f of result.facts) {
     db.prepare(
@@ -155,6 +191,21 @@ async function runJob(sessionId, instruction, signal, extraInstruction = '', pre
         + (extraInstruction ? `\n\nДополнительное задание пользователя к этому прогону:\n${extraInstruction}` : ''),
       signal,
     });
+
+    // сообщение анализа проверяется ДО записи в ленту; report_markdown и факты
+    // не трогаются — проверяющий сверяет резюме с данными самого результата
+    {
+      const adversary = require('./claude/adversary');
+      result.message = await reviewBeforeSend(sessionId, {
+        userText: instruction || prompts.load('tasks/analysis-run'),
+        draft: result.message,
+        factsText: adversary.analysisFactsText(result),
+        route: routeNow, signal, what: 'итога анализа',
+        revise: (issues) => adversary.rewrite(sessionId, {
+          draft: result.message, issues, factsText: adversary.analysisFactsText(result), route: routeNow, signal,
+        }),
+      });
+    }
 
     applyModelResult(sessionId, result);
 
@@ -732,7 +783,11 @@ async function runChat(sessionId, text, signal) {
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     const route = adapter2.effectiveProvider(session);
     const reply = await adapter2.chatOnce(sessionId, { text, route, signal });
-    addMessage(sessionId, 'assistant', 'chat', reply);
+    const final = await reviewBeforeSend(sessionId, {
+      userText: text, draft: reply, route, signal,
+      revise: (issues) => adapter2.chatOnce(sessionId, { text, route, signal, revision: { draft: reply, issues } }),
+    });
+    addMessage(sessionId, 'assistant', 'chat', final);
     logEvent(sessionId, 'Диалог: ответ получен');
     await adapter2.maybeCompact(sessionId);
   } catch (err) {
@@ -877,7 +932,7 @@ function buildComparisonMd(runs, task) {
 }
 
 module.exports = {
-  startProcessing, startChat, startComparison, cancelJob, logEvent, addMessage, runningJobs,
+  startProcessing, startChat, startComparison, cancelJob, logEvent, addMessage, runningJobs, reviewBeforeSend,
   startZonesStage, startVariantsStage, startDrawingStage,
   enqueueChat, drainPendingChats, pendingChatText, pendingChatCount, isChatBusy, preemptChat,
   claimSlot, releaseClaim, slotClaims,

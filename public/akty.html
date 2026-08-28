@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Акты (АОСР) — Enso-nexus</title>
+  <meta name="description" content="Конвейер черновиков актов из таблицы данных и шаблона DOCX; сверка дат актов с общим журналом работ. Полностью детерминированно, без нейросети.">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=55">
+  <link rel="stylesheet" href="mod.css?v=1">
+  <script src="boot.js?v=1"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M25 20h36l14 14v46H25z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M61 20v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M35 52h30M35 62h30M35 42h12' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/></svg>">
+</head>
+<body>
+  <div class="shell mod-shell" id="shell">
+    <header class="mod-top">
+      <a class="mod-back" href="/" title="Вернуться на платформу">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">Enso-nexus</span>
+      </a>
+      <span class="mod-name">Акты (АОСР)</span>
+      <span class="mod-spacer"></span>
+      <div id="ak-user" class="mod-user" hidden>
+        <span class="user-avatar" id="ak-user-initials" aria-hidden="true"></span>
+        <span class="user-name" id="ak-user-name"></span>
+        <button id="ak-sign-out" class="icon-btn user-out" type="button" aria-label="Выйти из записи" title="Выйти из записи">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="mod-main">
+      <header class="toolbar">
+        <h1>Акты (АОСР)</h1>
+        <p class="toolbar-sub">Пачка черновиков актов из таблицы данных и шаблона — и сверка дат актов с общим журналом. Всё считается кодом, нейросеть не участвует: данные не покидают контур.</p>
+      </header>
+
+      <!-- ══════════ Конвейер актов ══════════ -->
+      <div class="card">
+        <h2>Конвейер черновиков</h2>
+        <p class="mod-h2-note">Раз акты отличаются только данными — заполните таблицу один раз. Пустая ячейка станет «{НЕТ ДАННЫХ}» в тексте и попадёт в отчёт пропусков; конвейер ничего не выдумывает.</p>
+        <div class="mod-cols">
+          <div>
+            <div id="g-reg-dz" class="mod-dz-mini" tabindex="0" role="button">
+              <strong>Реестр данных (XLSX)</strong> — первая строка листа: заголовки колонок
+            </div>
+            <input id="g-reg-file" type="file" accept=".xlsx" hidden>
+            <div id="g-reg-info" class="mod-files-list"></div>
+          </div>
+          <div>
+            <div id="g-tpl-dz" class="mod-dz-mini" tabindex="0" role="button">
+              <strong>Шаблон акта (DOCX)</strong> — плейсхолдеры вида {{Имя колонки}}
+            </div>
+            <input id="g-tpl-file" type="file" accept=".docx" hidden>
+            <div id="g-tpl-info" class="mod-files-list"></div>
+          </div>
+        </div>
+        <div class="mod-bar">
+          <button id="g-run" class="btn btn-primary" type="button" disabled>Сгенерировать пачку (.zip)</button>
+          <span id="g-note" class="hint"></span>
+        </div>
+        <div id="g-report" class="mod-files-list" hidden></div>
+      </div>
+
+      <!-- ══════════ Сверка дат ══════════ -->
+      <div class="card">
+        <h2>Сверка дат: акты ↔ общий журнал</h2>
+        <p class="mod-h2-note">Акт подписан 14-го, запись в журнале — 17-го: стройконтроль такое находит за один проход. Сопоставление — по совпадению формулировок вида работ; строки без пары проверяются вручную.</p>
+        <div class="mod-cols">
+          <div>
+            <div id="d-acts-dz" class="mod-dz-mini" tabindex="0" role="button">
+              <strong>Реестр актов (XLSX)</strong> — номер, вид работ, дата акта
+            </div>
+            <input id="d-acts-file" type="file" accept=".xlsx" hidden>
+            <div id="d-acts-info" class="mod-files-list"></div>
+          </div>
+          <div>
+            <div id="d-jrn-dz" class="mod-dz-mini" tabindex="0" role="button">
+              <strong>Журнал (XLSX)</strong> — дата записи, содержание работ
+            </div>
+            <input id="d-jrn-file" type="file" accept=".xlsx" hidden>
+            <div id="d-jrn-info" class="mod-files-list"></div>
+          </div>
+        </div>
+        <div class="mod-bar">
+          <button id="d-run" class="btn btn-primary" type="button" disabled>Сверить даты</button>
+          <span id="d-note" class="hint"></span>
+        </div>
+
+        <div id="d-result" hidden>
+          <div class="mod-table-wrap">
+            <table class="stat-table">
+              <thead><tr>
+                <th>Акт</th><th>Вид работ</th><th>Дата акта</th><th>Запись журнала</th><th>Разница</th><th>Конфликт</th>
+              </tr></thead>
+              <tbody id="d-rows"></tbody>
+            </table>
+          </div>
+          <div id="d-unmatched" class="mod-files-list" hidden></div>
+          <ul id="d-warnings" class="mod-unverified"></ul>
+        </div>
+      </div>
+      <p id="ak-error" class="mod-error" role="alert" hidden></p>
+    </main>
+  </div>
+
+  <!-- ══════════ Вход — тот же, что на главной ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Модуль «Акты (АОСР)»</p>
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">Войти на платформу</button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=4"></script>
+  <script src="akty.js?v=1"></script>
+</body>
+</html>

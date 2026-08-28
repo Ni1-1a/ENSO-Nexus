@@ -115,6 +115,15 @@ const config = {
    * Касса остаётся конечной намеренно: безнадёжный прогон обязан кончаться.
    */
   maxAnalysisCalls: int('MAX_ANALYSIS_CALLS', 12),
+  /**
+   * Промежуточный проверяющий (adversary) перед отправкой ответа пользователю:
+   * черновик уходит той же модели на проверку противоречий фактам сессии,
+   * выдуманных оснований и ухода от вопроса; вердикт «revise» возвращает ответ
+   * автору на одну доработку (см. services/claude/adversary.js). Проверка —
+   * служебное обращение: счётчик запросов проекта не расходует, токены считает.
+   * ADVERSARY_REVIEW=0 выключает целиком — ответы уходят как есть.
+   */
+  adversaryReview: process.env.ADVERSARY_REVIEW !== '0',
   maxContinuations: int('MAX_CONTINUATIONS', 4),
   maxConcurrentJobs: int('MAX_CONCURRENT_JOBS', 2),
   // Потолок кругов уточнений: после стольких отвеченных вопросов анализ обязан
@@ -318,7 +327,9 @@ const config = {
     allowConverterFallback: process.env.ACAD_CONVERTER_FALLBACK !== '0',
   },
 
-  promptVersion: '1.3.0', // 1.3.x: у уточняющих вопросов появились варианты ответов (options)
+  // 1.4.x: правило «площадь застройки ≠ общая площадь» с раздельными ключами фактов;
+  // бренд Enso-nexus вместо «ENSO Nexus Pilot 1»; появился проверяющий перед отправкой
+  promptVersion: '1.4.0',
 
   // Модуль «Нормоконтроль»: своя БД PostgreSQL + pgvector (порт 5433 — на 5432
   // живёт системный PostgreSQL 18 без pgvector) и своё файловое хранилище.

@@ -52,6 +52,11 @@ function createApp() {
   app.use('/api/normo', logErrorResponses, require('./routes/normo').router);
   // модуль «Анализ ТЗ» — свой роутер, таблицы tz_* в основной SQLite, вне TTL сессий
   app.use('/api/tz', logErrorResponses, require('./routes/tz').router);
+  // модуль «Проверка документа» (+ замена A→B) — автоподбор промпта библиотеки
+  app.use('/api/doccheck', logErrorResponses, require('./routes/doccheck').router);
+  // «Акты (АОСР)» и «Входной контроль ГГЭ» — детерминированные конвейеры без хранения
+  app.use('/api/akty', logErrorResponses, require('./routes/akty').router);
+  app.use('/api/gge', logErrorResponses, require('./routes/gge').router);
   app.use('/api', logErrorResponses, apiRouter);
   // Cache-Control: no-cache — браузер ОБЯЗАН ревалидировать по ETag (304); без
   // заголовка вступает в силу эвристическое кэширование и правки фронта доходят с опозданием

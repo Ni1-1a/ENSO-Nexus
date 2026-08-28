@@ -104,7 +104,31 @@ async function ask(sessionId, { annotation, site, question, route, signal = null
   });
 
   const out = await adapter.plainCall({ system: prompts.load('ask-selection'), messages, sessionId, route, signal });
-  const answer = (out.text || '').trim() || 'Модель не вернула ответ.';
+  let answer = (out.text || '').trim();
+
+  if (answer) {
+    // проверка перед отправкой: черновик сверяется с теми же числами, что ушли
+    // модели (объекты и ограничения в рамке, факты проекта), — и при замечаниях
+    // дорабатывается один раз в том же контексте
+    const reviewFacts = [
+      `## Объекты в выделенной области\n${selection.describeHits(objectHits)}`,
+      restrictionHits.length ? `## Ограничения в области\n${selection.describeHits(restrictionHits)}` : '',
+      facts.length ? '## Факты проекта\n' + facts.map((f) => `- ${f.key} = ${f.value} (${f.source})`).join('\n') : '',
+    ].filter(Boolean).join('\n\n');
+    answer = await pipeline.reviewBeforeSend(sessionId, {
+      userText: question, draft: answer, route, signal,
+      factsText: reviewFacts, what: 'ответа по области',
+      revise: async (issues) => {
+        messages.push({ role: 'assistant', content: answer });
+        messages.push({ role: 'user', content: require('../claude/adversary').reviseInstruction(issues) });
+        // доработка — служебное обращение: вопрос человека один, счётчик один
+        const out2 = await adapter.plainCall({ system: prompts.load('ask-selection'), messages, sessionId, route, signal, internal: true });
+        return (out2.text || '').trim();
+      },
+    });
+  } else {
+    answer = 'Модель не вернула ответ.';
+  }
 
   return {
     answer,
