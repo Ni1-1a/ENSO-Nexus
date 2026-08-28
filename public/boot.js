@@ -15,4 +15,12 @@
   // «app» — токен есть, показываем приложение и проверяем токен уже фоном;
   // «auth» — токена нет, сразу экран входа.
   document.documentElement.dataset.boot = saved && saved.token ? 'app' : 'auth';
+
+  // Тема применяется здесь же, а не только в app.js: страницы-модули
+  // (tz, normo, doccheck, akty, gge) иначе не знали про выбор человека
+  // и открывались светлыми при тёмной платформе. Ранний запуск заодно
+  // убирает мигание светлого кадра до применения тёмной темы.
+  var theme = null;
+  try { theme = localStorage.getItem('enso-pilot1-theme'); } catch (e) { theme = null; }
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
 })();

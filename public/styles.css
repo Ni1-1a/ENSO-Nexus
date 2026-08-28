@@ -41,8 +41,24 @@
   --fill-hover: rgba(120, 105, 85, .17);
   --shadow: 0 1px 2px rgba(70, 55, 35, .05), 0 8px 24px rgba(70, 55, 35, .07);
   --shadow-pop: 0 4px 12px rgba(70, 55, 35, .12), 0 16px 40px rgba(70, 55, 35, .16);
-  --radius: 12px;
-  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-lg: 22px;
+
+  /* Жидкое стекло — материал СЛОЯ УПРАВЛЕНИЯ (шапки, панели, меню, модалки,
+     тосты). Контент остаётся «бумагой»: текст не живёт на сильном блюре.
+     Кромка (--glass-rim-*) — спекулярный блик по периметру: свет ловится
+     слева сверху, гаснет и возвращается в правом нижнем углу. */
+  --glass: rgba(252, 249, 241, .52);
+  --glass-strong: rgba(253, 251, 244, .74);
+  --glass-rim-hi: rgba(255, 255, 255, .85);
+  --glass-rim-lo: rgba(255, 255, 255, .18);
+  --glass-glow: inset 0 1px 0 rgba(255, 255, 255, .5), inset 0 -1px 0 rgba(62, 50, 35, .05);
+  --glass-shadow: 0 4px 14px rgba(70, 55, 35, .08), 0 18px 48px rgba(70, 55, 35, .12);
+  --glass-blur: 26px;
+  /* насыщенность умеренная: 1.8 поднимала край радиального градиента фона
+     до видимого шва поперёк капсулы */
+  --glass-sat: 1.45;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -70,6 +86,12 @@
     --fill-hover: rgba(180, 160, 130, .22);
     --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .35);
     --shadow-pop: 0 4px 12px rgba(0, 0, 0, .5), 0 16px 40px rgba(0, 0, 0, .5);
+    --glass: rgba(41, 36, 30, .5);
+    --glass-strong: rgba(45, 40, 33, .68);
+    --glass-rim-hi: rgba(255, 244, 226, .32);
+    --glass-rim-lo: rgba(255, 244, 226, .06);
+    --glass-glow: inset 0 1px 0 rgba(255, 244, 226, .13), inset 0 -1px 0 rgba(0, 0, 0, .3);
+    --glass-shadow: 0 4px 14px rgba(0, 0, 0, .38), 0 18px 48px rgba(0, 0, 0, .45);
   }
 }
 :root[data-theme="dark"] {
@@ -96,6 +118,12 @@
   --fill-hover: rgba(180, 160, 130, .22);
   --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .35);
   --shadow-pop: 0 4px 12px rgba(0, 0, 0, .5), 0 16px 40px rgba(0, 0, 0, .5);
+  --glass: rgba(41, 36, 30, .5);
+  --glass-strong: rgba(45, 40, 33, .68);
+  --glass-rim-hi: rgba(255, 244, 226, .32);
+  --glass-rim-lo: rgba(255, 244, 226, .06);
+  --glass-glow: inset 0 1px 0 rgba(255, 244, 226, .13), inset 0 -1px 0 rgba(0, 0, 0, .3);
+  --glass-shadow: 0 4px 14px rgba(0, 0, 0, .38), 0 18px 48px rgba(0, 0, 0, .45);
 }
 
 /* ---------- база ---------- */
@@ -107,10 +135,16 @@ body {
   line-height: 1.45;
   color: var(--text);
   background: var(--bg);
-  background-image: var(--bg-gradient);
-  background-attachment: fixed;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+}
+/* Градиент лежит отдельным неподвижным слоем, а не background-attachment: fixed
+   на body: под backdrop-filter стеклянных панелей fixed-фон в Chrome рисуется
+   со швом ровно посередине окна. Слой ведёт себя так же — не листается. */
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: -1;
+  pointer-events: none;
+  background-image: var(--bg-gradient);
 }
 button { font: inherit; color: inherit; }
 /* атрибут hidden должен побеждать любые display у классов (.btn, .icon-btn, .card…):
@@ -1699,4 +1733,152 @@ html[data-boot="auth"] .shell { visibility: hidden; }
   .ds-val-grid { grid-template-columns: 1fr; }
   .ds-el-list { max-height: 30vh; }
   .ds-el-view { max-height: 40vh; }
+}
+
+/* ════════════ Жидкое стекло: материал слоя управления ════════════
+   Платформа устроена в два слоя. Контент — «бумага»: карточки, находки,
+   таблицы, отчёты; текст лежит на плотной слоновой кости и читается всегда.
+   Управление — «жидкое стекло»: шапки модулей, боковая панель, меню, модальные
+   окна, тосты и главные кнопки парят над бумагой, пропуская её сквозь блюр
+   с усиленной насыщенностью. Кромка стекла — спекулярный блик по периметру
+   (ловится слева сверху, возвращается в правом нижнем углу), внутри — тонкое
+   верхнее свечение. Никаких SVG-фильтров: рецепт обязан работать и в Safari. */
+
+/* сам материал: фон, блюр, свечение. Блик кромки — отдельным ::after,
+   поэтому у элемента с двумя своими псевдоэлементами материал соберётся руками */
+.sidebar,
+.mobile-bar,
+.sess-menu,
+.toast,
+.modal,
+.auth-sheet,
+.question-widget,
+.glass-bar {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+}
+
+/* спекулярная кромка: градиентное кольцо толщиной 1px под маской.
+   Свет обходит контур неравномерно — это и отличает стекло от простой рамки.
+   position ставится только тем, у кого его нет: .sess-menu и .toast — fixed,
+   и перебивать их нельзя (меню проекта позиционирует JS координатами) */
+.modal, .question-widget, .glass-bar { position: relative; }
+.sess-menu::after,
+.toast::after,
+.modal::after,
+.auth-sheet::after,
+.question-widget::after,
+.glass-bar::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  padding: 1px; pointer-events: none;
+  background: linear-gradient(135deg,
+    var(--glass-rim-hi), var(--glass-rim-lo) 34%,
+    transparent 55%,
+    var(--glass-rim-lo) 72%, var(--glass-rim-hi));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+}
+
+/* ---------- плавающая капсула модульных страниц ---------- */
+/* Шапка не прибита к краям: контент проплывает ПОД стеклом, и это видно.
+   Ширина совпадает с колонкой содержимого (1080px у .tz-main/.nm-main/.mod-main). */
+.glass-bar {
+  position: sticky; top: 10px; z-index: 40;
+  display: flex; align-items: center; gap: 12px;
+  width: min(1080px, calc(100% - 20px));
+  margin: 10px auto 0;
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 0;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+}
+.glass-bar .brand-name { white-space: nowrap; }
+@media (max-width: 640px) {
+  .glass-bar { top: 6px; margin-top: 6px; padding: 6px 12px; gap: 8px; }
+  /* чип модуля на телефоне не помещается в капсулу одной строкой —
+     о том, где человек находится, говорит заголовок страницы */
+  .glass-bar .tz-module, .glass-bar .nm-module, .glass-bar .mod-name { display: none; }
+  .glass-bar .user-name { display: none; }
+}
+
+/* ---------- панели и меню ---------- */
+.sidebar { border-right-color: var(--stroke-soft); box-shadow: var(--glass-glow); }
+.mobile-bar { border-bottom: 1px solid var(--stroke-soft); }
+
+.sess-menu {
+  border: 0; border-radius: var(--radius);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+}
+
+.toast {
+  border: 0; border-radius: 999px; padding: 11px 20px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+}
+
+.modal {
+  border: 0; border-radius: var(--radius-lg);
+  box-shadow: var(--glass-glow), 0 30px 80px rgba(40, 32, 22, .3);
+}
+.modal-head { border-bottom-color: var(--stroke-soft); }
+/* подложка глубже: сцена под окном уходит в расфокус, как под листом стекла */
+.modal-backdrop {
+  background: rgba(40, 32, 22, .28);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.15);
+}
+
+.auth-sheet { border: 0; box-shadow: var(--glass-glow), var(--glass-shadow); }
+
+.question-widget { border: 0; box-shadow: var(--glass-glow), var(--glass-shadow); }
+
+/* ---------- кнопки: капсулы, у главной — линза ---------- */
+/* Капсула — форма слоя управления: бейджи и чип модуля уже круглые,
+   кнопки подхватывают ту же геометрию. */
+.btn { border-radius: 999px; }
+.btn-primary {
+  position: relative; overflow: hidden;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, .2), rgba(255, 255, 255, 0) 52%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .28),
+    inset 0 -1px 0 rgba(0, 0, 0, .12),
+    0 2px 10px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.btn-primary:not(:disabled):hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .32),
+    inset 0 -1px 0 rgba(0, 0, 0, .12),
+    0 3px 14px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+/* блик пробегает по стеклу кнопки — только по наведению и только там */
+.btn-primary::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(115deg, transparent 32%, rgba(255, 255, 255, .34) 50%, transparent 66%);
+  transform: translateX(-130%);
+}
+.btn-primary:not(:disabled):hover::after { transform: translateX(130%); transition: transform .55s ease; }
+
+.btn-quiet, .btn-danger { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14); }
+
+/* ---------- сегментированный контрол: стеклянная шайба ---------- */
+.segmented { border-radius: 999px; }
+.segmented button { border-radius: 999px; }
+.segmented button[aria-checked="true"] {
+  background: var(--glass-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .4),
+    0 1px 4px rgba(70, 55, 35, .16);
+}
+
+/* ---------- статусная точка живого индикатора не трогается ---------- */
+/* Тёмная тема: у стеклянной шайбы и тихих кнопок блик тише — токены сами
+   не дотягиваются до этих литералов */
+:root[data-theme="dark"] .segmented button[aria-checked="true"],
+:root[data-theme="dark"] .btn-quiet, :root[data-theme="dark"] .btn-danger { box-shadow: inset 0 1px 0 rgba(255, 244, 226, .1); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .segmented button[aria-checked="true"],
+  :root:not([data-theme="light"]) .btn-quiet,
+  :root:not([data-theme="light"]) .btn-danger { box-shadow: inset 0 1px 0 rgba(255, 244, 226, .1); }
 }
