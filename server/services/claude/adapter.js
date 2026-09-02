@@ -10,6 +10,7 @@ const modelManager = require('../model-manager');
 const progress = require('../progress');
 const registry = require('../ai/registry');
 const cloudAccess = require('../ai/cloud-access');
+const { patientFetch } = require('../ai/patient-fetch');
 const prompts = require('../prompts');
 
 const AI_ERROR_LOG = path.join(__dirname, '..', '..', '..', 'logs', 'ai-errors.log');
@@ -874,7 +875,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal])
       : AbortSignal.timeout(timeoutMs);
     try {
-      res = await fetch(`${baseUrl}/chat/completions`, {
+      res = await patientFetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers,
         body: payload,

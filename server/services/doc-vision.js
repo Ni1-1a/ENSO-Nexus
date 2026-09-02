@@ -22,6 +22,7 @@ const config = require('../config');
 const { db, now } = require('../db');
 const modelManager = require('./model-manager');
 const registry = require('./ai/registry');
+const { patientFetch } = require('./ai/patient-fetch');
 const prompts = require('./prompts');
 const { extractPdfText } = require('./claude/memory');
 
@@ -165,7 +166,7 @@ async function visionOnce(imageBuf, mime, { signal, onProgress }, attempt = 1) {
   modelManager.acquireUse(config.localAiOcrModel);
   let res;
   try {
-    res = await fetch(`${config.localAiBaseUrl}/chat/completions`, {
+    res = await patientFetch(`${config.localAiBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
