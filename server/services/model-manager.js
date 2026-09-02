@@ -41,6 +41,9 @@ const MEMORY_BUDGET_BYTES = Math.round(os.totalmem() * 0.72);
  * зажимается сознательно, и в интерфейсе теперь видно, чем именно.
  */
 const MODEL_PROFILES = [
+  // Гибридное внимание qwen3.8: полных слоёв 16 (каждый 4-й из 64), 4 KV-головы
+  // × 256 dim × 2 (K+V) × f16 = 64 КиБ/ток; состояние linear-слоёв с контекстом не растёт.
+  { match: /qwen3\.8-27b/i, kvPerTokenKiB: 64 },
   { match: /qwen3-coder-30b/i, kvPerTokenKiB: 96 },
   { match: /qwen3-vl-30b/i, context: () => config.localAiOcrContext, kvPerTokenKiB: 96 },
   // 8B dense: 36 слоёв × 8 KV-голов × 128 dim × 2 (K+V) × f16 = 144 КиБ/ток
