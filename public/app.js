@@ -176,7 +176,7 @@ function setOffline(on) {
           refresh().catch(() => {});
           loadDeviceSessions().catch(() => {});
           // указатель на сессию при обрыве не стирался — поднимаем её заново
-          if (!state.session) restoreOrCreate().catch(() => {});
+          if (!state.session) restoreOrCreate().then(syncSettingsGroups).catch(() => {});
         }
       } catch { /* всё ещё недоступен — ждём следующей проверки */ }
     }, 10000);
@@ -491,12 +491,16 @@ async function restoreOrCreate() {
   // Сессии посадки живут внутри проекта платформы: без открытого модуля
   // «Посадка здания» ничего не восстанавливаем и тем более не создаём —
   // список проектов и настройки не должны плодить пустые сессии.
+  // Исключение — экран «Настройки» с проектом: разделы сессии (этапы,
+  // нейросеть, база, сравнение) показываются по СУЩЕСТВУЮЩЕЙ сессии, иначе
+  // настройки выглядели «неполными» из любого модуля, кроме посадки.
   const shell = window.EnsoShell;
-  if (!shell || shell.module !== 'site') return;
+  const wanted = () => shell.module === 'site' || shell.screen === 'settings';
+  if (!shell || !wanted()) return;
   // проект должен быть НАЙДЕН в списке, а не просто назван в адресе: под
   // удалённым или выдуманным id сессия не создаётся (аудит 02.09.2026)
   await shell.ready;
-  if (!shell.project || shell.module !== 'site') return;
+  if (!shell.project || !wanted()) return;
   const pid = shell.project.id;
   const saved = localStorage.getItem(sessKey()) || localStorage.getItem(LS_KEY);
   if (saved) {
@@ -531,6 +535,8 @@ async function restoreOrCreate() {
     await switchSession(state.deviceSessions[0].id);
     return;
   }
+  // новая сессия создаётся только в самом модуле: настройки не плодят пустые сессии
+  if (window.EnsoShell.module !== 'site') return;
   await newSession();
 }
 
@@ -2032,6 +2038,14 @@ async function downloadWorkplan() {
 /* ---------------- разделы настроек (выпадающие списки) ---------------- */
 const SET_OPEN_KEY = 'enso-pilot1-settings-open';
 
+/** Разделы сессии в настройках видны, только когда сессия есть (и после позднего восстановления). */
+function syncSettingsGroups() {
+  for (const g of document.querySelectorAll('.set-group[data-group="workplan"], .set-group[data-group="ai"], .set-group[data-group="kb"], .set-group[data-group="compare"]')) {
+    g.hidden = !state.session;
+  }
+  if ($('settings-no-session')) $('settings-no-session').hidden = !!state.session;
+}
+
 /**
  * Разделы настроек — равноправные аккордеоны. Открыт всегда один: настройки
  * читаются сверху вниз списком заголовков, а не простынёй из четырёх карточек.
@@ -2786,10 +2800,7 @@ async function init() {
   setInterval(() => { if (!state.offline) loadHealth().catch(() => {}); }, 60000);
   await restoreOrCreate().catch((err) => toast(err.message, 'error'));
   // без сессии разделы её настроек не показываем: экран настроек — платформенный
-  for (const g of document.querySelectorAll('.set-group[data-group="workplan"], .set-group[data-group="ai"], .set-group[data-group="kb"], .set-group[data-group="compare"]')) {
-    g.hidden = !state.session;
-  }
-  if ($('settings-no-session')) $('settings-no-session').hidden = !!state.session;
+  syncSettingsGroups();
 
   $('btn-new-session-side').addEventListener('click', startNewSession);
 

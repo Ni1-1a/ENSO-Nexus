@@ -54,6 +54,8 @@
     settings: '<circle cx="12" cy="12" r="3.1"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke-linecap="round"/>',
     toggle: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9.5 4v16"/>',
     arrowRight: '<path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round"/>',
+    close: '<path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>',
   };
 
   const params = new URLSearchParams(location.search);
@@ -160,14 +162,22 @@
         <a class="tb-brand" href="/" title="Все проекты">${svg(ICONS.back)}<span class="brand-name">Enso-nexus</span></a>
         <span class="tb-sep">/</span>
         <div class="tb-project" id="tb-project">
-          <button id="tb-switch" class="tb-switch" type="button" aria-expanded="false" aria-controls="tb-menu">Проекты ${svg(ICONS.chev)}</button>
+          <button id="tb-switch" class="tb-switch" type="button" aria-expanded="false" aria-controls="tb-menu"><span class="tb-switch-name">Проекты</span> ${svg(ICONS.chev)}</button>
           <div id="tb-menu" class="tb-menu" hidden></div>
         </div>
         <span class="tb-sep tb-sep-module">/</span>
         <span id="module-pill" class="module-pill"></span>
         <span class="tb-spacer"></span>
-        <nav class="tb-platform" id="tb-platform" aria-label="Платформа"></nav>
+        <button id="tb-more" class="tb-more" type="button" aria-expanded="false" aria-controls="platform-drawer"
+                aria-label="Меню платформы" title="Меню платформы">${svg(ICONS.menu)}</button>
       </header>
+      <button id="pd-scrim" class="pd-scrim" type="button" tabindex="-1" aria-label="Закрыть меню" hidden></button>
+      <aside id="platform-drawer" class="platform-drawer" aria-label="Меню платформы" hidden>
+        <div class="pd-head"><span class="pd-title">Меню</span>
+          <button id="pd-close" class="icon-btn pd-close" type="button" aria-label="Закрыть меню">${svg(ICONS.close)}</button></div>
+        <nav class="tb-platform" id="tb-platform" aria-label="Платформа"></nav>
+        <div class="pd-foot" id="pd-foot"></div>
+      </aside>
       <nav id="module-nav" class="module-nav" aria-label="Модули проекта"></nav>
       <div id="ai-badge" class="ai-badge" title="Действующая нейросеть"><span class="ai-dot" aria-hidden="true"></span><span id="ai-badge-text">Подключение…</span></div>
       <div id="user-box" class="user-box" hidden>
@@ -201,7 +211,9 @@
       if (state.view === 'b') $('module-pill').after(nav);
       else if (state.view === 'c') { if (head) head.prepend(nav); }
       else topbar.after(nav);
-      topbar.append(ai, user);
+      // нейросеть и человек живут в боковом меню (бургер), а не в капсуле:
+      // втиснутые в капсулу, они сжимались флексом до вертикального столбика букв
+      $('pd-foot').append(ai, user);
     }
     if (content && stamp) content.append(stamp);
   }
@@ -338,7 +350,7 @@
   function renderSwitcher() {
     const btn = $('tb-switch'); const menu = $('tb-menu');
     if (!btn || !menu) return;
-    btn.innerHTML = `${esc(state.project ? state.project.name : 'Проекты')} ${svg(ICONS.chev)}`;
+    btn.innerHTML = `<span class="tb-switch-name">${esc(state.project ? state.project.name : 'Проекты')}</span> ${svg(ICONS.chev)}`;
     btn.title = state.project ? (state.project.full_name || state.project.name) : 'Выбрать проект';
     if (!menu.hidden) return; // открытое меню не пересобираем под курсором
     const items = [`<a href="/"><span class="tm-name">Все проекты</span></a>`, '<div class="tm-sep"></div>'];
@@ -386,6 +398,7 @@
     if (!pill) return;
     const m = activeModule();
     pill.textContent = m && state.project ? `${m.n} · ${m.name}` : '';
+    pill.title = pill.textContent; // плашка может обрезаться многоточием на узкой капсуле
   }
 
   function renderHead() {
@@ -478,6 +491,24 @@
         if (!menu.hidden && !e.target.closest('#tb-project')) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
       });
       document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); } });
+    }
+    // боковое меню платформы (бургер): датасет, статистика, настройки, нейросеть, человек
+    const more = $('tb-more'); const drawer = $('platform-drawer'); const pdScrim = $('pd-scrim');
+    if (more && drawer && pdScrim) {
+      const setDrawer = (open) => {
+        drawer.hidden = !open;
+        pdScrim.hidden = !open;
+        more.setAttribute('aria-expanded', String(open));
+        if (open) {
+          const first = drawer.querySelector('a, button:not(.pd-close)');
+          if (first) first.focus();
+        } else if (document.activeElement && drawer.contains(document.activeElement)) more.focus();
+      };
+      more.addEventListener('click', () => setDrawer(drawer.hidden));
+      pdScrim.addEventListener('click', () => setDrawer(false));
+      $('pd-close').addEventListener('click', () => setDrawer(false));
+      drawer.addEventListener('click', (e) => { if (e.target.closest('a')) setDrawer(false); });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden) setDrawer(false); });
     }
     // на главной панелью, выходом и темой управляет app.js; на модулях — каркас
     if (state.page !== 'index') {

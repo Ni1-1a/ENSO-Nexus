@@ -76,15 +76,18 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
 .tb-brand svg { width: 16px; height: 16px; color: var(--text-2); }
 .tb-brand .brand-name { font-size: 15px; }
 .tb-sep { color: var(--stroke); font-size: 15px; }
-.tb-project { position: relative; min-width: 0; }
+/* контейнер — flex, а кнопка с min-width: 0: иначе кнопка не сжималась вместе
+   с контейнером и длинное имя проекта наезжало на плашку модуля */
+.tb-project { position: relative; min-width: 0; display: flex; }
 .tb-switch {
   display: inline-flex; align-items: center; gap: 6px;
   border: 0; background: transparent; cursor: pointer;
   padding: 5px 8px; border-radius: var(--radius-sm);
   font-size: 13.5px; font-weight: 600; color: var(--text);
-  max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 320px; min-width: 0; white-space: nowrap;
   transition: background .15s ease;
 }
+.tb-switch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tb-switch:hover { background: var(--fill); }
 .tb-switch svg { width: 14px; height: 14px; color: var(--text-2); flex-shrink: 0; }
 .tb-menu {
@@ -114,6 +117,7 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
   color: var(--accent);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; /* на узкой капсуле — многоточие, а не наезд */
 }
 .module-pill:empty, .tb-sep-module:has(+ .module-pill:empty) { display: none; }
 .tb-spacer { flex: 1; }
@@ -127,8 +131,51 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
 .tb-platform a:hover, .sb-platform a:hover { background: var(--fill); color: var(--text); }
 .tb-platform a.active, .sb-platform a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .tb-platform svg, .sb-platform svg { width: 15px; height: 15px; }
-.topbar .ai-badge { max-width: 260px; }
-.topbar .user-box { border-top: 0; padding: 0; }
+
+/* ---------- боковое меню платформы (бургер в капсуле, виды b/c/d) ----------
+   Датасет, статистика, настройки, нейросеть и человек живут здесь, а не в
+   капсуле: втиснутые в неё, они сжимались флексом до нечитаемого столбика. */
+.tb-more {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 34px; height: 34px; border-radius: 50%; border: 0; cursor: pointer;
+  background: transparent; color: var(--text-2);
+  transition: background .15s ease, color .15s ease;
+}
+.tb-more:hover { background: var(--fill); color: var(--text); }
+.tb-more[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.tb-more svg { width: 18px; height: 18px; }
+.pd-scrim {
+  position: fixed; inset: 0; z-index: 125; border: 0; padding: 0; cursor: default;
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+}
+.platform-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 130;
+  width: min(300px, 88vw);
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 14px 12px;
+  /* плотнее обычного стекла: под панелью произвольный контент, и текст меню
+     не должен зависеть от того, дорисует ли браузер блюр */
+  background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  border-left: 1px solid var(--stroke-soft);
+  box-shadow: var(--glass-glow), var(--shadow-pop);
+  animation: drawer-in .22s ease;
+}
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.pd-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 6px 6px; }
+.pd-title {
+  font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--text-3);
+}
+.pd-close { width: 30px; height: 30px; }
+.pd-close svg { width: 16px; height: 16px; }
+.pd-close:hover { color: var(--text); }
+.platform-drawer .tb-platform { flex-direction: column; align-items: stretch; gap: 2px; }
+.platform-drawer .tb-platform a { border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13.5px; gap: 10px; }
+.platform-drawer .tb-platform svg { width: 16px; height: 16px; }
+.pd-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 2px; }
+.pd-foot .user-box { padding-top: 10px; }
 
 /* ---------- навигация по модулям: один DOM, четыре раскладки ---------- */
 .module-nav { display: flex; }
@@ -496,8 +543,10 @@ html[data-view="d"] .proj-new .pn-sub { display: none; }
   .content { padding: 20px var(--page-pad) 56px; }
   .card:not(.card-fold) { padding: 18px; }
   .topbar { margin-top: 8px; padding: 6px 12px; gap: 8px; flex-wrap: wrap; }
-  .topbar .module-nav, .tb-sep-module, .module-pill, .topbar .ai-badge, .tb-platform a span { display: none !important; }
-  .topbar .user-name { display: none; }
+  /* нейросеть, человек и ссылки платформы живут в боковом меню — прятать нечего */
+  .topbar .module-nav, .tb-sep-module, .module-pill { display: none !important; }
+  /* имя проекта уступает место бургеру: иначе тот переносится на отдельную строку */
+  .tb-switch { max-width: 30vw; }
   .projects-list, .hub-modules { grid-template-columns: 1fr; }
   .proj-card, .hub-tile, .proj-new { min-height: 0; }
   .ph-name { font-size: 28px; }
@@ -528,6 +577,7 @@ html[data-view="d"] .proj-new .pn-sub { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .mn-item[data-state="run"] .mn-dot { animation: none; }
   .proj-card, .hub-tile, .proj-new, .mn-item { transition: none; }
+  .platform-drawer { animation: none; }
 }
 
 
@@ -572,8 +622,9 @@ html[data-view="c"] .col-dialog { grid-column: 1 / -1; order: 3; }
   /* вид B на телефоне: модули строкой кружков под капсулой, а не спрятаны */
   html[data-view="b"] .topbar .module-nav { display: flex !important; order: 10; width: 100%; justify-content: center; padding: 4px 0 2px; background: transparent; }
   html[data-view="b"] .topbar .mn-item { width: 40px; height: 40px; }
-  /* ссылки платформы — цель не меньше 40px */
-  .tb-platform a, .sb-platform a { min-width: 40px; min-height: 36px; justify-content: center; }
+  /* ссылки платформы в панели проектов — цель не меньше 40px (в боковом меню
+     капсулы они и так строки на всю ширину) */
+  .sb-platform a { min-width: 40px; min-height: 36px; }
 }
 
 
@@ -637,7 +688,7 @@ tr.row-link:hover { background: var(--fill); }
 /* Вид C: две карточки рядом не помещаются в узкую колонку */
 html[data-view="c"] .tz-cols, html[data-view="c"] .mod-cols, html[data-view="c"] .nm-cols { grid-template-columns: 1fr; }
 /* Ссылки платформы — цель не меньше 36px и на десктопе */
-.tb-platform a { min-height: 34px; }
+.tb-platform a { min-height: 36px; }
 
 /* ─── обход в браузере 04.09.2026 ─── */
 /* длинное имя без пробелов не должно выламывать карточку, заголовок и окно */
