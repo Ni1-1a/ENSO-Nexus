@@ -12,6 +12,7 @@
  * честно вернёт меньше ячеек, а валидатор заголовков скажет об этом человеку.
  */
 const AdmZip = require('adm-zip');
+const zipGuard = require('../zip-guard');
 
 function unescapeXml(s) {
   return String(s)
@@ -64,13 +65,13 @@ function readTable(buffer) {
   const shared = [];
   const sharedEntry = zip.getEntry('xl/sharedStrings.xml');
   if (sharedEntry) {
-    const xml = sharedEntry.getData().toString('utf8');
+    const xml = zipGuard.entryData(sharedEntry, 'XLSX').toString('utf8');
     const re = /<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g;
     let m;
     while ((m = re.exec(xml)) !== null) shared.push(textOf(m[1]));
   }
 
-  const sheetXml = sheetEntry.getData().toString('utf8');
+  const sheetXml = zipGuard.entryData(sheetEntry, 'XLSX').toString('utf8');
   const rawRows = [];
   const rowRe = /<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g;
   let rm;

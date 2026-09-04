@@ -63,11 +63,18 @@ function readTextFile(filePath) {
 }
 
 function extractDocxText(filePath) {
+  let entry;
   try {
     const zip = new AdmZip(filePath);
-    const entry = zip.getEntry('word/document.xml');
-    if (!entry) return '';
-    const xml = entry.getData().toString('utf8');
+    entry = zip.getEntry('word/document.xml');
+  } catch {
+    return '';
+  }
+  if (!entry) return '';
+  // размер проверяется ДО распаковки и не глотается: zip-бомба — это 422, а не «пустой текст»
+  const data = require('../zip-guard').entryData(entry, 'DOCX');
+  try {
+    const xml = data.toString('utf8');
     return cut(xml
       .replace(/<w:p[ >]/g, '\n<')
       .replace(/<[^>]+>/g, '')

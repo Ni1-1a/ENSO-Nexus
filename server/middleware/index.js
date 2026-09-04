@@ -2,7 +2,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const config = require('../config');
-const { db } = require('../db');
+const { db, hashToken } = require('../db');
 
 /* ---------- rate limiting (in-memory sliding window per IP) ---------- */
 const buckets = new Map();
@@ -69,7 +69,8 @@ function sessionAuth(req, res, next) {
   }
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   const session = db.prepare("SELECT * FROM sessions WHERE id = ? AND status = 'active'").get(id);
-  if (!session || !token || !timingSafeEqual(session.token, token)) {
+  // в базе только хеш: сравниваем хеш присланного токена с хешем из строки
+  if (!session || !token || !session.token_hash || !timingSafeEqual(session.token_hash, hashToken(token))) {
     // same answer for "not found" and "wrong token": no session enumeration
     return res.status(404).json({ error: 'Сессия не найдена или токен неверен' });
   }
@@ -106,7 +107,10 @@ function optionalUser(req, res, next) {
   // пустой и усечённый токен отвергаются ДО поиска: иначе любая ошибка в
   // сравнении хэшей превращается во вход под первым попавшимся человеком
   req.userToken = USER_TOKEN_RE.test(token) ? token : '';
-  req.user = req.userToken ? require('../services/users').byToken(req.userToken) : null;
+  const users = require('../services/users');
+  req.user = req.userToken ? users.byToken(req.userToken) : null;
+  // активность продлевает срок токена (не чаще раза в час, см. users.touchIfStale)
+  if (req.user) users.touchIfStale(req.user.id, { ip: req.ip });
   next();
 }
 
@@ -145,6 +149,10 @@ function securityHeaders(req, res, next) {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
+    // HSTS браузер учитывает только по HTTPS (Cloudflare/nginx), локально безвреден
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    // странице нечего делать с камерой, микрофоном, геопозицией и платежами
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
     'Content-Security-Policy':
       "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
       "font-src https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; " +
@@ -218,15 +226,45 @@ function errorHandler(err, req, res, next) {
     return res.status(400).json({ error: 'Неподдерживаемая кодировка тела запроса' });
   }
   if (err.name === 'MulterError') {
+    // файл пришёл не в том поле — это ошибка формы (400), а не размера (413)
+    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({ error: 'Неожиданное поле файла: ожидается files/file' });
+    }
     const msg = err.code === 'LIMIT_FILE_SIZE' ? 'Файл превышает допустимый размер'
       : err.code === 'LIMIT_FILE_COUNT' ? 'Слишком много файлов за один запрос'
       : 'Ошибка загрузки файла';
     return res.status(413).json({ error: msg });
+  }
+  // Недоступная модель (ключа нет, демо-режим, облако закрыто, обрыв) — это
+  // состояние сервиса, а не наша ошибка: 503 с причиной, а не безликая 500-ка
+  const { AiUnavailableError } = require('../services/claude/adapter');
+  if (err instanceof AiUnavailableError) {
+    console.warn(`[ai] ${req.method} ${req.originalUrl} — ${err.message}`);
+    return res.status(503).json({ error: err.message });
   }
   const status = err.status || 500;
   if (status >= 500) console.error('[error]', err); // stack traces stay in server logs
   res.status(status).json({ error: status >= 500 ? 'Внутренняя ошибка сервера' : err.message });
 }
 
+/**
+ * Потолок размера ОДНОГО запроса с файлами — по Content-Length, до того как
+ * multer начнёт складывать файлы в память. Запрос без Content-Length (chunked)
+ * остаётся под лимитами multer на файл и их число.
+ */
+function requestSizeLimit(bytes) {
+  return (req, res, next) => {
+    const len = Number(req.headers['content-length'] || 0);
+    if (len > bytes) {
+      return res.status(413).json({
+        error: `Слишком большой запрос: ${Math.ceil(len / 1048576)} МБ при пределе ${Math.round(bytes / 1048576)} МБ на одну загрузку`,
+      });
+    }
+    next();
+  };
+}
+
 module.exports = {
-  optionalUser, userAuth, sessionOwner, rateLimit, sessionAuth, securityHeaders, cors, notFound, logErrorResponses, errorHandler };
+  optionalUser, userAuth, sessionOwner, rateLimit, sessionAuth, securityHeaders, cors, notFound, logErrorResponses, errorHandler,
+  requestSizeLimit,
+};

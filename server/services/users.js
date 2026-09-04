@@ -125,7 +125,8 @@ function save(store) {
   const file = filePath();
   const tmp = `${file}.tmp`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+  // ФИО, адреса и хеши токенов — только владельцу процесса (аудит 02.09.2026)
+  fs.writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, file);
   cache = store;
   try { cacheMtimeMs = fs.statSync(file).mtimeMs; } catch { cacheMtimeMs = 0; }
@@ -156,6 +157,10 @@ function cleanName(s) {
 }
 
 function validNames(lastName, firstName) {
+  // длина проверяется ДО обрезки: 61-й символ иначе молча отрезался, и человек
+  // входил под именем, которого не писал
+  const tooLong = (s) => String(s || '').normalize('NFC').trim().replace(/\s+/g, ' ').length > NAME_MAX;
+  if (tooLong(lastName) || tooLong(firstName)) return null;
   const last = cleanName(lastName);
   const first = cleanName(firstName);
   if (!NAME_RE.test(last) || !NAME_RE.test(first)) return null;
@@ -199,7 +204,39 @@ function byToken(token) {
   if (!token || String(token).length < 32) return null;
   const store = readFileIfChanged();
   const hash = hashToken(token);
-  return store.users.find((u) => u.tokenHash && u.tokenHash === hash) || null;
+  const user = store.users.find((u) => u.tokenHash && u.tokenHash === hash) || null;
+  if (!user) return null;
+  // срок без активности вышел — токен гаснет, человек входит заново по ФИО
+  if (tokenExpired(user)) {
+    mutate((st) => { const u = st.users.find((x) => x.id === user.id); if (u) u.tokenHash = ''; return u; });
+    return null;
+  }
+  return user;
+}
+
+const DAY_MS = 24 * 3600 * 1000;
+const TOUCH_EVERY_MS = 3600 * 1000;
+
+/** Истёк ли токен: с последней активности прошло больше USER_TOKEN_DAYS. */
+function tokenExpired(user) {
+  const days = Number(config.userTokenDays) || 0;
+  if (!days) return false;
+  const seen = Date.parse(user.lastSeenAt || user.createdAt || '');
+  if (!Number.isFinite(seen)) return false;
+  return Date.now() - seen > days * DAY_MS;
+}
+
+/**
+ * Продление срока по активности: отметка lastSeenAt обновляется не чаще раза
+ * в час — иначе каждый запрос переписывал бы users.json.
+ */
+function touchIfStale(userId, opts = {}) {
+  const store = readFileIfChanged();
+  const u = store.users.find((x) => x.id === userId);
+  if (!u) return;
+  const seen = Date.parse(u.lastSeenAt || '');
+  if (Number.isFinite(seen) && Date.now() - seen < TOUCH_EVERY_MS) return;
+  touch(userId, opts);
 }
 
 /**
@@ -326,6 +363,7 @@ function logout(token) {
 
 /** Создание файла при первом старте — чтобы владелец сразу его увидел. */
 function init() {
+  try { fs.chmodSync(filePath(), 0o600); } catch { /* файла ещё нет или чужая ФС */ }
   const file = filePath();
   if (!fs.existsSync(file)) {
     save(emptyStore());
@@ -339,7 +377,7 @@ function init() {
 }
 
 module.exports = {
-  init, state, enter, logout, byToken, byId, find, touch, publicUser, list, canSeeAllStats,
+  init, state, enter, logout, byToken, byId, find, touch, touchIfStale, tokenExpired, publicUser, list, canSeeAllStats,
   normName, cleanName, validNames, hashToken,
   MAX_USERS, NAME_MAX,
   _readFileIfChanged: readFileIfChanged,

@@ -18,6 +18,7 @@
  * внутри и заменяется целиком (тот же приём, что в normo/report.js).
  */
 const AdmZip = require('adm-zip');
+const zipGuard = require('../zip-guard');
 
 const escXml = (v) => String(v == null ? '' : v)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -36,7 +37,7 @@ function templateKeys(templateBuffer) {
   const zip = new AdmZip(templateBuffer);
   const entry = zip.getEntry('word/document.xml');
   if (!entry) throw new Error('Файл не читается как DOCX (нет word/document.xml)');
-  const xml = entry.getData().toString('utf8');
+  const xml = zipGuard.entryData(entry, 'Шаблон DOCX').toString('utf8');
   const keys = [];
   let m;
   PLACEHOLDER_RE.lastIndex = 0;
@@ -50,7 +51,7 @@ function templateKeys(templateBuffer) {
 function fillTemplate(templateBuffer, values) {
   const zip = new AdmZip(templateBuffer);
   const entry = zip.getEntry('word/document.xml');
-  const xml = entry.getData().toString('utf8');
+  const xml = zipGuard.entryData(entry, 'Шаблон DOCX').toString('utf8');
   const missing = [];
   const replaced = xml.replace(PLACEHOLDER_RE, (whole, inner) => {
     const key = keyOf(inner);

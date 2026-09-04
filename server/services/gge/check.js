@@ -59,7 +59,8 @@ async function checkTextLayers(files) {
       rows.push({ file: f.name, skipped: 'не PDF' });
       continue;
     }
-    const tmp = path.join(os.tmpdir(), `gge-${process.pid}-${Math.random().toString(36).slice(2)}.pdf`);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gge-'));
+    const tmp = path.join(dir, 'doc.pdf');
     fs.writeFileSync(tmp, f.buffer);
     try {
       const pages = await pdfPages(tmp);
@@ -76,7 +77,7 @@ async function checkTextLayers(files) {
         text,
       });
     } finally {
-      fs.rmSync(tmp, { force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }
   return rows;

@@ -50,8 +50,19 @@ function isCloud(providerId) {
  * провайдеров разные условия и разная цена ошибки. Открытие — осознанное
  * действие: список белый, пустая переменная не открывает ничего.
  */
+/**
+ * Западная тройка открытию «всем» не подлежит (решение владельца 02.09.2026):
+ * именно её условия про «предоставление доступа» стоили аккаунта OpenAI, и на
+ * VPS список CLOUD_AI_OPEN_PROVIDERS со всеми шестью провайдерами обнулял
+ * отметку cloudAi у людей. Claude, ChatGPT и Gemini — только по отметке
+ * человека (или владельцу), что бы ни стояло в списке.
+ */
+const OWNER_ONLY = new Set(['claude', 'chatgpt', 'gemini']);
+
 function openToEveryone(providerId) {
-  return config.cloudAiOpenProviders.has(String(providerId || '').toLowerCase());
+  const id = String(providerId || '').toLowerCase();
+  if (OWNER_ONLY.has(id)) return false;
+  return config.cloudAiOpenProviders.has(id);
 }
 
 /** Имя из адреса без порта и регистра: `Enso-Nexus.COM:443` → `enso-nexus.com`. */
@@ -135,7 +146,8 @@ function ownerOf(sessionId) {
 function userAllowed(user, providerId) {
   if (config.cloudAiOpen) return true;
   if (providerId && openToEveryone(providerId)) return !!(user && user.approved);
-  return !!(user && user.approved && user.cloudAi === true);
+  // владелец платформы отметки не ждёт: ключи его
+  return !!(user && user.approved && (user.cloudAi === true || user.owner === true));
 }
 
 /**
@@ -177,7 +189,7 @@ function safetyIdentifier(sessionId) {
 }
 
 module.exports = {
-  CLOUD_PROVIDERS, DENY_MESSAGE, PROVIDER_LABELS,
+  CLOUD_PROVIDERS, OWNER_ONLY, DENY_MESSAGE, PROVIDER_LABELS,
   isCloud, openToEveryone, denyMessage, userAllowed, allowedForSession, safetyIdentifier, ownerOf,
   normHost, hostAllowed, hostOf, hostDenyMessage,
 };

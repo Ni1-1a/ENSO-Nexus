@@ -86,15 +86,8 @@
 
     <a class="go" href="/">Вернуться на платформу</a>
   </main>
-<script>
-  // Показываем ровно тот адрес, который не нашёлся, — иначе непонятно,
-  // где именно опечатка. Пишем текстом, разметка сюда не попадает.
-  // Пустая рамка на корневом адресе выглядела бы недорисованной — прячем.
-  (function () {
-    var el = document.getElementById('path');
-    var p = decodeURI(location.pathname) + location.search;
-    if (p && p !== '/') el.textContent = p; else el.hidden = true;
-  }());
-</script>
+<!-- скрипт вынесен в файл: CSP платформы (script-src 'self') инлайн не пропускает,
+     и адрес на странице не подставлялся (аудит 02.09.2026) -->
+<script src="/error-pages/app-404.js"></script>
 </body>
 </html>

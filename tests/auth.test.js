@@ -177,3 +177,49 @@ test('вход: адрес пишется только если это дейс�
     }
   }
 });
+
+test('вход: имя длиннее 60 символов отклоняется, а не обрезается молча', async () => {
+  const long = 'А'.repeat(61);
+  const { status, body } = await enter(long, 'Пётр');
+  assert.strictEqual(status, 400);
+  assert.strictEqual(body.status, 'invalid');
+  assert.match(body.error, /до 60 символов/);
+  const ok = await enter('А'.repeat(60), 'Пётр');
+  assert.notStrictEqual(ok.body.status, 'invalid', 'ровно 60 символов — допустимо');
+});
+
+/* ================= срок токена без активности (аудит 02.09.2026) ================= */
+
+function setLastSeen(lastName, daysAgo) {
+  const store = JSON.parse(fs.readFileSync(process.env.USERS_FILE, 'utf8'));
+  const u = store.users.find((x) => x.lastName === lastName);
+  u.lastSeenAt = new Date(Date.now() - daysAgo * 24 * 3600 * 1000).toISOString();
+  fs.writeFileSync(process.env.USERS_FILE, JSON.stringify(store, null, 2));
+}
+
+test('вход: токен гаснет после 30 дней без активности, а активность продлевает срок', async () => {
+  setMode('free');
+  const { body } = await enter('Сроков', 'Иван');
+  const me = { 'X-User-Token': body.token };
+  // 29 дней назад — ещё жив, и обращение обновляет отметку активности
+  await new Promise((r) => setTimeout(r, 20));
+  setLastSeen('Сроков', 29);
+  await new Promise((r) => setTimeout(r, 20));
+  const alive = await json('/api/auth/me', { headers: me });
+  assert.strictEqual(alive.status, 200);
+  const afterTouch = JSON.parse(fs.readFileSync(process.env.USERS_FILE, 'utf8')).users.find((x) => x.lastName === 'Сроков');
+  assert.ok(Date.now() - Date.parse(afterTouch.lastSeenAt) < 60_000, 'активность обязана продлевать срок');
+  // 31 день назад — токен гаснет и стирается из файла
+  await new Promise((r) => setTimeout(r, 20));
+  setLastSeen('Сроков', 31);
+  await new Promise((r) => setTimeout(r, 20));
+  const dead = await json('/api/auth/me', { headers: me });
+  assert.strictEqual(dead.status, 401);
+  assert.strictEqual(dead.body.needLogin, true);
+  const cleared = JSON.parse(fs.readFileSync(process.env.USERS_FILE, 'utf8')).users.find((x) => x.lastName === 'Сроков');
+  assert.strictEqual(cleared.tokenHash, '', 'погасший токен стирается из файла');
+  // повторный вход по ФИО выдаёт новый токен
+  const again = await enter('Сроков', 'Иван');
+  assert.strictEqual(again.status, 200);
+  assert.match(again.body.token, /^[0-9a-f]{64}$/);
+});

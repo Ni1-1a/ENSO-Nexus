@@ -15,6 +15,7 @@
  * Формат листа: колонки A=№, B=Этап, C=Содержание, D=Нормативная база/результат.
  */
 const AdmZip = require('adm-zip');
+const zipGuard = require('./zip-guard');
 
 const DEFAULT_NAME = 'Стандартный порядок работы';
 
@@ -108,6 +109,10 @@ const stripTags = (s) => unEsc(s.replace(/<[^>]+>/g, ''));
 function parseXlsx(buffer) {
   let zip;
   try { zip = new AdmZip(buffer); } catch { return { ok: false, error: 'Файл не похож на Excel (.xlsx)' }; }
+  try { return parseXlsxEntries(zip); } catch (err) { if (err.status === 422) return { ok: false, error: err.message }; throw err; }
+}
+
+function parseXlsxEntries(zip) {
   const sheetEntry = zip.getEntries()
     .filter((e) => /^xl\/worksheets\/sheet\d+\.xml$/.test(e.entryName))
     .sort((a, b) => a.entryName.localeCompare(b.entryName))[0];
@@ -116,14 +121,14 @@ function parseXlsx(buffer) {
   const shared = [];
   const ss = zip.getEntry('xl/sharedStrings.xml');
   if (ss) {
-    const xml = ss.getData().toString('utf8');
+    const xml = zipGuard.entryData(ss, 'Excel').toString('utf8');
     for (const m of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
       const texts = [...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => unEsc(t[1]));
       shared.push(texts.join(''));
     }
   }
 
-  const xml = sheetEntry.getData().toString('utf8');
+  const xml = zipGuard.entryData(sheetEntry, 'Excel').toString('utf8');
   const rows = [];
   for (const rm of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
     const cells = {};

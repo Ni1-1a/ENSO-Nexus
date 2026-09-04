@@ -51,6 +51,10 @@ router.get('/settings', (req, res) => {
 });
 
 router.put('/settings', express.json({ limit: '256kb' }), wrap((req, res) => {
+  // промпт генерации и модель — общие на всех: их меняет только владелец платформы
+  if (config.requireLogin && !(req.user && req.user.owner === true)) {
+    return res.status(403).json({ error: 'Настройки датасета меняет владелец платформы' });
+  }
   res.json({ settings: store.settingsSet(req.body || {}) });
 }));
 

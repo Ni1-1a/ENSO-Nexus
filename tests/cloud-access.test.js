@@ -386,6 +386,33 @@ test('в отказе названо, чем можно воспользоват
   });
 });
 
+/*
+ * Решение владельца 02.09.2026: западную тройку списком открыть нельзя вовсе.
+ * На VPS CLOUD_AI_OPEN_PROVIDERS перечислял все шесть провайдеров, и отметка
+ * cloudAi у людей ничего не решала — Claude, ChatGPT и Gemini тратил любой
+ * вошедший. Теперь список действует только на Kimi, GigaChat и YandexGPT.
+ */
+test('западная тройка не открывается списком — только отметкой cloudAi или владельцу', () => {
+  const config = require('../server/config');
+  const было = config.cloudAiOpenProviders;
+  config.cloudAiOpenProviders = new Set(['claude', 'chatgpt', 'gemini', 'kimi', 'gigachat', 'yandexgpt']);
+  try {
+    const u = require('../server/services/users');
+    const сотрудник = makeUser('Списочный', 'Артём', false);
+    const отмеченный = makeUser('Отмеченный', 'Глеб', true);
+    for (const p of ['claude', 'chatgpt', 'gemini']) {
+      assert.strictEqual(cloudAccess.openToEveryone(p), false, `${p} списком не открывается`);
+      assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), p), false, `${p} закрыт без отметки`);
+      assert.strictEqual(cloudAccess.userAllowed(u.byId(отмеченный), p), true, `${p} открыт по отметке`);
+    }
+    for (const p of ['kimi', 'gigachat', 'yandexgpt']) {
+      assert.strictEqual(cloudAccess.userAllowed(u.byId(сотрудник), p), true, `${p} по списку открыт всем`);
+    }
+    // владелец платформы — без отметки
+    assert.strictEqual(cloudAccess.userAllowed({ id: 'o', approved: true, owner: true }, 'claude'), true);
+  } finally { config.cloudAiOpenProviders = было; }
+});
+
 test('пустой список не открывает никого', () => {
   const config = require('../server/config');
   const было = config.cloudAiOpenProviders;
