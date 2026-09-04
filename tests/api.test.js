@@ -615,3 +615,115 @@ test('чертёж по слоям выгружается сразу после 
   assert.match(text, /AI_ЗДАНИЯ_КАПИТАЛЬНЫЕ/, 'здание — в своём слое');
   assert.ok(!/\n\s*8\nAI_СЕТИ\n/.test(text), 'в слое сетей контура больше нет — правка доехала до файла');
 });
+
+/* ---------------- границы входа ---------------- */
+
+test('границы участка: пустое тело без точек и документов — 400; недоступная модель — 503, не 500', async () => {
+  const s = await createSession();
+  const empty = await api(`/api/sessions/${s.id}/plan/parcel-source`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert.strictEqual(empty.status, 400, JSON.stringify(empty.body));
+  assert.match(empty.body.error, /points.*ГПЗУ/);
+  // документ есть — ветка «по документу» законна, но модель в mock-режиме недоступна: 503 с причиной
+  const up = await api(`/api/sessions/${s.id}/files`, { method: 'POST', headers: auth(s), body: uploadForm([['ГПЗУ.txt', 'Таблица координат: 1) 100 200', 'text/plain']]) });
+  assert.strictEqual(up.status, 200);
+  const byDoc = await api(`/api/sessions/${s.id}/plan/parcel-source`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' }, body: '{}',
+  });
+  assert.strictEqual(byDoc.status, 503, JSON.stringify(byDoc.body));
+  assert.match(byDoc.body.error, /Демо-режим/);
+  // точки от человека — модель не нужна, работает и без документов
+  const s2 = await createSession();
+  const manual = await api(`/api/sessions/${s2.id}/plan/parcel-source`, {
+    method: 'POST', headers: { ...auth(s2), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ points: [[0, 0], [100, 0], [100, 100], [0, 100]] }),
+  });
+  assert.strictEqual(manual.status, 200, JSON.stringify(manual.body));
+  assert.strictEqual(manual.body.by, 'user');
+});
+
+test('загрузка: неожиданное поле файла — 400 с подсказкой, а не 413', async () => {
+  const s = await createSession();
+  const fd = new FormData();
+  fd.append('file', new File(['задание'], 'ТЗ.txt', { type: 'text/plain' }));
+  const r = await api(`/api/sessions/${s.id}/files`, { method: 'POST', headers: auth(s), body: fd });
+  assert.strictEqual(r.status, 400, JSON.stringify(r.body));
+  assert.match(r.body.error, /Неожиданное поле файла.*files\/file/);
+});
+
+test('комментарий: нестроковое значение — 400', async () => {
+  const s = await createSession();
+  for (const comment of [5, { a: 1 }, ['x'], true]) {
+    const r = await api(`/api/sessions/${s.id}/comment`, {
+      method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' }, body: JSON.stringify({ comment }),
+    });
+    assert.strictEqual(r.status, 400, `comment=${JSON.stringify(comment)}: ${r.status}`);
+    assert.match(r.body.error, /строкой/);
+  }
+  const clear = await api(`/api/sessions/${s.id}/comment`, {
+    method: 'POST', headers: { ...auth(s), 'Content-Type': 'application/json' }, body: JSON.stringify({ comment: null }),
+  });
+  assert.strictEqual(clear.status, 200);
+});
+
+test('статистика: ?days отрицательный или не число — 400 «days: целое от 0»', async () => {
+  if (!userToken) userToken = await login();
+  for (const days of ['-1', 'abc', '1.5']) {
+    const r = await api(`/api/stats/overview?days=${days}`, { headers: asUser() });
+    assert.strictEqual(r.status, 400, `days=${days}: ${r.status} ${JSON.stringify(r.body)}`);
+    assert.match(r.body.error, /days: целое от 0/);
+  }
+  for (const days of ['0', '7', '400']) {
+    const r = await api(`/api/stats/overview?days=${days}`, { headers: asUser() });
+    assert.strictEqual(r.status, 200, `days=${days}: ${r.status} ${JSON.stringify(r.body)}`);
+  }
+  const dflt = await api('/api/stats/overview', { headers: asUser() });
+  assert.strictEqual(dflt.status, 200);
+});
+
+test('критическая инфраструктура: запись без классификации — «Не указана классификация объекта»', async () => {
+  if (!userToken) userToken = await login();
+  const r = await api('/api/critical-objects', {
+    method: 'POST', headers: { ...asUser(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceLayer: 'Слой без класса', validatedBy: 'Иван Петров' }),
+  });
+  assert.strictEqual(r.status, 400, JSON.stringify(r.body));
+  assert.strictEqual(r.body.error, 'Не указана классификация объекта');
+  const wrong = await api('/api/critical-objects', {
+    method: 'POST', headers: { ...asUser(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceLayer: 'Слой без класса', classification: 'выдумка', validatedBy: 'Иван Петров' }),
+  });
+  assert.strictEqual(wrong.status, 400);
+  assert.match(wrong.body.error, /Неизвестная классификация: выдумка/);
+});
+
+test('критическая инфраструктура: список только вошедшим, подпись подтвердившего — из входа, а не из тела', async () => {
+  if (!userToken) userToken = await login();
+  assert.strictEqual((await api('/api/critical-objects')).status, 401);
+  assert.strictEqual((await api('/api/cad/status')).status, 401);
+  const listed = await api('/api/critical-objects', { headers: asUser() });
+  assert.strictEqual(listed.status, 200);
+  const saved = await api('/api/critical-objects', {
+    method: 'POST', headers: { ...asUser(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sourceLayer: 'Слой подписи', classification: 'critical', validatedBy: 'Самозванец Ложный' }),
+  });
+  assert.strictEqual(saved.status, 201, JSON.stringify(saved.body));
+  const row = (saved.body.object || saved.body);
+  assert.ok(!JSON.stringify(saved.body).includes('Самозванец'), 'подпись из тела не должна сохраняться');
+  assert.ok(JSON.stringify(saved.body).includes('Тестов'), `подпись обязана быть ФИО вошедшего: ${JSON.stringify(row).slice(0, 200)}`);
+});
+
+test('заголовки безопасности: HSTS, Permissions-Policy, CSP без inline; 404-страница без инлайн-скрипта', async () => {
+  const res = await fetch(`${base}/api/health`);
+  assert.strictEqual(res.headers.get('strict-transport-security'), 'max-age=31536000; includeSubDomains');
+  assert.match(res.headers.get('permissions-policy') || '', /camera=\(\)/);
+  assert.match(res.headers.get('content-security-policy') || '', /script-src 'self'/);
+  const page = await fetch(`${base}/no-such-page`, { headers: { Accept: 'text/html' } });
+  assert.strictEqual(page.status, 404);
+  const html = await page.text();
+  assert.ok(!/<script>/.test(html), 'инлайн-скрипт на 404-странице режется CSP');
+  assert.match(html, /error-pages\/app-404\.js/);
+  const js = await fetch(`${base}/error-pages/app-404.js`);
+  assert.strictEqual(js.status, 200);
+});

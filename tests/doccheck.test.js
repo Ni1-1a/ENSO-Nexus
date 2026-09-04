@@ -11,6 +11,8 @@ process.env.ANTHROPIC_API_KEY = '';
 process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-doccheck-users-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 process.env.RATE_LIMIT_GENERAL = '1000';
 process.env.RATE_LIMIT_EXPENSIVE = '1000';
+// потолок текста документа — маленький, чтобы проверить 422 без мегабайтных тел
+process.env.DOC_CHAR_LIMIT = '100000';
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -295,17 +297,19 @@ test('замена A→B: без документов обеих моделей 
   ab._setCallFn(async () => { throw new Error('модель не должна была вызываться'); });
   try {
     await api(`/api/doccheck/ab/${id}/docs/a`, { method: 'PUT', ...json({ text: 'Паспорт A: расход 18 м3/ч', name: 'паспорт-A.txt' }) });
+    // отказ синхронный — 422 до постановки в фон, а не «failed» через опрос
     const started = await api(`/api/doccheck/ab/${id}/run`, { method: 'POST', ...json({}) });
-    assert.strictEqual(started.status, 202); // прогон стартует фоном…
-    let row = null;
-    for (let i = 0; i < 200; i++) {
-      const r = await api(`/api/doccheck/ab/${id}`, { headers: asUser() });
-      row = r.body.ab;
-      if (['done', 'failed'].includes(row.status)) break;
-      await new Promise((res) => setTimeout(res, 25));
-    }
-    assert.strictEqual(row.status, 'failed'); // …и честно падает с причиной
-    assert.match(row.error_text, /обеих моделей/);
+    assert.strictEqual(started.status, 422, JSON.stringify(started.body));
+    assert.match(started.body.error, /обеих моделей/);
+    let row = (await api(`/api/doccheck/ab/${id}`, { headers: asUser() })).body.ab;
+    assert.strictEqual(row.status, 'draft', 'отказ не должен ронять сравнение в failed');
+    // документы есть, модели нет — тоже 422 сразу
+    await api(`/api/doccheck/ab/${id}/docs/b`, { method: 'PUT', ...json({ text: 'Паспорт B: расход 20 м3/ч', name: 'паспорт-B.txt' }) });
+    const noModel = await api(`/api/doccheck/ab/${id}/run`, { method: 'POST', ...json({}) });
+    assert.strictEqual(noModel.status, 422, JSON.stringify(noModel.body));
+    assert.match(noModel.body.error, /Не выбрана модель/);
+    row = (await api(`/api/doccheck/ab/${id}`, { headers: asUser() })).body.ab;
+    assert.strictEqual(row.status, 'draft');
   } finally {
     ab._setCallFn(null);
   }
@@ -383,4 +387,112 @@ test('замена A→B: протокол с подменённой модел�
   } finally {
     ab._setCallFn(null);
   }
+});
+
+/* ---------------- границы входа ---------------- */
+
+function fileForm(name, content, type = 'application/octet-stream') {
+  const fd = new FormData();
+  fd.append('file', new File([content], name, { type }));
+  return fd;
+}
+
+test('проверка документа: документ больше потолка — 422 с числами (проверка и сравнение A→B)', async () => {
+  const created = await api('/api/doccheck/checks', { method: 'POST', ...json({ name: 'Большой (тест)' }) });
+  const id = created.body.check.id;
+  const big = 'x'.repeat(100001);
+  const text = await api(`/api/doccheck/checks/${id}/document`, { method: 'PUT', ...json({ text: big, name: 'big.txt' }) });
+  assert.strictEqual(text.status, 422, JSON.stringify(text.body).slice(0, 200));
+  assert.match(text.body.error, /слишком большой: 100001 символов при пределе 100000/);
+  const file = await api(`/api/doccheck/checks/${id}/document/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('big.txt', big, 'text/plain'),
+  });
+  assert.strictEqual(file.status, 422, JSON.stringify(file.body).slice(0, 200));
+  const c = await api(`/api/doccheck/checks/${id}`, { headers: asUser() });
+  assert.strictEqual(c.body.check.document_chars, 0, 'слишком большой документ не должен сохраниться');
+  assert.strictEqual(c.body.runs.length, 0, 'прогон не должен стартовать');
+
+  const abCreated = await api('/api/doccheck/ab', { method: 'POST', ...json({ name: 'Большое сравнение (тест)' }) });
+  const abId = abCreated.body.ab.id;
+  const abText = await api(`/api/doccheck/ab/${abId}/docs/a`, { method: 'PUT', ...json({ text: big, name: 'big.txt' }) });
+  assert.strictEqual(abText.status, 422, JSON.stringify(abText.body).slice(0, 200));
+  const abFile = await api(`/api/doccheck/ab/${abId}/docs/b/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('big.txt', big, 'text/plain'),
+  });
+  assert.strictEqual(abFile.status, 422, JSON.stringify(abFile.body).slice(0, 200));
+  const row = (await api(`/api/doccheck/ab/${abId}`, { headers: asUser() })).body.ab;
+  assert.strictEqual(row.a_chars, 0);
+  assert.strictEqual(row.b_chars, 0);
+});
+
+test('проверка документа: PATCH с пустым именем — 400 у проверки и у сравнения', async () => {
+  const created = await api('/api/doccheck/checks', { method: 'POST', ...json({ name: 'Имя (тест)' }) });
+  const id = created.body.check.id;
+  const abCreated = await api('/api/doccheck/ab', { method: 'POST', ...json({ name: 'Имя сравнения (тест)' }) });
+  const abId = abCreated.body.ab.id;
+  for (const name of [null, '   ', '']) {
+    const r = await api(`/api/doccheck/checks/${id}`, { method: 'PATCH', ...json({ name }) });
+    assert.strictEqual(r.status, 400, `checks name=${JSON.stringify(name)}: ${r.status} ${JSON.stringify(r.body)}`);
+    assert.match(r.body.error, /не может быть пустым/);
+    const a = await api(`/api/doccheck/ab/${abId}`, { method: 'PATCH', ...json({ name }) });
+    assert.strictEqual(a.status, 400, `ab name=${JSON.stringify(name)}: ${a.status} ${JSON.stringify(a.body)}`);
+    assert.match(a.body.error, /не может быть пустым/);
+  }
+  assert.strictEqual((await api(`/api/doccheck/checks/${id}`, { headers: asUser() })).body.check.name, 'Имя (тест)');
+  assert.strictEqual((await api(`/api/doccheck/ab/${abId}`, { headers: asUser() })).body.ab.name, 'Имя сравнения (тест)');
+});
+
+test('проверка документа: подделка под PDF/DOCX — 422 «не является», а не «скан»', async () => {
+  const created = await api('/api/doccheck/checks', { method: 'POST', ...json({ name: 'Подделка (тест)' }) });
+  const id = created.body.check.id;
+  const pdf = await api(`/api/doccheck/checks/${id}/document/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('скан.pdf', 'MZ это не pdf', 'application/pdf'),
+  });
+  assert.strictEqual(pdf.status, 422, JSON.stringify(pdf.body));
+  assert.match(pdf.body.error, /не является PDF/);
+  assert.doesNotMatch(pdf.body.error, /скан/);
+  const docx = await api(`/api/doccheck/checks/${id}/document/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('том.docx', 'просто текст', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+  });
+  assert.strictEqual(docx.status, 422, JSON.stringify(docx.body));
+  assert.match(docx.body.error, /DOCX|Word/);
+});
+
+test('замена A→B: очистка документов у несуществующего сравнения — 404', async () => {
+  const r = await api('/api/doccheck/ab/no-such-ab/docs/a', { method: 'DELETE', headers: asUser() });
+  assert.strictEqual(r.status, 404, JSON.stringify(r.body));
+  assert.match(r.body.error, /Сравнение не найдено/);
+});
+
+test('проверка документа: chosen_prompt_id сверяется с картой маршрутов, тип tz отсылает в «Анализ ТЗ»', async () => {
+  const created = await api('/api/doccheck/checks', { method: 'POST', ...json({ name: 'Промпт (тест)' }) });
+  const id = created.body.check.id;
+  const tz = await api(`/api/doccheck/checks/${id}`, { method: 'PATCH', ...json({ chosen_type: 'tz' }) });
+  assert.strictEqual(tz.status, 400, JSON.stringify(tz.body));
+  assert.match(tz.body.error, /Анализ ТЗ/);
+  // промпт чужого типа не подходит
+  const foreign = await api(`/api/doccheck/checks/${id}`, {
+    method: 'PATCH', ...json({ chosen_type: 'razdel-kzh', chosen_prompt_id: 'proekt-ar-nk-01' }),
+  });
+  assert.strictEqual(foreign.status, 400, JSON.stringify(foreign.body));
+  assert.match(foreign.body.error, /proekt-ar-nk-01/);
+  const unknown = await api(`/api/doccheck/checks/${id}`, {
+    method: 'PATCH', ...json({ chosen_type: 'razdel-kzh', chosen_prompt_id: 'no-such-prompt' }),
+  });
+  assert.strictEqual(unknown.status, 400, JSON.stringify(unknown.body));
+  // без типа промпт выбрать не по чему
+  const typeless = await api(`/api/doccheck/checks/${id}`, { method: 'PATCH', ...json({ chosen_prompt_id: 'dop-kr-k05' }) });
+  assert.strictEqual(typeless.status, 400, JSON.stringify(typeless.body));
+  // альтернатива своего типа — принимается; потом промпт можно сбросить пустой строкой
+  const ok = await api(`/api/doccheck/checks/${id}`, {
+    method: 'PATCH', ...json({ chosen_type: 'razdel-kzh', chosen_prompt_id: 'dop-kr-k05' }),
+  });
+  assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+  assert.strictEqual(ok.body.check.chosen_prompt_id, 'dop-kr-k05');
+  // тип уже сохранён — промпт по нему проверяется и без chosen_type в теле
+  const byStored = await api(`/api/doccheck/checks/${id}`, { method: 'PATCH', ...json({ chosen_prompt_id: 'dop-kr-k07' }) });
+  assert.strictEqual(byStored.status, 200, JSON.stringify(byStored.body));
+  const reset = await api(`/api/doccheck/checks/${id}`, { method: 'PATCH', ...json({ chosen_prompt_id: '' }) });
+  assert.strictEqual(reset.status, 200);
+  assert.strictEqual(reset.body.check.chosen_prompt_id, '');
 });

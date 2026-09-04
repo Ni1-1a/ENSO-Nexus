@@ -94,6 +94,9 @@ function classify(sourceLayer) {
  * потому что сослаться будет не на кого.
  */
 function remember({ sourceLayer, label, classification, basis = '', validatedBy, note = '' }) {
+  if (classification === undefined || classification === null || classification === '') {
+    throw new Error('Не указана классификация объекта');
+  }
   if (!CLASSIFICATIONS.includes(classification)) throw new Error(`Неизвестная классификация: ${classification}`);
   if (!String(validatedBy || '').trim()) throw new Error('Нужно указать, кто подтвердил классификацию');
   const signature = signatureOf(sourceLayer);

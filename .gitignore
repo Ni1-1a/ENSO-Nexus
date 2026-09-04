@@ -11,9 +11,13 @@ users.json
 users.json.tmp
 users.json.bak
 
-# Ключи шлюза локального ИИ на маке (mac/ai-gateway.js).
-# В репозиторий уезжает только gateway.example.json.
-mac/gateway.json
+# Дубликаты iCloud: при конфликте синхронизации рядом с файлом появляется
+# «имя 2.расш» (и папка «имя 2»). Это пустые заглушки — чтение виснет,
+# а маски вроде package*.json их подхватывают. В репозиторий им нельзя.
+* 2
+* 2.*
+.* 2*
+* 2/
 
 # Нормоконтроль / Этап 0-Б: сырьё из Telegram и авторизация MTProto.
 # Сессия = полный доступ к аккаунту Telegram — в репозиторий никогда.
@@ -21,3 +25,6 @@ mac/gateway.json
 нормоконтроль/tools/telegram/.venv/
 *.session
 *.session-journal
+
+# резервные копии scripts/backup.sh
+backups/

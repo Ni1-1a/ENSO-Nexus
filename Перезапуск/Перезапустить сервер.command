@@ -33,7 +33,7 @@ echo
 echo "Проверка… "
 sleep 3
 if curl -s -m 10 -o /dev/null http://localhost:3000/api/health; then
-  echo "✓ Сервер работает. Адрес: https://app.enso-nexus.ru"
+  echo "✓ Сервер работает. Адрес: https://enso-nexus.com (app.enso-nexus.ru тоже работает)"
 else
   echo "✗ Сервер не ответил — посмотрите logs/server.log"
 fi

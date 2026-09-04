@@ -98,4 +98,15 @@ function validateUpload({ originalName, buffer }, sessionFiles) {
   return { ok: true, ext };
 }
 
-module.exports = { sanitizeFilename, extOf, checkMagic, validateUpload };
+/**
+ * Потолок текста документа (ТЗ, проверка документа, замена A→B). Возвращает
+ * текст ошибки или null: раньше 26-мегабайтный txt принимался целиком и уходил
+ * в SQLite и в промпт, а отказа не было нигде.
+ */
+function docSizeError(text) {
+  const n = String(text == null ? '' : text).length;
+  if (n <= config.docCharLimit) return null;
+  return `Документ слишком большой: ${n} символов при пределе ${config.docCharLimit}`;
+}
+
+module.exports = { sanitizeFilename, extOf, checkMagic, validateUpload, docSizeError };

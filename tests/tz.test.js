@@ -11,6 +11,8 @@ process.env.ANTHROPIC_API_KEY = '';
 process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-tz-users-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 process.env.RATE_LIMIT_GENERAL = '1000';
 process.env.RATE_LIMIT_EXPENSIVE = '1000';
+// потолок текста документа — маленький, чтобы проверить 422 без мегабайтных тел
+process.env.DOC_CHAR_LIMIT = '100000';
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -293,4 +295,57 @@ test('анализ ТЗ: удаление проекта мягкое — про
   const runId = project.body.runs[0].id;
   const run = await api(`/api/tz/runs/${runId}`, { headers: asUser() });
   assert.strictEqual(run.status, 200);
+});
+
+/* ---------------- границы входа ---------------- */
+
+function fileForm(name, content, type = 'application/octet-stream') {
+  const fd = new FormData();
+  fd.append('file', new File([content], name, { type }));
+  return fd;
+}
+
+test('анализ ТЗ: документ больше потолка — 422 с числами, текстом и файлом', async () => {
+  const created = await api('/api/tz/projects', { method: 'POST', ...json({ name: 'Большой (тест)', checklist: 'production' }) });
+  const id = created.body.project.id;
+  const big = 'x'.repeat(100001);
+  const text = await api(`/api/tz/projects/${id}/document`, { method: 'PUT', ...json({ text: big, name: 'big.txt' }) });
+  assert.strictEqual(text.status, 422, JSON.stringify(text.body).slice(0, 200));
+  assert.match(text.body.error, /слишком большой: 100001 символов при пределе 100000/);
+  const file = await api(`/api/tz/projects/${id}/document/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('big.txt', big, 'text/plain'),
+  });
+  assert.strictEqual(file.status, 422, JSON.stringify(file.body).slice(0, 200));
+  assert.match(file.body.error, /слишком большой/);
+  // документ не сохранён
+  const p = await api(`/api/tz/projects/${id}`, { headers: asUser() });
+  assert.strictEqual(p.body.project.document_chars, 0);
+});
+
+test('анализ ТЗ: PATCH с пустым именем — 400, имя не тронуто', async () => {
+  const created = await api('/api/tz/projects', { method: 'POST', ...json({ name: 'Имя (тест)', checklist: 'production' }) });
+  const id = created.body.project.id;
+  for (const name of [null, '   ', '']) {
+    const r = await api(`/api/tz/projects/${id}`, { method: 'PATCH', ...json({ name }) });
+    assert.strictEqual(r.status, 400, `name=${JSON.stringify(name)}: ${r.status} ${JSON.stringify(r.body)}`);
+    assert.match(r.body.error, /не может быть пустым/);
+  }
+  const p = await api(`/api/tz/projects/${id}`, { headers: asUser() });
+  assert.strictEqual(p.body.project.name, 'Имя (тест)');
+});
+
+test('анализ ТЗ: подделка под PDF/DOCX — 422 «не является», а не «скан»', async () => {
+  const created = await api('/api/tz/projects', { method: 'POST', ...json({ name: 'Подделка (тест)', checklist: 'production' }) });
+  const id = created.body.project.id;
+  const pdf = await api(`/api/tz/projects/${id}/document/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('тз.pdf', 'MZ это не pdf', 'application/pdf'),
+  });
+  assert.strictEqual(pdf.status, 422, JSON.stringify(pdf.body));
+  assert.match(pdf.body.error, /не является PDF/);
+  assert.doesNotMatch(pdf.body.error, /скан/);
+  const docx = await api(`/api/tz/projects/${id}/document/file`, {
+    method: 'POST', headers: asUser(), body: fileForm('тз.docx', 'просто текст', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+  });
+  assert.strictEqual(docx.status, 422, JSON.stringify(docx.body));
+  assert.match(docx.body.error, /DOCX|Word/);
 });

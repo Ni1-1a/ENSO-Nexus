@@ -125,3 +125,20 @@ test('ггэ: полный check через HTTP — сводка, реквиз�
   assert.ok(data.forks.rules.length >= 3);
   assert.ok(data.notes.some((n) => /содержание разделов/.test(n)));
 });
+
+test('ггэ: fields — только объект «реквизит → значение»: массив, null и строка отвергаются 400', async () => {
+  const enter = await fetch(`${base}/api/auth/enter`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lastName: 'ГИП', firstName: 'Тест' }),
+  });
+  const token = (await enter.json()).token;
+  for (const fields of ['[1,2]', 'null', '"строка"', '42']) {
+    const fd = new FormData();
+    fd.append('files', new Blob([Buffer.from('Объект')]), 'Раздел ПД 1 ПЗ.txt');
+    fd.append('fields', fields);
+    const res = await fetch(`${base}/api/gge/check`, { method: 'POST', headers: { 'X-User-Token': token }, body: fd });
+    assert.strictEqual(res.status, 400, `fields=${fields}: ${res.status}`);
+    const body = await res.json();
+    assert.match(body.error, /fields.*JSON-объектом/);
+  }
+});

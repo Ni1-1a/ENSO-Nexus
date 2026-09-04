@@ -61,7 +61,7 @@ if [ "${1:-start}" = "stop" ]; then
 fi
 
 if [ -f logs/server.pid ] && kill -0 "$(cat logs/server.pid)" 2>/dev/null; then
-  echo "Уже запущено. Адрес: $PUBLIC_URL (старый enso-nexus.ru редиректит сюда)"
+  echo "Уже запущено. Адрес: $PUBLIC_URL (enso-nexus.ru тоже работает, без редиректа)"
   exit 0
 fi
 
@@ -71,7 +71,7 @@ if [ -z "$URL" ]; then
   echo "Не удалось подключить туннель — см. logs/tunnel.log"
   exit 1
 fi
-echo "Приложение опубликовано: $URL (старый https://enso-nexus.ru редиректит сюда)"
+echo "Приложение опубликовано: $URL (https://enso-nexus.ru тоже работает, без редиректа)"
 echo "Старая ссылка https://ni1-1a.github.io/ENSO-Nexus/ перенаправляет туда же"
 
 # watchdog: каждую минуту проверяет сервер и туннель, чинит упавшее

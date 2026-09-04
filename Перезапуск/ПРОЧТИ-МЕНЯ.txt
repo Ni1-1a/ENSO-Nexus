@@ -16,14 +16,14 @@ ENSO Nexus Pilot 1 — управление сервером
 
 Те же команды в Терминале вручную:
 
-  Запуск:       cd "…/Pilot 1/Web" && bash scripts/serve-public.sh
-  Перезапуск:   cd "…/Pilot 1/Web" && bash scripts/serve-public.sh stop && bash scripts/serve-public.sh
-  Остановка:    cd "…/Pilot 1/Web" && bash scripts/serve-public.sh stop
+  Запуск:       cd "…/ENSO-Nexus/enso-platform" && bash scripts/serve-public.sh
+  Перезапуск:   cd "…/ENSO-Nexus/enso-platform" && bash scripts/serve-public.sh stop && bash scripts/serve-public.sh
+  Остановка:    cd "…/ENSO-Nexus/enso-platform" && bash scripts/serve-public.sh stop
 
 Полезно знать
 -------------
-• Адрес приложения постоянный: https://app.enso-nexus.ru
-  (страница-вход: https://ni1-1a.github.io/ENSO-Nexus/ — покажет
+• Главный адрес приложения: https://enso-nexus.com
+  (https://app.enso-nexus.ru тоже работает, без редиректа; страница-вход: https://ni1-1a.github.io/ENSO-Nexus/ — покажет
   «Сервер недоступен», если Mac выключен, и сама дождётся включения).
 
 • Перезапуск ПРЕРЫВАЕТ выполняющийся анализ — дождитесь окончания
@@ -35,7 +35,7 @@ ENSO Nexus Pilot 1 — управление сервером
 • Для работы нужны: включённый Mac (скрипт не даёт ему уснуть,
   крышку не закрывать) и запущенный LM Studio (для локальной модели).
 
-• Журналы, если что-то пошло не так: папка Web/logs
+• Журналы, если что-то пошло не так: папка enso-platform/logs
   (server.log — сервер, tunnel.log — туннель, watchdog.log — надзор).
 
 Если файл .command не запускается двойным кликом (macOS может спросить

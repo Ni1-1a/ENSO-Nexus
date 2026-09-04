@@ -1,11 +1,11 @@
-# Деплой — ENSO Nexus Pilot 1 Web
+# Деплой — Enso-nexus
 
 ## Вариант A (текущий): свой компьютер + именной туннель Cloudflare
 
 Работает сейчас, без хостинга и подписок: сервер приложения крутится на этом Mac (AI — локальная модель в LM Studio), публичный HTTPS даёт именной туннель Cloudflare.
 
 ```bash
-cd "ENSO-Nexus/Pilot 1/Web"
+cd ENSO-Nexus/enso-platform
 bash scripts/serve-public.sh        # старт: печатает публичный URL (и в logs/public-url.txt)
 bash scripts/serve-public.sh stop   # остановка
 ```
@@ -14,11 +14,11 @@ bash scripts/serve-public.sh stop   # остановка
 
 Ограничения этого варианта:
 - сервис доступен, только пока компьютер включён и в сети;
-- LM Studio должен быть запущен с загруженной моделью (`qwen/qwen3-vl-30b`), иначе приложение честно перейдёт в демо-режим.
+- LM Studio должен быть запущен, а модели — в его списке: по умолчанию `qwen/qwen3.8-27b` для анализа и `qwen/qwen3-vl-30b` для распознавания сканов (`LOCAL_AI_MODEL` / `LOCAL_AI_OCR_MODEL` в `.env`; загружает их с нужным контекстом сам сервер, `services/model-manager.js`). Сервер LM Studio недоступен — приложение честно перейдёт в демо-режим.
 
 ### Постоянный адрес: свой домен
 
-**Главный адрес — https://enso-nexus.com** (плюс `www`). Прежние `enso-nexus.ru`, `www.enso-nexus.ru` и `app.enso-nexus.ru` отдают 301 на `.com`, поэтому уже розданные ссылки продолжают работать.
+**Главный адрес — https://enso-nexus.com** (плюс `www`). `enso-nexus.ru`, `www.enso-nexus.ru` и `app.enso-nexus.ru` тоже живые и отдают то же приложение — редиректа на `.com` нет (решение от 2026-08-12), уже розданные ссылки продолжают работать. Разница между адресами — в моделях: западное облако (Claude, ChatGPT, Gemini) живёт только на `.com` (`CLOUD_AI_HOSTS`, см. `CLAUDE.md`).
 
 Устройство: именной туннель `enso-nexus` (`73ae7cf2-b2be-47f1-bfc3-80241846e71c`), конфиг — `~/.cloudflared/config.yml`, ingress всех имён смотрит в `http://localhost:3000`. DNS обеих зон — в Cloudflare; апекс и `www` привязаны **проксируемым** CNAME на `<tunnel-id>.cfargotunnel.com` (без оранжевого облака такой CNAME не резолвится). Сертификаты управления зонами лежат раздельно: `~/.cloudflared/cert-ru.pem` и `cert.pem` — команда `route dns` пишет в ту зону, на которую выписан текущий `cert.pem`, и на чужом имени молча создаёт поддомен своей зоны.
 
@@ -42,11 +42,11 @@ cloudflared tunnel ingress validate
 
 **Render.com (free tier)** — рекомендованный вариант: один web-сервис обслуживает и API, и статику, HTTPS из коробки, деплой из git-репозитория по готовому [render.yaml](render.yaml). Альтернативы с тем же кодом: Railway, Fly.io, любой Docker-хостинг (готов [Dockerfile](Dockerfile)).
 
-> Требование платформе: постоянный Node-процесс (Node ≥ 22.5). Приложение не serverless-совместимо без доработки (SQLite + фоновые задачи).
+> Требование платформе: постоянный Node-процесс, Node ≥ 22.13 (`npm start` использует `--env-file-if-exists`, флаг появился в 22.9). Приложение не serverless-совместимо без доработки (SQLite + фоновые задачи). Сервер по умолчанию слушает только `127.0.0.1` — на любой платформе, где к процессу ходят снаружи контейнера, нужен `BIND_HOST=0.0.0.0` (в `render.yaml` и `Dockerfile` уже задан).
 
 ## Порядок деплоя (Render)
 
-1. Запушить папку `Web/` на GitHub. Локальный git-репозиторий уже создан (коммит готов). Через **GitHub Desktop**: File → Add Local Repository → выбрать `ENSO-Nexus/Pilot 1/Web` → Push (репозиторий `Ni1-1a/ENSO-Nexus` уже создан на GitHub; в диалоге публикации выбрать его или нажать Publish).
+1. Запушить папку `enso-platform/` на GitHub. Локальный git-репозиторий уже создан (коммит готов). Через **GitHub Desktop**: File → Add Local Repository → выбрать `ENSO-Nexus/enso-platform` → Push (репозиторий `Ni1-1a/ENSO-Nexus` уже создан на GitHub; в диалоге публикации выбрать его или нажать Publish).
    `.gitignore` уже исключает `node_modules/`, `data/`, `logs/`, `.env` — секреты и данные пользователей в git не попадают. **Не публикуйте всю папку ENSO-Nexus целиком**: в ней есть закрытые документы и файлы с паролями (например, `n8n-Docker/.nc_pg_password`).
 2. В [dashboard.render.com](https://dashboard.render.com): **New → Blueprint** → указать репозиторий. Render прочитает `render.yaml` и создаст сервис `enso-nexus-pilot1`.
    (Либо **New → Web Service** вручную: Build `npm ci`, Start `npm start`, Health check `/api/health`.)
@@ -62,6 +62,7 @@ cloudflared tunnel ingress validate
 |---|---|---|
 | `ANTHROPIC_API_KEY` | да (для боевого режима) | секрет из консоли Anthropic; задаётся только в дашборде платформы |
 | `ANTHROPIC_MODEL` | нет | по умолчанию `claude-opus-5` |
+| `BIND_HOST` | да (на платформе) | `0.0.0.0` — иначе процесс слушает только `127.0.0.1` и снаружи контейнера недоступен |
 | `DATA_DIR` | нет | на free-тарифе не задавать (данные в каталоге приложения); с persistent-диском — `/var/data` |
 | `SESSION_TTL_HOURS` | нет | 72 |
 | Остальные лимиты | нет | см. `.env.example` |
@@ -87,12 +88,35 @@ cloudflared tunnel ingress validate
 ## Docker-вариант (любая платформа)
 
 ```bash
-docker build -t enso-pilot1-web .
+docker build -t enso-platform .
 docker run -d -p 3000:3000 \
   -e ANTHROPIC_API_KEY=... \
-  -v pilot1-data:/app/data \
-  enso-pilot1-web
+  -v enso-data:/app/data \
+  enso-platform
 ```
+
+Образ — `node:22-bookworm-slim` с `poppler-utils` и `libredwg-tools`; `BIND_HOST=0.0.0.0`
+и `USERS_FILE=/app/data/users.json` выставлены в самом `Dockerfile`, так что список людей
+живёт на томе вместе с базой. В образ входят `server/`, `prompts/`, `public/`, `scripts/`,
+`нормоконтроль/` (правила, шаблон заключения, реестр НТД) и `библиотека-промптов/`.
+
+Что контейнер покрывает и чего нет:
+
+| Возможность | В контейнере |
+|---|---|
+| Анализ, диалог, план участка, зоны, варианты, DXF | да |
+| Модули «Анализ ТЗ», «Проверка документа», «Акты», «ГГЭ», «Датасет» | да |
+| Текстовый слой PDF, рендер страниц для распознавания | да — poppler в образе |
+| DWG → DXF в разборе чертежей и DWG «(конвертер)» на выгрузке | да — LibreDWG в образе |
+| Настоящий DWG через AutoCAD | нет — мост работает только на Mac с AutoCAD |
+| Распознавание сканов и локальные модели | только с внешним LM Studio: `LOCAL_AI_BASE_URL` на хост, сам образ моделей не содержит |
+| Комплект PDF / PNG схем (`services/render.js`) | нет — Playwright ставится без браузеров; `npx playwright install chromium` в образ не входит намеренно |
+| Нормоконтроль | нужен внешний PostgreSQL с pgvector: `NORMO_DATABASE_URL` |
+| GigaChat | нужен российский корневой сертификат: `NODE_EXTRA_CA_CERTS` |
+
+В `.gitignore` и в `COPY` явно исключены iCloud-дубликаты «имя 2.*»; отдельного
+`.dockerignore` нет, поэтому строить образ лучше из чистого git-checkout, а не из
+папки на iCloud-диске.
 
 ## Чек-лист проверки после деплоя
 
@@ -127,8 +151,9 @@ docker run -d -p 3000:3000 \
 ### Что нажать в панели Cloudflare
 
 1. Панель → домен `enso-nexus.com` → **Rules → Custom Errors** (в старых версиях
-   раздел называется **Custom Pages**). Для зоны `enso-nexus.ru` то же делать не нужно:
-   она отдаёт 301 на `.com` ещё на крае, до обращения к origin.
+   раздел называется **Custom Pages**). Для зоны `enso-nexus.ru` — то же самое:
+   редиректа на `.com` нет, её ошибки рисует её собственный край, и без настройки
+   гость на `.ru` увидит стандартную страницу Cloudflare.
 2. **500 class errors** → *Custom Pages* → указать
    `https://ni1-1a.github.io/ENSO-Nexus/error-5xx.html` → **Publish**.
 3. **1000 class errors** → указать
@@ -194,3 +219,21 @@ DXF на CP1251 сохраняет кириллические имена сло�
 `export_dwg` (выгрузка через `-WBLOCK`) и `create_hatch_holes` (кольцевые зоны
 с вырезом). Без расширения выгрузка не падает: платформа откатывается на
 штатную заливку и пишет об этом в примечаниях к результату.
+
+## Резервные копии
+
+`scripts/backup.sh` делает согласованную копию всего, что нельзя восстановить из кода:
+`app.db` (VACUUM INTO при работающем сервере), `users.json`, PostgreSQL нормоконтроля
+(`pg_dump`), файлы нормоконтроля, загрузки, результаты и архив сессий. Копии лежат в
+`backups/<дата-время>/` с правами 600; скрипт **ничего не удаляет** — все копии
+хранятся, за местом на диске следите сами.
+
+На VPS — раз в сутки ночью, от пользователя службы:
+
+```
+0 3 * * * cd /opt/enso && BACKUP_DIR=/opt/enso-backups ./scripts/backup.sh >> logs/backup.log 2>&1
+```
+
+Восстановление: остановить службу, положить `app.db` и `users.json` на место,
+`pg_restore -d enso_normo enso_normo.dump`, распаковать архивы в `data/`, запустить.
+Права: сервер при старте сам ставит 700 на `data/` и 600 на `app.db` и `users.json`.

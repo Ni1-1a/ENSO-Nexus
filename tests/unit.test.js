@@ -1149,7 +1149,10 @@ test('критическая инфраструктура: запись треб
   assert.throws(() => crit.remember({ sourceLayer: layer, classification: 'critical', validatedBy: '' }),
     /кто подтвердил/);
   assert.throws(() => crit.remember({ sourceLayer: layer, classification: 'выдумка', validatedBy: 'Иван' }),
-    /Неизвестная классификация/);
+    /Неизвестная классификация: выдумка/);
+  // отсутствие классификации — не «Неизвестная классификация: undefined», а внятная фраза
+  assert.throws(() => crit.remember({ sourceLayer: layer, validatedBy: 'Иван' }),
+    /^Error: Не указана классификация объекта$/);
 
   crit.remember({ sourceLayer: layer, label: 'тестовый объект', classification: 'critical', basis: 'СП', validatedBy: 'Иван Петров' });
   const found = crit.classify(layer);

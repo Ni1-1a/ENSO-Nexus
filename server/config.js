@@ -102,6 +102,17 @@ const config = {
   maxTotalUploadBytes: int('MAX_TOTAL_UPLOAD_MB', 60) * 1024 * 1024,
   maxFilesPerSession: int('MAX_FILES_PER_SESSION', 10),
   allowedExtensions: ['pdf', 'dwg', 'dxf', 'docx', 'txt', 'md', 'json', 'csv', 'png', 'jpg', 'jpeg'],
+  // Потолок текста ОДНОГО документа в модулях «Анализ ТЗ» и «Проверка документа»
+  // (символов): больше — честный 422 с числами, а не 26-мегабайтный txt в SQLite
+  docCharLimit: int('DOC_CHAR_LIMIT', 1_500_000),
+  /*
+   * Потолок ОДНОГО запроса с файлами (по Content-Length) и потолок содержимого
+   * одной записи zip (docx/xlsx) до распаковки. Аудит 02.09.2026: нормоконтроль
+   * и ГГЭ принимали 40 × 90 МБ в память, а adm-zip распаковывал document.xml без
+   * оглядки на заявленный размер — zip-бомба на 40 МБ давала строку на гигабайты.
+   */
+  uploadTotalBytes: int('UPLOAD_TOTAL_MB', 200) * 1024 * 1024,
+  zipEntryBytes: int('ZIP_ENTRY_MB', 50) * 1024 * 1024,
 
   // Dialogue / cost limits
   maxMessageLength: int('MAX_MESSAGE_LENGTH', 4000),
@@ -296,6 +307,12 @@ const config = {
   // Попытки входа лимитируются отдельно и жёстче обычных запросов:
   // вход без пароля — значит перебор имён должен упираться в лимит
   rateLimitAuth: int('RATE_LIMIT_AUTH', 12),
+  /*
+   * Срок жизни токена человека без активности, дней (аудит 02.09.2026: токен
+   * в браузере был бессрочным). Активность продлевает срок сама; после паузы
+   * дольше срока — просто вход заново по ФИО. 0 — бессрочно.
+   */
+  userTokenDays: int('USER_TOKEN_DAYS', 30),
 
   /**
    * Модуль «Датасет»: сбор обучающих пар для LoRA-дообучения локальных моделей.
