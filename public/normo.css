@@ -11,39 +11,14 @@
 
 /* ---------- экраны и путь ---------- */
 .nm-screen { display: none; }
-.nm-screen.active { display: block; animation: nm-in .22s ease; }
-@keyframes nm-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.nm-screen.active { display: block; }
 
-.nm-crumbs {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-  margin: -6px 0 14px;
-  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
-}
-.nm-crumbs a { color: var(--text-2); text-decoration: none; padding: 2px 4px; border-radius: 5px; }
-.nm-crumbs a:hover { color: var(--accent); background: var(--fill); }
-.nm-crumbs .sep { color: var(--text-3); opacity: .6; }
-.nm-crumbs .here { color: var(--text); }
-
-.nm-bar { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
-.nm-error { margin-top: 12px; font-size: 12.5px; color: var(--red); line-height: 1.5; }
+/* крошки, панель действий, ошибки, футер окна и кликабельные строки — общие блоки каркаса (shell.css) */
+.nm-bar { display: flex; flex-wrap: wrap; }
 
 /* ---------- список проектов ---------- */
-.nm-projects-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 14px;
-}
-.nm-proj-card {
-  display: flex; flex-direction: column; gap: 8px; text-align: left;
-  padding: 16px 18px; cursor: pointer;
-  background: var(--panel); border: 1px solid var(--stroke-soft);
-  border-radius: var(--radius); box-shadow: var(--shadow);
-  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
-}
-.nm-proj-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  box-shadow: var(--shadow-pop); transform: translateY(-1px);
-}
-.nm-proj-name { font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--text); }
+.nm-projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); margin-top: 6px; }
+.nm-proj-card { text-align: left; cursor: pointer; }
 .nm-proj-customer { font-size: 12.5px; color: var(--text-2); }
 .nm-proj-meta {
   display: flex; flex-wrap: wrap; gap: 4px 10px;
@@ -54,7 +29,7 @@
 /* ---------- бейджи и чипы ---------- */
 .nm-badge {
   display: inline-block; padding: 2px 9px; border-radius: 999px;
-  font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 11px; white-space: nowrap;
 }
 .nm-badge.ok      { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
 .nm-badge.warn    { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
@@ -76,26 +51,13 @@
 /* ---------- таблицы ---------- */
 .nm-table-wrap { overflow-x: auto; }
 .stat-table .nm-code { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
-tr.nm-row-link { cursor: pointer; transition: background .12s ease; }
-tr.nm-row-link:hover { background: var(--fill); }
-.stat-table td.nm-actions { text-align: right; white-space: nowrap; }
 
 /* ---------- версия: две карточки рядом ---------- */
-.nm-cols {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
-  margin-bottom: 16px;
-}
-.nm-cols .card + .card { margin-top: 0; }
-.nm-run-head { display: flex; align-items: center; gap: 10px; }
-.nm-run-head h2 { margin: 0; }
+.nm-cols { display: grid; grid-template-columns: 1fr 1fr; }
+/* шапки «прогон»/«замечания» — общие (shell.css, «круг 3») */
 .nm-run-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
 /* ---------- замечания ---------- */
-.nm-findings-head {
-  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-.nm-findings-head h2 { margin: 0; }
 .nm-counts { display: inline-flex; gap: 5px; flex-wrap: wrap; padding-bottom: 1px; }
 
 .nm-group { margin-top: 14px; }
@@ -162,9 +124,7 @@ tr.nm-row-link:hover { background: var(--fill); }
 .nm-f-status-label { font-size: 11px; color: var(--text-3); }
 
 /* ---------- журнал прогона ---------- */
-/* .card-fold из styles.css обнуляет padding карточки — содержимому возвращаем поля */
-#v-journal-card > .hint { padding: 0 16px; margin: 2px 0 8px; }
-#v-journal-card > .nm-table-wrap { padding: 0 16px 14px; }
+/* поля содержимого .card-fold задаёт общий каркас (shell.css) */
 .out-ok      { color: var(--green); }
 .out-finding { color: var(--accent); font-weight: 590; }
 .out-skipped { color: var(--text-3); }
@@ -202,15 +162,7 @@ tr.nm-row-link:hover { background: var(--fill); }
 .nm-check input { margin-top: 3px; accent-color: var(--accent); }
 .nm-check-title { display: block; font-size: 12.5px; font-weight: 590; color: var(--text); }
 .nm-check .hint { display: block; margin-top: 2px; }
-.nm-modal-foot {
-  display: flex; justify-content: flex-end; gap: 8px;
-  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--stroke-soft);
-}
 .nm-form .dropzone { margin-top: 2px; }
 
 /* ---------- телефон ---------- */
-@media (max-width: 720px) {
-  .nm-cols { grid-template-columns: 1fr; }
-  .nm-findings-head { align-items: flex-start; flex-direction: column; }
-  .nm-findings-head .nm-spacer { display: none; }
-}
+

@@ -78,7 +78,18 @@
     failed: 'ошибка',
   };
 
-  async function loadDocs() {
+  let docsInFlight = null;
+  let docsLoadedAt = 0;
+  /** Один запрос за раз, и не чаще раза в 5 с без force: клик по пункту меню (его дощёлкивает
+   *  главная при ?screen=dataset) и старт экрана не дублируют друг друга; после загрузки
+   *  документа или генерации список обновляется принудительно. */
+  function loadDocs(force = false) {
+    if (docsInFlight) return docsInFlight;
+    if (!force && Date.now() - docsLoadedAt < 5000) return Promise.resolve();
+    docsInFlight = loadDocsNow().finally(() => { docsInFlight = null; docsLoadedAt = Date.now(); });
+    return docsInFlight;
+  }
+  async function loadDocsNow() {
     try {
       const { documents } = await api('/documents');
       state.docs = documents;
@@ -87,7 +98,7 @@
       // пока идёт обработка — опрашиваем; экран невидим — не опрашиваем
       const busy = documents.some((d) => ['queued', 'chunking', 'generating'].includes(d.processing_status));
       clearTimeout(state.pollTimer);
-      if (busy && screenActive()) state.pollTimer = setTimeout(loadDocs, 2000);
+      if (busy && screenActive()) state.pollTimer = setTimeout(() => loadDocs(true), 2000);
     } catch (err) {
       $('ds-doc-list').innerHTML = `<p class="hint">${esc(err.message)}</p>`;
     }
@@ -138,7 +149,7 @@
       } else {
         window.appToast(`Файл принят: ${res.document.filename}. Нарезка и черновики идут в фоне.`, 'success');
       }
-      loadDocs();
+      loadDocs(true);
     } catch (err) {
       window.appToast(err.message, 'error');
     } finally {
@@ -473,9 +484,9 @@
         <td><span class="ds-status ds-status-${esc(it.status)}">${esc(PAIR_STATUS[it.status] || it.status)}</span></td>
         <td>${esc(it.validated_by_name)}</td>
         <td class="num">${it.validated_at ? new Date(it.validated_at).toLocaleString('ru-RU') : ''}</td>
-        <td class="ds-row-actions">
-          <button class="btn btn-quiet btn-sm" data-act="edit" type="button" title="Редактировать">✎</button>
-          <button class="btn btn-quiet btn-sm ds-del" data-act="delete" type="button" title="Удалить (мягко)">✕</button>
+        <td class="ds-row-actions row-actions">
+          <button class="btn btn-quiet btn-sm" data-act="edit" type="button" title="Редактировать" aria-label="Редактировать пару ${it.id}">✎</button>
+          <button class="btn btn-quiet btn-sm ds-del" data-act="delete" type="button" title="Удалить (мягко)" aria-label="Удалить пару ${it.id}">✕</button>
         </td>
       </tr>`).join('') || '<tr><td colspan="8" class="hint">Ничего не найдено</td></tr>';
 
@@ -639,7 +650,7 @@
         try {
           await api(`/documents/${docId}/generate`, { method: 'POST', ...json({}) });
           window.appToast('Генерация черновиков запущена в фоне', 'info');
-          loadDocs();
+          loadDocs(true);
         } catch (err) { window.appToast(err.message, 'error'); }
       }
     });
@@ -747,8 +758,13 @@
     }
     if (!window.appAuthHeaders) return;
     try {
-      const res = await fetch('/api/health', { headers: window.appAuthHeaders() });
-      const health = await res.json();
+      // /health уже получил каркас (EnsoShell.start) — лишний запрос на каждой загрузке не нужен
+      let health = null;
+      if (window.EnsoShell && window.EnsoShell.ready) { await window.EnsoShell.ready; health = window.EnsoShell.health; }
+      if (!health) {
+        const res = await fetch('/api/health', { headers: window.appAuthHeaders() });
+        health = await res.json();
+      }
       if (!health.dataset || !health.dataset.allowed) return; // пункт меню остаётся скрытым
       const limits = health.limits || {};
       if (limits.maxFileSizeMb) {
@@ -756,7 +772,9 @@
       }
       $('nav-dataset').hidden = false;
       wire();
-      loadDocs();
+      // список документов нужен только на экране датасета: на главной и в модулях его не тянем;
+      // клик по пункту меню (главная дощёлкивает его при ?screen=dataset) и этот старт не дублируются
+      if (screenActive() && !state.docs.length) loadDocs();
     } catch { /* сервер недоступен — экран входа платформы разберётся сам */ }
   }
 

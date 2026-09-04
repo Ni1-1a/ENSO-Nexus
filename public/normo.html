@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Нормоконтроль — Enso-nexus</title>
-  <meta name="description" content="Модуль нормоконтроля: проекты, версии разделов, автоматические проверки и замечания с привязкой к НТД">
+  <meta name="description" content="Модуль нормоконтроля: комплекты, версии разделов, автоматические проверки и замечания с привязкой к НТД">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="normo.css?v=4">
-  <link rel="stylesheet" href="shell.css?v=2">
+  <link rel="stylesheet" href="normo.css?v=7">
+  <link rel="stylesheet" href="shell.css?v=6">
   <!-- boot.js решает, что показать первым — вход или модуль; общий с платформой -->
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
@@ -25,7 +25,7 @@
       <section id="nm-s-projects" class="nm-screen active" aria-label="Комплекты документации">
         <header class="toolbar">
           <h1>Нормоконтроль</h1>
-          <p class="toolbar-sub">Проверка комплекта документации на соответствие нормативным требованиям</p>
+          <p class="toolbar-note">Проверка комплекта документации на соответствие нормативным требованиям</p>
         </header>
         <div class="nm-bar">
           <button id="nm-new-project" class="btn btn-primary" type="button">Новый комплект</button>
@@ -48,7 +48,7 @@
         <div id="pj-meta" class="nm-meta"></div>
         <div class="card">
           <h2>Состав разделов</h2>
-          <p class="hint">Клик по строке — история версий раздела. Загрузка новой версии сразу запускает автоматическую проверку.</p>
+          <p class="h2-note">Клик по строке — история версий раздела. Загрузка новой версии сразу запускает автоматическую проверку.</p>
           <div class="nm-table-wrap">
             <table class="stat-table nm-sections-table">
               <thead><tr>
@@ -58,6 +58,10 @@
             </table>
           </div>
           <p id="pj-sections-empty" class="empty-state" hidden>Состав разделов пуст.</p>
+        </div>
+        <div class="nm-bar">
+          <span class="nm-spacer"></span>
+          <button id="pj-delete" class="btn btn-danger btn-sm" type="button">Удалить комплект</button>
         </div>
         <p id="pj-error" class="nm-error" role="alert" hidden></p>
       </section>
@@ -124,7 +128,7 @@
             <div class="nm-run-actions">
               <button id="v-recheck" class="btn btn-quiet btn-sm" type="button"
                       title="Запустить проверку заново, не используя кэш прогона">Перепроверить</button>
-              <button id="v-report" class="btn btn-primary btn-sm" type="button">Скачать заключение (.docx)</button>
+              <button id="v-report" class="btn btn-primary btn-sm" type="button">Заключение (.docx)</button>
             </div>
           </div>
         </div>
@@ -165,7 +169,7 @@
               <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </summary>
-          <p class="hint">Каждое правило выборки — со своим исходом: молчаливых пропусков в прогоне нет.</p>
+          <p class="h2-note">Каждое правило выборки — со своим исходом: молчаливых пропусков в прогоне нет.</p>
           <div class="nm-table-wrap">
             <table class="stat-table">
               <thead><tr>
@@ -181,7 +185,7 @@
   </div>
 
   <!-- ══════════ Новый проект ══════════ -->
-  <div id="np-modal" class="modal-backdrop" hidden>
+  <div id="np-modal" class="modal-backdrop modal-tall" hidden>
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="np-title">
       <div class="modal-head">
         <h3 id="np-title">Новый комплект</h3>
@@ -217,7 +221,7 @@
         <div class="field">
           <label for="np-date">Дата начала разработки</label>
           <input id="np-date" type="date" required>
-          <p class="hint">От неё считается действовавшая редакция нормативов.</p>
+          <p class="h2-note">От неё считается действовавшая редакция нормативов.</p>
         </div>
         <label class="nm-check">
           <input id="np-local" type="checkbox">
@@ -238,7 +242,7 @@
   </div>
 
   <!-- ══════════ Загрузка версии раздела ══════════ -->
-  <div id="up-modal" class="modal-backdrop" hidden>
+  <div id="up-modal" class="modal-backdrop modal-tall" hidden>
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="up-title">
       <div class="modal-head">
         <h3 id="up-title">Загрузить версию</h3>
@@ -335,8 +339,8 @@
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <script src="auth.js?v=4"></script>
-  <script src="shell.js?v=2"></script>
-  <script src="normo.js?v=4"></script>
+  <script src="auth.js?v=5"></script>
+  <script src="shell.js?v=6"></script>
+  <script src="normo.js?v=8"></script>
 </body>
 </html>

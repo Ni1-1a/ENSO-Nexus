@@ -61,7 +61,7 @@
     el.dataset.type = type;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3500);
+    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
   }
 
   function fmtDateTime(value) {
@@ -130,8 +130,13 @@
 
   async function loadHealth() {
     try {
-      const res = await fetch('/api/health', { headers: userHeaders() });
-      const data = await res.json();
+      let data = null;
+      // каркас уже получил /health с теми же заголовками — второй запрос на загрузке ни к чему
+      if (window.EnsoShell && window.EnsoShell.ready) { await window.EnsoShell.ready; data = window.EnsoShell.health; }
+      if (!data) {
+        const res = await fetch('/api/health', { headers: userHeaders() });
+        data = await res.json();
+      }
       state.providers = (data.providers || []).filter((p) => p.id !== 'demo');
     } catch { state.providers = []; }
   }
@@ -199,9 +204,10 @@
     nav.innerHTML = '';
     if (!items || !items.length) { nav.hidden = true; return; }
     nav.hidden = false;
+    // разметка как у нормоконтроля: .sep между звеньями, .here — текущее
     items.forEach((it, i) => {
-      if (i) nav.append(' / ');
-      nav.append(it.href ? h('a', { href: it.href }, it.label) : h('span', {}, it.label));
+      if (i) nav.append(h('span', { class: 'sep' }, '/'));
+      nav.append(it.href ? h('a', { href: it.href }, it.label) : h('span', { class: 'here' }, it.label));
     });
   }
 
@@ -234,10 +240,10 @@
       for (const p of list) {
         const cl = state.checklists.find((c) => c.id === p.checklist);
         box.append(h('button', {
-          class: 'tz-project-card', type: 'button',
+          class: 'tz-project-card list-card', type: 'button',
           onclick: () => { location.hash = `#/p/${p.id}`; },
         },
-        h('h3', {}, p.name),
+        h('span', { class: 'list-card-name' }, p.name),
         h('span', { class: 'meta' }, cl ? cl.label : p.checklist),
         h('span', { class: 'meta' }, p.ai_provider
           ? `модель: ${p.ai_provider}${p.ai_model ? ` (${p.ai_model})` : ''}` : 'модель не выбрана'),
@@ -248,11 +254,13 @@
           p.run_count
             ? ['прогонов: ', String(p.run_count), ' · последний: ',
               h('span', { class: 'tz-badge', 'data-run': p.last_run_status || '' }, RUN_LABEL[p.last_run_status] || p.last_run_status || '—')]
-            : 'проверок ещё не было'),
+            : 'прогонов ещё не было'),
         ));
       }
     } catch (err) {
-      errBox.textContent = err.message;
+      box.innerHTML = '';
+      $('tz-projects-empty').hidden = true;
+      errBox.textContent = `Не удалось получить список заданий: ${err.message}`;
       errBox.hidden = false;
     }
   }
@@ -263,6 +271,10 @@
     showScreen('tz-s-project');
     const errBox = $('pj-error');
     errBox.hidden = true;
+    // экран не должен показывать прошлое задание, пока грузится новое
+    $('pj-name').textContent = 'Загрузка…';
+    $('pj-sub').textContent = '';
+    crumbs([{ label: 'Задания', href: '#/' }, { label: '…' }]);
     let data;
     try {
       data = await api(`/projects/${encodeURIComponent(id)}`);
@@ -273,7 +285,7 @@
         location.hash = '#/';
         return;
       }
-      errBox.textContent = err.message;
+      errBox.textContent = `Не удалось открыть задание: ${err.message}`;
       errBox.hidden = false;
       return;
     }
@@ -324,14 +336,17 @@
     tbody.innerHTML = '';
     $('pj-runs-empty').hidden = !!state.runs.length;
     for (const r of state.runs) {
-      tbody.append(h('tr', { class: 'tz-run-row', onclick: () => { location.hash = `#/r/${r.id}`; } },
+      tbody.append(h('tr', { class: 'row-link', onclick: () => { location.hash = `#/r/${r.id}`; } },
         h('td', {}, fmtDateTime(r.created_at)),
         h('td', {}, `${r.provider}${r.model ? ` (${r.model})` : ''}`),
         h('td', {}, h('span', { class: 'tz-badge', 'data-run': r.status },
           r.status === 'running' && r.progress ? r.progress : (RUN_LABEL[r.status] || r.status))),
         h('td', {}, r.verdict_status || (r.status === 'failed' ? (r.error_text || 'ошибка') : '—')),
         h('td', {}, r.readiness_percent != null ? `${r.readiness_percent} %` : '—'),
-        h('td', {}, h('a', { href: `#/r/${r.id}`, onclick: (e) => e.stopPropagation() }, 'открыть')),
+        h('td', { class: 'row-actions' }, h('button', {
+          class: 'btn btn-quiet btn-sm', type: 'button',
+          onclick: (e) => { e.stopPropagation(); location.hash = `#/r/${r.id}`; },
+        }, 'Открыть')),
       ));
     }
   }
@@ -404,12 +419,13 @@
   async function deleteProject() {
     const ok = await window.EnsoShell.confirm({
       title: `Удалить задание «${state.project.name}»?`,
-      message: 'Прогоны останутся в базе, но из списка задание исчезнет.',
+      message: 'Задание уйдёт из списка. Прогоны останутся в базе.',
       confirmText: 'Удалить', danger: true,
     });
     if (!ok) return;
     try {
       await api(`/projects/${encodeURIComponent(state.project.id)}`, { method: 'DELETE' });
+      state.project = null;
       toast('Задание удалено');
       location.hash = '#/';
     } catch (err) { toast(err.message, 'error'); }
@@ -420,18 +436,23 @@
   async function showRun(rid) {
     showScreen('tz-s-run');
     $('r-error').hidden = true;
+    $('r-title').textContent = 'Загрузка…';
+    $('r-sub').textContent = '';
+    crumbs([{ label: 'Задания', href: '#/' }, { label: '…' }]);
+    const myRoute = state.route; // ответ опроса, пришедший после ухода с экрана, экран не возвращает
     let data;
     try {
-      data = await api(`/runs/${rid}`);
+      data = await api(`/runs/${encodeURIComponent(rid)}`);
     } catch (err) {
-      $('r-error').textContent = err.message;
+      if (err.status === 404) { toast('Прогон не найден — возможно, удалён', 'error'); location.hash = '#/'; return; }
+      $('r-error').textContent = `Не удалось открыть результат: ${err.message}`;
       $('r-error').hidden = false;
       return;
     }
     state.run = data.run;
     const run = state.run;
-    crumbs([{ label: 'Задания', href: '#/' }, { label: 'Задание', href: `#/p/${run.project_id}` }, { label: 'Прогон' }]);
-    $('r-title').textContent = 'Проверка ТЗ';
+    crumbs([{ label: 'Задания', href: '#/' }, { label: run.project_name || 'Задание', href: `#/p/${run.project_id}` }, { label: 'Результат' }]);
+    $('r-title').textContent = 'Результат проверки';
     $('r-sub').textContent = `${fmtDateTime(run.created_at)} · ${run.provider}${run.model ? ` (${run.model})` : ''}${run.started_by_name ? ` · запустил: ${run.started_by_name}` : ''}`;
 
     if (['queued', 'running'].includes(run.status)) {
@@ -447,7 +468,7 @@
           } else {
             clearInterval(pollTimer);
             pollTimer = null;
-            await showRun(rid);
+            if (state.route === myRoute) await showRun(rid);
           }
         } catch { /* сеть мигнула — следующий тик */ }
       }, 2500);
@@ -576,11 +597,22 @@
     $('np-form').reset();
     $('np-error').hidden = true;
     fillChecklistSelect($('np-checklist'), 'production');
+    modalOpener = document.activeElement;
     fillProviderSelect($('np-provider'), $('np-model'), '', '', null);
+    // название — из проекта платформы, как в нормоконтроле
+    const pp = window.EnsoShell && window.EnsoShell.project;
+    if (pp) $('np-name').value = pp.full_name || pp.name || '';
     $('np-modal').hidden = false;
     $('np-name').focus();
+    $('np-name').select();
   }
-  function closeNewProject() { $('np-modal').hidden = true; }
+  let modalOpener = null;
+  function closeNewProject() {
+    $('np-modal').hidden = true;
+    if (modalOpener && modalOpener.isConnected && modalOpener.offsetParent !== null) modalOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    modalOpener = null;
+  }
 
   async function submitNewProject(e) {
     e.preventDefault();
@@ -588,6 +620,8 @@
     errBox.hidden = true;
     const name = $('np-name').value.trim();
     if (!name) { errBox.textContent = 'Нужно название задания.'; errBox.hidden = false; return; }
+    const btn = $('np-submit');
+    btn.disabled = true; // двойной Enter заводил два задания
     try {
       const data = await api('/projects', {
         method: 'POST',
@@ -604,6 +638,8 @@
     } catch (err) {
       errBox.textContent = err.message;
       errBox.hidden = false;
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -622,7 +658,12 @@
     $('np-close').addEventListener('click', closeNewProject);
     $('np-cancel').addEventListener('click', closeNewProject);
     $('np-modal').addEventListener('click', (e) => { if (e.target === $('np-modal')) closeNewProject(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('np-modal').hidden) closeNewProject(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || $('np-modal').hidden) return;
+      const dlg = $('shell-dialog');
+      if (dlg && !dlg.hidden) return; // диалог поверх окна закрывает каркас
+      closeNewProject();
+    });
 
     $('pj-save').addEventListener('click', saveSettings);
     $('pj-text-save').addEventListener('click', saveText);

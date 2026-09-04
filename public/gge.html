@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Контроль ГГЭ — Enso-nexus</title>
-  <meta name="description" content="Реквизитно-форматная проверка комплекта перед подачей в экспертизу: имена файлов по 783/пр, текстовый слой, посимвольная сверка реквизитов, развилки по датам.">
+  <meta name="description" content="Реквизитно-форматная проверка комплекта перед подачей в экспертизу: имена файлов по 783/пр, текстовый слой, посимвольная сверка реквизитов, развилки по датам">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="mod.css?v=3">
-  <link rel="stylesheet" href="shell.css?v=2">
+  <link rel="stylesheet" href="mod.css?v=6">
+  <link rel="stylesheet" href="shell.css?v=6">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M25 20h36l14 14v46H25z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M61 20v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M34 56l8 8 16-18' fill='none' stroke='%23B95740' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
@@ -20,13 +20,13 @@
     <main class="content" id="content">
       <header class="toolbar">
         <h1>Контроль ГГЭ</h1>
-        <p class="toolbar-sub">Отказ в приёме — это реквизиты, подписи и формат, а не инженерия. Проверка целиком детерминированная: имена по 783/пр, текстовый слой, посимвольная сверка реквизитов, развилки по датам. Нейросеть не участвует.</p>
+        <p class="toolbar-note">Отказ в приёме — это реквизиты, подписи и формат, а не инженерия. Проверка целиком детерминированная: имена по 783/пр, текстовый слой, посимвольная сверка реквизитов, развилки по датам. Нейросеть не участвует</p>
       </header>
 
       <div class="mod-cols">
         <div class="card">
           <h2>Файлы комплекта</h2>
-          <div id="f-dz" class="mod-dz-mini" tabindex="0" role="button">
+          <div id="f-dz" class="mod-dz-mini" tabindex="0" role="button" aria-label="Добавить файлы (PDF, DOCX, TXT) или перетащите сюда — можно несколько">
             <strong>Добавить файлы</strong> (PDF, DOCX, TXT) или перетащите сюда — можно несколько
           </div>
           <input id="f-input" type="file" accept=".pdf,.docx,.txt,.md" multiple hidden>
@@ -35,24 +35,24 @@
 
         <div class="card">
           <h2>Эталонные реквизиты</h2>
-          <p class="mod-h2-note">Как в задании на проектирование — посимвольно. Регистр, пробелы и кавычки значимы: «похоже» не считается совпадением.</p>
+          <p class="h2-note">Как в задании на проектирование — посимвольно. Регистр, пробелы и кавычки значимы: «похоже» не считается совпадением.</p>
           <div id="kv-box"></div>
           <button id="kv-add" class="btn btn-quiet btn-sm" type="button">Добавить реквизит</button>
-          <h2 style="margin-top: 18px;">Развилки по датам</h2>
+          <h2 class="mod-h2-gap">Развилки по датам</h2>
           <div class="mod-kv">
-            <input value="Дата утверждения задания" disabled>
-            <input id="dt-task" placeholder="ДД.ММ.ГГГГ">
+            <label for="dt-task" class="mod-kv-label">Дата утверждения задания</label>
+            <input id="dt-task" type="text" placeholder="ДД.ММ.ГГГГ">
           </div>
           <div class="mod-kv">
-            <input value="Дата данных ФГИС ЦС" disabled>
-            <input id="dt-fgis" placeholder="ДД.ММ.ГГГГ">
+            <label for="dt-fgis" class="mod-kv-label">Дата данных ФГИС ЦС</label>
+            <input id="dt-fgis" type="text" placeholder="ДД.ММ.ГГГГ">
           </div>
         </div>
       </div>
 
       <div class="mod-bar">
         <button id="gg-run" class="btn btn-primary" type="button">Проверить комплект</button>
-        <span id="gg-note" class="hint"></span>
+        <span id="gg-note" class="hint" aria-live="polite"></span>
       </div>
 
       <div id="gg-result" hidden>
@@ -73,7 +73,7 @@
 
         <div class="card">
           <h2>Развилки по датам</h2>
-          <p class="mod-h2-note">Правила регламента входного контроля v1.0; каждое объяснено сравнением дат, чужие даты не используются.</p>
+          <p class="h2-note">Правила регламента входного контроля v1.0; каждое объяснено сравнением дат, чужие даты не используются.</p>
           <ul id="gg-forks" class="mod-unverified"></ul>
           <ul id="gg-forks-missing" class="mod-unverified"></ul>
         </div>
@@ -98,7 +98,7 @@
         </svg>
       </div>
       <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
-      <p class="auth-sub">Модуль «Входной контроль ГГЭ»</p>
+      <p class="auth-sub">Модуль «Контроль ГГЭ»</p>
       <form id="auth-form" class="auth-form" novalidate>
         <label class="auth-field">
           <span>Фамилия</span>
@@ -133,8 +133,8 @@
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <script src="auth.js?v=4"></script>
-  <script src="shell.js?v=2"></script>
-  <script src="gge.js?v=2"></script>
+  <script src="auth.js?v=5"></script>
+  <script src="shell.js?v=6"></script>
+  <script src="gge.js?v=5"></script>
 </body>
 </html>

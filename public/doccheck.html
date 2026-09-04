@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Проверка документа — Enso-nexus</title>
-  <meta name="description" content="Загрузите документ — система определит, что это, запустит нужный проверочный промпт и соберёт перечень ссылок на НТД. Плюс протокол замены оборудования A → B.">
+  <meta name="description" content="Загрузите документ — система определит его тип, запустит нужный проверочный промпт и соберёт перечень ссылок на НТД, плюс протокол замены оборудования A → B">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="mod.css?v=3">
-  <link rel="stylesheet" href="shell.css?v=2">
+  <link rel="stylesheet" href="mod.css?v=6">
+  <link rel="stylesheet" href="shell.css?v=6">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M30 15h32l14 14v56H30z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M62 15v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><circle cx='46' cy='55' r='11' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M54 63l10 10' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/></svg>">
 </head>
@@ -24,7 +24,7 @@
       <section id="dc-s-list" class="mod-screen active" aria-label="Проверки документов">
         <header class="toolbar">
           <h1>Проверка документа</h1>
-          <p class="toolbar-sub">Загрузите документ — система определит, что это за объект, запустит нужный проверочный промпт из библиотеки канала и соберёт перечень ссылок на НТД</p>
+          <p class="toolbar-note">Загрузите документ — система определит его тип, запустит нужный проверочный промпт из библиотеки и соберёт перечень ссылок на НТД</p>
         </header>
         <div class="mod-bar">
           <button id="dc-new" class="btn btn-primary" type="button">Новая проверка</button>
@@ -36,12 +36,12 @@
           прогон запустится сам.
         </p>
 
-        <div class="mod-bar" style="margin-top: 34px;">
-          <h2 style="margin: 0;">Замена оборудования A → B</h2>
+        <div class="mod-bar mod-bar-section">
+          <h2 class="section-h2">Замена оборудования A → B</h2>
           <span class="mod-spacer"></span>
           <button id="ab-new" class="btn btn-quiet" type="button">Новое сравнение</button>
         </div>
-        <p class="mod-h2-note">Протокол сравнения по требованиям проекта: четыре статуса, источник у каждого значения, вердикт о допустимости замены не выдаётся — решение за инженером.</p>
+        <p class="h2-note">Протокол сравнения по требованиям проекта: четыре статуса, источник у каждого значения, вердикт о допустимости замены не выдаётся — решение за инженером.</p>
         <div id="ab-list" class="mod-grid" aria-live="polite"></div>
         <p id="ab-empty" class="empty-state" hidden>Сравнений ещё не было.</p>
         <p id="dc-list-error" class="mod-error" role="alert" hidden></p>
@@ -103,7 +103,7 @@
           <div class="mod-run-head">
             <h2>Прогоны</h2>
             <span class="mod-spacer"></span>
-            <button id="c-analyze" class="btn btn-primary" type="button">Проверить снова</button>
+            <button id="c-analyze" class="btn btn-primary" type="button">Проверить</button>
           </div>
           <div class="mod-table-wrap">
             <table class="stat-table">
@@ -117,7 +117,7 @@
         </div>
         <div class="mod-bar">
           <span class="mod-spacer"></span>
-          <button id="c-delete" class="btn btn-quiet btn-sm mod-danger" type="button">Удалить проверку</button>
+          <button id="c-delete" class="btn btn-danger btn-sm" type="button">Удалить проверку</button>
         </div>
         <p id="c-error" class="mod-error" role="alert" hidden></p>
       </section>
@@ -129,9 +129,9 @@
           <p id="r-sub" class="toolbar-sub"></p>
         </header>
 
-        <div id="r-progress" class="card" hidden>
+        <div id="r-progress" class="card mod-progress" hidden>
           <h2>Выполняется проверка</h2>
-          <p id="r-progress-text" class="hint">подготовка…</p>
+          <p id="r-progress-text" class="hint" aria-live="polite">подготовка…</p>
         </div>
 
         <div id="r-report" hidden>
@@ -142,13 +142,13 @@
           <div class="card" id="r-findings-card">
             <div class="mod-run-head">
               <h2>Находки</h2>
-              <span id="r-counts" class="hint"></span>
+              <span id="r-counts" class="findings-counts"></span>
             </div>
-            <p class="mod-h2-note">Стандарт и пункт показаны раздельно; пункт — гипотеза с флагом уверенности, действующую редакцию проверяет инженер. «Проверить» ≠ «переделать».</p>
+            <p class="h2-note">Стандарт и пункт показаны раздельно; пункт — гипотеза с флагом уверенности, действующую редакцию проверяет инженер. «Проверить» ≠ «переделать».</p>
             <div id="r-findings" aria-live="polite"></div>
             <p id="r-findings-empty" class="empty-state" hidden>Профильная проверка находок не дала или не запускалась.</p>
             <div id="r-missing" hidden>
-              <h3 style="margin-bottom: 4px;">Чего не хватило для полной проверки</h3>
+              <h3>Чего не хватило для полной проверки</h3>
               <ul id="r-missing-list" class="mod-unverified"></ul>
             </div>
           </div>
@@ -198,7 +198,7 @@
         <div class="mod-cols">
           <div class="card">
             <h2>Документы</h2>
-            <p class="mod-h2-note">Требования проекта/ТЗ, документы проектной модели A и предлагаемой модели B. Файлов может быть несколько на каждую группу.</p>
+            <p class="h2-note">Требования проекта/ТЗ, документы проектной модели A и предлагаемой модели B. Файлов может быть несколько на каждую группу.</p>
             <div id="ab-docs"></div>
           </div>
           <div class="card">
@@ -227,7 +227,7 @@
               <span class="mod-spacer"></span>
               <button id="ab-export" class="btn btn-quiet btn-sm" type="button">Протокол (.xlsx)</button>
             </div>
-            <p class="mod-h2-note">«Нет данных» ≠ «соответствует». Решение по каждой строке ставит инженер — оно уходит в выгрузку с ФИО и датой.</p>
+            <p class="h2-note">«Нет данных» ≠ «соответствует». Решение по каждой строке ставит инженер — оно уходит в выгрузку с ФИО и датой.</p>
             <div class="mod-table-wrap">
               <table class="stat-table">
                 <thead><tr>
@@ -245,7 +245,7 @@
         </div>
         <div class="mod-bar">
           <span class="mod-spacer"></span>
-          <button id="ab-delete" class="btn btn-quiet btn-sm mod-danger" type="button">Удалить сравнение</button>
+          <button id="ab-delete" class="btn btn-danger btn-sm" type="button">Удалить сравнение</button>
         </div>
         <p id="ab-error" class="mod-error" role="alert" hidden></p>
       </section>
@@ -332,8 +332,8 @@
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <script src="auth.js?v=4"></script>
-  <script src="shell.js?v=2"></script>
-  <script src="doccheck.js?v=3"></script>
+  <script src="auth.js?v=5"></script>
+  <script src="shell.js?v=6"></script>
+  <script src="doccheck.js?v=7"></script>
 </body>
 </html>

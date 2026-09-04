@@ -83,7 +83,7 @@
     el.dataset.type = type;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3500);
+    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
   }
 
   function fmtDate(value) {
@@ -239,10 +239,10 @@
   function projectCard(p) {
     const open = Number(p.open_findings) || 0;
     return h('button', {
-      class: 'nm-proj-card', type: 'button',
+      class: 'nm-proj-card list-card', type: 'button',
       onclick: () => { location.hash = `#/p/${p.id}`; },
     },
-    h('span', { class: 'nm-proj-name' }, p.name),
+    h('span', { class: 'list-card-name' }, p.name),
     p.customer ? h('span', { class: 'nm-proj-customer' }, p.customer) : null,
     h('span', { class: 'nm-proj-meta' },
       h('span', {}, `стадия ${p.stage}`),
@@ -275,10 +275,9 @@
     try {
       project = state.project = await fetchProject(id);
     } catch (err) {
+      if (err.status === 404 || err.status === 400) { toast('Комплект не найден — возможно, удалён', 'error'); location.hash = '#/'; return; }
       $('pj-name').textContent = 'Комплект не открылся';
-      errBox.textContent = err.status === 404
-        ? 'Такого комплекта нет — возможно, он удалён.'
-        : `Не удалось открыть комплект: ${err.message}`;
+      errBox.textContent = `Не удалось открыть комплект: ${err.message}`;
       errBox.hidden = false;
       return;
     }
@@ -301,7 +300,7 @@
     for (const s of project.sections || []) {
       const open = Number(s.open_findings) || 0;
       const row = h('tr', {
-        class: 'nm-row-link',
+        class: 'row-link',
         onclick: () => { location.hash = `#/p/${project.id}/s/${s.id}`; },
       },
       h('td', { class: 'nm-code' }, s.code),
@@ -312,11 +311,16 @@
       h('td', {}, s.current_version_id
         ? h('span', { class: `nm-badge ${open ? 'bad' : 'ok'}` }, String(open))
         : h('span', { class: 'nm-badge muted' }, '—')),
-      h('td', { class: 'nm-actions' },
+      h('td', { class: 'row-actions' },
         h('button', {
           class: 'btn btn-quiet btn-sm', type: 'button',
           onclick: (e) => { e.stopPropagation(); openUpload(project, s); },
-        }, 'Загрузить версию')));
+        }, 'Загрузить версию'),
+        ' ',
+        h('button', {
+          class: 'btn btn-quiet btn-sm', type: 'button',
+          onclick: (e) => { e.stopPropagation(); location.hash = `#/p/${project.id}/s/${s.id}`; },
+        }, 'Открыть')));
       tbody.append(row);
     }
   }
@@ -367,7 +371,7 @@
     for (const v of versions) {
       const open = Number(v.open_findings) || 0;
       tbody.append(h('tr', {
-        class: 'nm-row-link',
+        class: 'row-link',
         onclick: () => { location.hash = `#/v/${v.id}`; },
       },
       h('td', { class: 'nm-code' }, `№ ${v.version_no}${v.is_current ? ' · актуальная' : ''}`),
@@ -375,7 +379,7 @@
       h('td', {}, fmtDateTime(v.uploaded_at)),
       h('td', {}, v.author || '—'),
       h('td', {}, h('span', { class: `nm-badge ${open ? 'bad' : 'ok'}` }, String(open))),
-      h('td', { class: 'nm-actions' },
+      h('td', { class: 'row-actions' },
         h('button', {
           class: 'btn btn-quiet btn-sm', type: 'button',
           onclick: (e) => { e.stopPropagation(); location.hash = `#/v/${v.id}`; },
@@ -451,10 +455,9 @@
     try {
       ({ version } = await api(`/versions/${encodeURIComponent(versionId)}`));
     } catch (err) {
+      if (err.status === 404 || err.status === 400) { toast('Версия не найдена — возможно, её раздел удалили из состава', 'error'); location.hash = '#/'; return; }
       $('v-title').textContent = 'Версия не открылась';
-      errBox.textContent = err.status === 404
-        ? 'Такой версии нет — возможно, её раздел удалили из состава.'
-        : `Не удалось открыть версию: ${err.message}`;
+      errBox.textContent = `Не удалось открыть версию: ${err.message}`;
       errBox.hidden = false;
       return;
     }
@@ -596,8 +599,10 @@
       renderFindings();
     } catch (err) {
       box.innerHTML = '';
-      empty.hidden = false;
-      empty.textContent = `Замечания не загрузились: ${err.message}`;
+      empty.hidden = true;
+      const errBox = $('v-error');
+      errBox.textContent = `Замечания не загрузились: ${err.message}`;
+      errBox.hidden = false;
     }
   }
 
@@ -748,10 +753,17 @@
       $('np-customer').value = pp.client || '';
       if (['П', 'Р', 'П+Р'].includes(pp.stage)) $('np-stage').value = pp.stage;
     }
+    npOpener = document.activeElement;
     $('np-modal').hidden = false;
     setTimeout(() => $('np-name').focus(), 40);
   }
-  function closeNewProject() { $('np-modal').hidden = true; }
+  let npOpener = null;
+  function closeNewProject() {
+    $('np-modal').hidden = true;
+    if (npOpener && npOpener.isConnected && npOpener.offsetParent !== null) npOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    npOpener = null;
+  }
 
   async function submitNewProject(e) {
     e.preventDefault();
@@ -805,9 +817,18 @@
     if (u && !$('up-author').value) {
       $('up-author').value = `${u.lastName || ''} ${u.firstName || ''}`.trim();
     }
+    upOpener = document.activeElement;
     $('up-modal').hidden = false;
+    // фокус — в окно: первое поле формы (как у окна создания комплекта)
+    setTimeout(() => { const first = $('up-modal').querySelector('select, input:not([type="file"]), [tabindex="0"]'); if (first) first.focus(); }, 40);
   }
-  function closeUpload() { $('up-modal').hidden = true; state.uploadCtx = null; }
+  let upOpener = null;
+  function closeUpload() {
+    $('up-modal').hidden = true; state.uploadCtx = null;
+    if (upOpener && upOpener.isConnected && upOpener.offsetParent !== null) upOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    upOpener = null;
+  }
 
   function acceptFiles(list) {
     const next = [...upFiles, ...list];
@@ -885,11 +906,30 @@
 
   /* ---------------- запуск ---------------- */
 
+  /** Удаление комплекта — мягкое: версии и замечания остаются читаемыми по прямой ссылке. */
+  async function deleteProject() {
+    const p = state.project;
+    if (!p) return;
+    const ok = await window.EnsoShell.confirm({
+      title: `Удалить комплект «${p.name}»?`,
+      message: 'Комплект уйдёт из списка. Версии разделов и замечания останутся в базе.',
+      confirmText: 'Удалить', danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
+      state.project = null;
+      toast('Комплект удалён');
+      location.hash = '#/';
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
   function wireStatic() {
     $('nm-new-project').addEventListener('click', openNewProject);
     $('np-form').addEventListener('submit', submitNewProject);
     $('np-close').addEventListener('click', closeNewProject);
     $('np-cancel').addEventListener('click', closeNewProject);
+    $('pj-delete').addEventListener('click', deleteProject);
     $('np-modal').addEventListener('click', (e) => { if (e.target === $('np-modal')) closeNewProject(); });
 
     $('up-form').addEventListener('submit', submitUpload);
@@ -912,6 +952,8 @@
 
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      const dlg = $('shell-dialog');
+      if (dlg && !dlg.hidden) return; // диалог поверх окна закрывает каркас
       if (!$('np-modal').hidden) closeNewProject();
       else if (!$('up-modal').hidden) closeUpload();
     });

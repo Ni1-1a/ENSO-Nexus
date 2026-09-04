@@ -93,7 +93,9 @@
     return `${m.href}?${q.join('&')}`;
   }
   function platformHref(key) {
-    return `/?screen=${key}${state.projectId ? `&project=${encodeURIComponent(state.projectId)}` : ''}`;
+    // из модуля «Посадка здания» настройки открываются вместе с сессией: её разделы иначе недостижимы в видах B/C/D
+    const withModule = key === 'settings' && state.page === 'index' && state.module === 'site' ? '&module=site' : '';
+    return `/?screen=${key}${state.projectId ? `&project=${encodeURIComponent(state.projectId)}${withModule}` : ''}`;
   }
   function projectHref(pid) {
     // со страницы модуля — тот же модуль в другом проекте, с главной — стол проекта
@@ -118,7 +120,7 @@
       <div class="mobile-bar"><span class="brand-name">Enso-nexus</span></div>
       <button id="sidebar-scrim" class="sidebar-scrim" type="button" tabindex="-1" aria-label="Закрыть боковую панель" hidden></button>
       <aside class="sidebar" id="sidebar" aria-label="Проекты">
-        <div class="brand"><a class="brand-name" href="/" style="color:inherit;text-decoration:none">Enso-nexus</a></div>
+        <div class="brand"><a class="brand-name" href="/">Enso-nexus</a></div>
         <a id="sb-new-project" class="btn btn-quiet sb-new" href="/?new=1">${svg(ICONS.plus)}Новый проект</a>
         <div class="sb-projects">
           <p class="sessions-head">Проекты</p>
@@ -230,13 +232,14 @@
   /** Список не получен: пробуем снова, пока не получим; тогда уже решаем про редирект. */
   function retryLater() {
     setTimeout(async () => {
+      if (document.hidden) { retryLater(); return; }
       await reload();
       if (state.projectsError) { retryLater(); return; }
       if (state.page === 'module' && state.module && !state.project) goMissing();
     }, 10000);
   }
   function goMissing() {
-    location.replace(`/?goto=${encodeURIComponent(state.module)}&missing=${encodeURIComponent(state.projectId)}`);
+    location.replace(`/?goto=${encodeURIComponent(state.module)}${state.projectId ? `&missing=${encodeURIComponent(state.projectId)}` : ''}`);
   }
 
   async function start() {
@@ -256,6 +259,10 @@
       }
     }
     readyResolve(state);
+    // на страницах модулей точки и строки состояний тоже живые: раз в полминуты
+    if (state.page === 'module') {
+      setInterval(() => { if (!document.hidden) reload().catch(() => {}); }, 30000);
+    }
     return ready;
   }
 
@@ -295,7 +302,7 @@
     const model = h.model || '';
     // те же слова, что у бейджа на главной (app.js updateAiBadge)
     const text = mode === 'mock' ? 'ДЕМО-РЕЖИМ'
-      : mode === 'local' ? `Локальная модель: ${model}` : model || 'Облачная модель';
+      : mode === 'local' ? `Локальная модель: ${model}` : `AI: ${model || 'облачная модель'}`;
     $('ai-badge-text').textContent = text;
     badge.dataset.mode = mode;
     badge.title = `Действующая нейросеть: ${text}`;
@@ -314,7 +321,7 @@
         <span class="tm-name">${esc(p.name)}</span>
         <span class="tm-meta">${esc([p.stage, p.client].filter(Boolean).join(' · ') || p.full_name || '')}</span></a>`);
     }
-    if (!state.projects.length) items.push('<span class="tm-meta" style="padding:8px 10px">Проектов пока нет</span>');
+    if (!state.projects.length) items.push('<span class="tm-meta tm-empty">Проектов пока нет</span>');
     items.push('<div class="tm-sep"></div>', `<a href="/?new=1" id="tb-new-project"><span class="tm-name">Новый проект</span></a>`);
     menu.innerHTML = items.join('');
   }
@@ -324,7 +331,7 @@
     if (!list) return;
     list.innerHTML = state.projects.map((p) => `<li><a class="sb-item ${state.project && p.id === state.project.id ? 'active' : ''}" href="${esc(projectHref(p.id))}">
       <span class="sb-name">${esc(p.name)}</span>
-      <span class="sb-meta">${esc([p.stage, p.client].filter(Boolean).join(' · ') || p.full_name || '')}</span>
+      <span class="sb-meta">${p.id === 'legacy' ? 'ранние работы · общий' : esc([p.stage, p.client].filter(Boolean).join(' · ') || p.full_name || '')}</span>
       ${projectBar(p)}</a></li>`).join('');
   }
 
@@ -336,8 +343,9 @@
     nav.innerHTML = MODULES.map((m) => {
       const s = sum[m.key] || { state: 'none', line: '' };
       const active = state.module === m.key;
+      const label = `${m.n} · ${m.name}${s.line ? ` — ${s.line}` : ''}`;
       return `<a class="mn-item ${active ? 'active' : ''}" data-module="${m.key}" data-state="${esc(s.state)}"
-          href="${esc(moduleHref(m))}" title="${esc(`${m.n} · ${m.name}${s.line ? ` — ${s.line}` : ''}`)}" ${active ? 'aria-current="page"' : ''}>
+          href="${esc(moduleHref(m))}" title="${esc(label)}" aria-label="${esc(label)}" ${active ? 'aria-current="page"' : ''}>
         <span class="mn-head"><span class="mn-num">${m.n}</span><span class="mn-name">${esc(m.name)}</span></span>
         <span class="mn-body"><span class="mn-dot"></span><span class="mn-line">${esc(s.line)}</span></span>
       </a>`;
@@ -382,7 +390,8 @@
         <div class="ph-actions" id="ph-actions"></div>`;
       document.dispatchEvent(new CustomEvent('enso:head'));
     } else if (m) {
-      box.innerHTML = `<p class="ph-line">${esc(p.name)} · модуль ${m.n} из 6</p>`;
+      box.innerHTML = `<p class="ph-line">${esc(p.name)} · модуль ${m.n} из 6</p>${state.projectsError
+        ? '<p class="ph-line ph-error">Сервер сейчас недоступен — сводка не обновляется, повторю через полминуты</p>' : ''}`;
     } else {
       box.innerHTML = '';
     }
@@ -418,12 +427,13 @@
   function renderTitle() {
     const m = activeModule();
     const parts = [];
-    if (m && state.project) parts.push(m.name);
-    else if (state.screen === 'settings') parts.push('Настройки');
+    // экран платформы (настройки с module=site — тоже) называется своим именем, а не модулем
+    if (state.screen === 'settings') parts.push('Настройки');
     else if (state.screen === 'stats') parts.push('Статистика');
     else if (state.screen === 'dataset') parts.push('Датасет');
+    else if (m && state.project) parts.push(m.name);
     if (state.project) parts.push(state.project.name);
-    else if (!m) parts.push('Проекты');
+    else if (!m && !state.projectId) parts.push('Проекты');
     parts.push('Enso-nexus');
     document.title = parts.join(' — ');
   }
@@ -449,7 +459,7 @@
       if (signOut) {
         signOut.addEventListener('click', async () => {
           // то же подтверждение, что на главной (app.js signOut)
-          const ok = await confirmDialog({ title: 'Выйти из записи?', message: 'Проекты и загруженные файлы останутся на месте.', confirmText: 'Выйти' });
+          const ok = await confirmDialog({ title: 'Выйти из записи?', message: 'Проекты и загруженные файлы останутся на месте — они вернутся при следующем входе.', confirmText: 'Выйти' });
           if (ok && window.Auth) window.Auth.signOut();
         });
       }
@@ -490,6 +500,7 @@
 
   /* ---------------- диалог подтверждения/ввода: один на все страницы ---------------- */
 
+  let dialogOpener = null;
   let dialogResolve = null;
   function ensureDialog() {
     let box = $('shell-dialog');
@@ -505,26 +516,36 @@
         <div id="shell-dialog-fields" class="dialog-fields"></div>
       </form>
       <div class="dialog-foot">
+        <button id="shell-dialog-extra" class="btn btn-danger dialog-extra" type="button" hidden></button>
         <button id="shell-dialog-cancel" class="btn btn-quiet" type="button">Отмена</button>
         <button id="shell-dialog-ok" class="btn btn-primary" type="button">ОК</button>
       </div></div>`;
     document.body.append(box);
-    const close = (result) => { box.hidden = true; if (dialogResolve) { dialogResolve(result); dialogResolve = null; } };
+    const close = (result) => {
+      box.hidden = true;
+      if (dialogResolve) { dialogResolve(result); dialogResolve = null; }
+      // фокус возвращается туда, откуда окно открыли
+      if (dialogOpener && dialogOpener.isConnected && dialogOpener.offsetParent !== null) dialogOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+      dialogOpener = null;
+    };
     const values = () => { const out = {}; for (const inp of box.querySelectorAll('input')) out[inp.dataset.key] = inp.value.trim(); return out; };
     $('shell-dialog-ok').addEventListener('click', () => close(values()));
     $('shell-dialog-cancel').addEventListener('click', () => close(null));
+    $('shell-dialog-extra').addEventListener('click', () => close('extra'));
     $('shell-dialog-form').addEventListener('submit', (e) => { e.preventDefault(); close(values()); });
     box.addEventListener('click', (e) => { if (e.target === box) close(null); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !box.hidden) close(null); });
     return box;
   }
   /** Тот же контракт, что appDialog в app.js: null — отмена, объект полей — подтверждение. */
-  function dialog({ title, message = '', fields = [], confirmText = 'ОК', cancelText = 'Отмена', danger = false }) {
-    if (window.appDialog) return window.appDialog({ title, message, fields, confirmText, cancelText, danger });
+  function dialog({ title, message = '', fields = [], confirmText = 'ОК', cancelText = 'Отмена', danger = false, extraText = '' }) {
+    if (window.appDialog) return window.appDialog({ title, message, fields, confirmText, cancelText, danger, extraText });
     const box = ensureDialog();
     return new Promise((resolve) => {
       if (dialogResolve) dialogResolve(null);
       dialogResolve = resolve;
+      dialogOpener = document.activeElement;
       $('shell-dialog-title').textContent = title;
       $('shell-dialog-message').textContent = message;
       $('shell-dialog-message').hidden = !message;
@@ -534,7 +555,7 @@
         const label = document.createElement('label');
         const caption = document.createElement('span'); caption.textContent = f.label || '';
         const input = document.createElement('input');
-        input.type = 'text'; input.value = f.value || ''; input.maxLength = f.maxLength || 300;
+        input.type = 'text'; input.value = f.value || ''; input.maxLength = f.maxLength || 120;
         if (f.placeholder) input.placeholder = f.placeholder;
         input.dataset.key = f.key || String(i);
         label.append(caption, input); wrap.append(label);
@@ -542,11 +563,14 @@
       wrap.hidden = !fields.length;
       $('shell-dialog-ok').textContent = confirmText;
       $('shell-dialog-cancel').textContent = cancelText;
+      $('shell-dialog-extra').textContent = extraText;
+      $('shell-dialog-extra').hidden = !extraText;
       $('shell-dialog-ok').classList.toggle('btn-danger', danger);
       $('shell-dialog-ok').classList.toggle('btn-primary', !danger);
       box.hidden = false;
       const first = wrap.querySelector('input');
-      if (first) { first.focus(); first.select(); } else $('shell-dialog-ok').focus();
+      // в разрушающем окне Enter не должен удалять: фокус на «Отмена»
+      if (first) { first.focus(); first.select(); } else (danger ? $('shell-dialog-cancel') : $('shell-dialog-ok')).focus();
     });
   }
   const confirmDialog = async (opts) => (await dialog(opts)) !== null;

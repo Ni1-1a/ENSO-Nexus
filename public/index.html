@@ -7,7 +7,7 @@
   <meta name="description" content="Платформа автоматического проектирования: анализ исходных данных, запретные зоны, посадка здания на участок и выгрузка чертежа">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="shell.css?v=2">
+  <link rel="stylesheet" href="shell.css?v=6">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
 </head>
@@ -55,7 +55,7 @@
       <section id="screen-projects" class="screen" aria-label="Проекты">
         <header class="toolbar ph-toolbar">
           <div>
-            <p class="toolbar-sub" id="projects-eyebrow">Enso-nexus</p>
+            <p class="ph-eyebrow" id="projects-eyebrow">Enso-nexus</p>
             <h1>Проекты</h1>
           </div>
           <button id="btn-new-project" class="btn btn-primary" type="button">Новый проект</button>
@@ -77,7 +77,7 @@
       <section id="screen-analysis" class="screen" aria-label="Посадка здания на участок">
         <header class="toolbar">
           <h1>Посадка здания</h1>
-          <p class="toolbar-sub">Исходные данные, ограничения, пятно застройки и чертёж</p>
+          <p class="toolbar-note">Исходные данные, ограничения, пятно застройки и чертёж</p>
         </header>
 
         <!-- Сессии посадки этого проекта: несколько попыток параллельно.
@@ -85,7 +85,7 @@
         <div class="sessions-strip" id="sessions-strip">
           <span class="sessions-head">Сессии</span>
           <ul id="sessions-list" class="sessions-list" title="Клик — открыть · двойной клик или «⋮» — действия"></ul>
-          <button id="btn-new-session-side" class="btn btn-quiet btn-sm" type="button">+ Новая сессия</button>
+          <button id="btn-new-session-side" class="btn btn-quiet btn-sm" type="button">Новая сессия</button>
         </div>
 
         <div class="columns">
@@ -219,7 +219,7 @@
       <section id="screen-dataset" class="screen" aria-label="Датасет для дообучения моделей">
         <header class="toolbar">
           <h1>Датасет</h1>
-          <p class="toolbar-sub">Пары «вопрос → эталонный ответ» из документов, каждая подтверждается человеком</p>
+          <p class="toolbar-note">Пары «вопрос → эталонный ответ» из документов, каждая подтверждается человеком</p>
         </header>
 
         <div class="ds-tabs" role="tablist">
@@ -408,7 +408,7 @@
       <section id="screen-stats" class="screen" aria-label="Статистика расхода и остатки">
         <header class="toolbar">
           <h1>Статистика</h1>
-          <p class="toolbar-sub">Расход на модели, остатки на счетах и доступность моделей</p>
+          <p class="toolbar-note">Расход на модели, остатки на счетах и доступность моделей</p>
         </header>
 
         <div class="stats-bar">
@@ -441,7 +441,7 @@
       <section id="screen-settings" class="screen" aria-label="Настройки">
         <header class="toolbar">
           <h1>Настройки</h1>
-          <p class="toolbar-sub">Этапы, нейросеть, база знаний, сравнение и оформление</p>
+          <p class="toolbar-note">Вид и оформление платформы; этапы, нейросеть, база знаний и сравнение — у сессии посадки</p>
         </header>
         <!-- без сессии посадки её разделы (этапы, нейросеть, база, сравнение) скрыты -->
         <p id="settings-no-session" class="hint" hidden>Этапы, нейросеть, база знаний и сравнение моделей — настройки сессии: откройте её в модуле «Посадка здания». Здесь — вид и оформление платформы.</p>
@@ -821,7 +821,7 @@
         <p id="pm-error" class="pf-error" role="alert" hidden></p>
         <div class="pf-foot">
           <button id="pm-delete" class="btn btn-danger dialog-extra" type="button" hidden>Удалить проект</button>
-          <button id="pm-cancel" class="btn btn-ghost" type="button">Отмена</button>
+          <button id="pm-cancel" class="btn btn-quiet" type="button">Отмена</button>
           <button id="pm-submit" class="btn btn-primary" type="submit">Создать проект</button>
         </div>
       </form>
@@ -841,13 +841,13 @@
     </div>
   </div>
 
-  <script src="auth.js?v=4"></script>
-  <script src="shell.js?v=2"></script>
+  <script src="auth.js?v=5"></script>
+  <script src="shell.js?v=6"></script>
   <script src="geo-transform.js?v=1"></script>
   <script src="zone-style.js?v=4"></script>
-  <script src="viewer.js?v=19"></script>
-  <script src="app.js?v=57"></script>
-  <script src="dataset.js?v=1"></script>
-  <script src="hub.js?v=2"></script>
+  <script src="viewer.js?v=20"></script>
+  <script src="app.js?v=60"></script>
+  <script src="dataset.js?v=5"></script>
+  <script src="hub.js?v=5"></script>
 </body>
 </html>

@@ -36,7 +36,7 @@
     el.dataset.type = type;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3500);
+    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
   }
 
   function userHeaders() {
@@ -51,9 +51,12 @@
     const ul = $('f-list');
     ul.innerHTML = '';
     state.files.forEach((f, i) => {
-      ul.append(h('li', {},
-        `${f.name} (${Math.round(f.size / 1024)} КБ) `,
-        h('a', { href: '#', onclick: (e) => { e.preventDefault(); state.files.splice(i, 1); renderFiles(); } }, 'убрать')));
+      ul.append(h('li', { class: 'file-item' },
+        h('span', {}, `${f.name} (${f.size < 1024 ? 'менее 1' : Math.round(f.size / 1024)} КБ)`),
+        h('button', {
+          class: 'icon-btn', type: 'button', title: 'Убрать', 'aria-label': `Убрать ${f.name}`,
+          onclick: () => { state.files.splice(i, 1); renderFiles(); },
+        }, '×')));
     });
   }
 
@@ -66,8 +69,8 @@
 
   function addKvRow(name = '', value = '') {
     const row = h('div', { class: 'mod-kv' },
-      h('input', { placeholder: 'Реквизит', value: name }),
-      h('input', { placeholder: 'Эталонное значение (посимвольно)', value }));
+      h('input', { type: 'text', placeholder: 'Реквизит', value: name, 'aria-label': 'Название реквизита' }),
+      h('input', { type: 'text', placeholder: 'Эталонное значение (посимвольно)', value, 'aria-label': 'Эталонное значение реквизита' }));
     $('kv-box').append(row);
   }
 
@@ -88,6 +91,7 @@
     const btn = $('gg-run');
     if (!state.files.length) { toast('Добавьте хотя бы один файл комплекта', 'error'); return; }
     btn.disabled = true;
+    if ($('gg-error')) $('gg-error').hidden = true;
     $('gg-note').textContent = 'проверка идёт…';
     try {
       const fd = new FormData();
@@ -112,11 +116,20 @@
       }
       renderResult(await res.json());
     } catch (err) {
-      toast(err.message, 'error');
+      // сводку пишет renderResult — гасим её только при ошибке (finally стирал её всегда, п.1 круга 2)
+      $('gg-note').textContent = '';
+      $('gg-result').hidden = true; // прежний отчёт не должен выглядеть результатом упавшего прогона
+      showError(err.message);
     } finally {
       btn.disabled = false;
-      $('gg-note').textContent = '';
     }
+  }
+
+  /** Ошибка живёт в постоянном блоке страницы, тост — вдобавок (как в tz/doccheck/normo). */
+  function showError(msg) {
+    const box = $('gg-error');
+    if (box) { box.textContent = msg; box.hidden = false; }
+    toast(msg, 'error');
   }
 
   function renderResult(data) {

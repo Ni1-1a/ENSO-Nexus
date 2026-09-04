@@ -75,16 +75,16 @@
     const last = MODULES.map((m) => ({ m, s: sum[m.key] })).filter((x) => x.s && x.s.at).sort((a, b) => (a.s.at < b.s.at ? 1 : -1))[0];
     const href = gotoModule ? S.moduleHref(gotoModule.key, p.id) : S.projectHref(p.id);
     return `<div class="proj-card ${p.id === 'legacy' ? 'pc-legacy' : ''}" data-id="${esc(p.id)}" data-n="${i + 1}">
-      <a class="pc-link" href="${esc(href)}" aria-label="Открыть проект ${esc(p.name)}"></a>
+      <a class="pc-link" href="${esc(href)}" aria-label="${gotoModule ? esc(`Открыть «${gotoModule.name}» в проекте ${p.name}`) : `Открыть проект ${esc(p.name)}`}"></a>
       <div class="pc-head">
         <div><div class="pc-name">${esc(p.name)}</div>${p.full_name ? `<div class="pc-full">${esc(p.full_name)}</div>` : ''}</div>
-        ${p.stage ? `<span class="pill pill-acc pc-stage">${esc(p.stage)}</span>` : '<span class="pc-stage"></span>'}
+        ${p.id === 'legacy' ? '<span class="pill pill-soft pc-stage">ранние работы</span>' : p.stage ? `<span class="pill pill-acc pc-stage">${esc(p.stage)}</span>` : '<span class="pc-stage"></span>'}
       </div>
       <div class="pc-meta">${esc([p.client || (p.id === 'legacy' ? '' : 'заказчик не указан'), p.created_at ? `начат ${S.fmtDate(p.created_at)}` : ''].filter(Boolean).join(' · '))}</div>
       <div class="pc-foot">
         <span class="pc-bar">${MODULES.map((m) => `<span data-state="${esc((sum[m.key] && sum[m.key].state) || 'none')}"></span>`).join('')}</span>
         <div class="pc-line">
-          <span>${startedN ? `${startedN} из 6 модулей начаты` : 'модули не начаты'}${last ? ` · последнее: ${esc(last.m.name.toLowerCase())}, ${S.fmtDate(last.s.at)}` : ''}</span>
+          <span>${startedN ? `${startedN} из 6 модулей начаты` : 'модули не начаты'}${last ? ` · последнее: ${esc(lowerFirst(last.m.name))}, ${S.fmtDate(last.s.at)}` : ''}</span>
           <span class="pc-open">${gotoModule ? `Открыть «${esc(gotoModule.name)}»` : 'Открыть'} ${svg(ICONS.arrowRight)}</span>
         </div>
       </div>
@@ -95,6 +95,7 @@
   function renderProjects() {
     const list = $('projects-list');
     if (!list) return;
+    const keep = focusKey(list);
     const projects = S.projects || [];
     // список не получен — это не «проектов нет», а ошибка связи
     $('projects-empty').hidden = !!projects.length || S.projectsError;
@@ -105,6 +106,7 @@
         <span class="pn-title">Новый проект</span>
         <span class="pn-sub">Название, стадия, заказчик — и модули появятся сами</span>
       </button>`;
+    refocus(list, keep);
     const note = $('projects-goto');
     if (S.projectsError && !projects.length) {
       note.textContent = 'Список проектов не получен — сервер недоступен. Повторю через полминуты.';
@@ -115,6 +117,8 @@
     } else note.hidden = true;
   }
 
+  /** «Контроль ГГЭ» → «контроль ГГЭ»: строчной становится только первая буква, аббревиатуры целы. */
+  function lowerFirst(str) { return str ? str.charAt(0).toLowerCase() + str.slice(1) : ''; }
   function plural(n, one, few, many) {
     const m10 = n % 10; const m100 = n % 100;
     if (m10 === 1 && m100 !== 11) return `${n} ${one}`;
@@ -124,14 +128,29 @@
 
   /* ---------------- стол проекта ---------------- */
 
+  /** Ключ элемента с фокусом внутри box — чтобы вернуть фокус после innerHTML. */
+  function focusKey(box) {
+    const el = document.activeElement;
+    if (!el || !box.contains(el)) return null;
+    const t = el.closest('[href], [data-more]');
+    if (!t) return null;
+    return t.hasAttribute('href') ? `[href="${CSS.escape(t.getAttribute('href'))}"]` : `[data-more="${CSS.escape(t.dataset.more)}"]`;
+  }
+  function refocus(box, key) {
+    if (!key) return;
+    const el = box.querySelector(key);
+    if (el) el.focus();
+  }
+
   function renderHub() {
     const box = $('hub-modules');
     const p = S.project;
     if (!box || !p) return;
     const sum = p.summary || {};
+    const keep = focusKey(box);
     box.innerHTML = MODULES.map((m) => {
       const s = sum[m.key] || { state: 'none', line: 'Не запускался' };
-      return `<a class="hub-tile" data-state="${esc(s.state)}" href="${esc(S.moduleHref(m.key))}">
+      return `<a class="hub-tile" data-state="${esc(s.state)}" href="${esc(S.moduleHref(m.key))}" aria-label="${esc(`${m.n} · ${m.name} — ${s.line}`)}">
         <div class="ht-head">
           <span class="ht-num">${m.n}</span>
           ${svg(ICONS[m.key])}
@@ -142,15 +161,11 @@
         <p class="ht-line"><span class="mn-dot" data-state="${esc(s.state)}"></span><span>${esc(s.line)}</span></p>
       </a>`;
     }).join('');
-    // цвет точки в плитке — тем же правилом, что в навигации
-    for (const dot of box.querySelectorAll('.mn-dot')) {
-      const st = dot.dataset.state;
-      dot.style.background = st === 'ok' ? 'var(--green)' : st === 'warn' || st === 'run' ? 'var(--orange)' : st === 'bad' ? 'var(--red)' : st === 'off' ? 'var(--text-3)' : '';
-    }
+    refocus(box, keep);
     const running = MODULES.filter((m) => sum[m.key] && sum[m.key].state === 'run');
     const note = $('hub-note');
     if (running.length) {
-      note.innerHTML = `<span class="mn-dot" style="background:var(--orange)"></span>${esc(running.map((m) => `${m.name}: ${sum[m.key].line}`).join(' · '))}`;
+      note.innerHTML = `<span class="mn-dot" data-state="run"></span>${esc(running.map((m) => `${m.name}: ${sum[m.key].line}`).join(' · '))}`;
       note.hidden = false;
     } else note.hidden = true;
     renderHeadActions();
@@ -168,9 +183,11 @@
   /* ---------------- окно проекта ---------------- */
 
   let modalProject = null;
+  let modalOpener = null; // куда вернуть фокус после закрытия окна
 
   function openProjectModal(project) {
     modalProject = project || null;
+    modalOpener = document.activeElement;
     const m = $('proj-modal');
     $('pm-title').textContent = project ? 'Свойства проекта' : 'Новый проект';
     $('pm-name').value = project ? project.name : '';
@@ -187,7 +204,12 @@
     m.hidden = false;
     setTimeout(() => $('pm-name').focus(), 30);
   }
-  function closeProjectModal() { $('proj-modal').hidden = true; }
+  function closeProjectModal() {
+    $('proj-modal').hidden = true;
+    if (modalOpener && modalOpener.isConnected && modalOpener.offsetParent !== null) modalOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    modalOpener = null;
+  }
 
   async function submitProjectModal(e) {
     e.preventDefault();
@@ -230,15 +252,18 @@
   async function deleteProject() {
     if (!modalProject) return;
     const p = modalProject;
-    const ok = window.appDialog
-      ? await window.appDialog({
-        title: `Удалить проект «${p.name}»?`,
-        message: 'Проект и всё, что в нём заведено, уйдут из списков. Записи в базе остаются, но открыть их с экрана будет нельзя.',
-        confirmText: 'Удалить', danger: true,
-      })
-      : window.confirm(`Удалить проект «${p.name}»?`);
+    const ok = await S.confirm({
+      title: `Удалить проект «${p.name}»?`,
+      message: 'Проект уйдёт из списка вместе со всем, что в нём заведено. Записи в базе остаются.',
+      confirmText: 'Удалить', danger: true,
+    });
     if (!ok) return;
-    const res = await fetch(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE', headers: S.headers() });
+    let res;
+    try {
+      res = await fetch(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE', headers: S.headers() });
+    } catch {
+      $('pm-error').textContent = 'Сервер сейчас недоступен — попробуйте чуть позже'; $('pm-error').hidden = false; return;
+    }
     if (!res.ok) { const d = await res.json().catch(() => null); $('pm-error').textContent = (d && d.error) || `Ошибка сервера (${res.status})`; $('pm-error').hidden = false; return; }
     closeProjectModal();
     location.href = '/';
@@ -262,7 +287,8 @@
 
   const screen = decideScreen();
   showScreen(screen);
-  if (screen === 'analysis') S.setModule('site');
+  // на экране настроек с module=site восстанавливается сессия посадки — её разделы видны
+  if (screen === 'analysis' || (screen === 'settings' && params.get('module') === 'site')) S.setModule('site');
   renderViewSeg();
 
   document.addEventListener('enso:head', renderHeadActions);
@@ -273,7 +299,7 @@
       if (S.projectsError) {
         if (window.appToast) window.appToast('Список проектов не получен — сервер недоступен', 'error');
       } else {
-        if (window.appToast) window.appToast('Проект не найден или удалён — откройте другой', 'error');
+        if (window.appToast) window.appToast('Проект не найден или удалён — выберите другой', 'error');
         S.setModule('');       // иначе app.js примет адрес за модуль «Посадка» и заведёт сессию
         cleanUrl(false);
       }
@@ -309,5 +335,11 @@
   $('pm-close').addEventListener('click', closeProjectModal);
   $('pm-delete').addEventListener('click', deleteProject);
   $('proj-modal').addEventListener('click', (e) => { if (e.target === $('proj-modal')) closeProjectModal(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('proj-modal').hidden) closeProjectModal(); });
+  // Escape закрывает только верхнее окно: диалог подтверждения поверх свойств проекта закрывает app.js
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || $('proj-modal').hidden) return;
+    const dlg = $('dialog-modal');
+    if (dlg && !dlg.hidden) return;
+    closeProjectModal();
+  });
 })();

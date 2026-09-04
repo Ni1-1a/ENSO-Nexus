@@ -40,7 +40,7 @@
     el.dataset.type = type;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3500);
+    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
   }
 
   function userHeaders() {
@@ -111,10 +111,11 @@
   }
 
   async function onRegistry(file) {
+    hideError('g');
     const fd = new FormData();
     fd.append('registry', file, file.name);
     const res = await apiForm('/registry/preview', fd);
-    if (!res.ok) { toast(await readError(res), 'error'); return; }
+    if (!res.ok) { showError(await readError(res)); return; }
     const data = await res.json();
     state.registry = { file, headers: data.headers, rowCount: data.rowCount };
     const box = $('g-reg-info');
@@ -125,10 +126,11 @@
   }
 
   async function onTemplate(file) {
+    hideError('g');
     const fd = new FormData();
     fd.append('template', file, file.name);
     const res = await apiForm('/template/preview', fd);
-    if (!res.ok) { toast(await readError(res), 'error'); return; }
+    if (!res.ok) { showError(await readError(res)); return; }
     const data = await res.json();
     state.template = { file, keys: data.keys };
     const box = $('g-tpl-info');
@@ -140,21 +142,35 @@
     refreshGenerateState();
   }
 
+  /** Ошибка живёт в постоянном блоке своей секции (конвейер — #g-error, сверка — #d-error), тост — вдобавок. */
+  function showError(msg, which = 'g') {
+    const box = $(which === 'd' ? 'd-error' : 'g-error');
+    if (box) { box.textContent = msg; box.hidden = false; }
+    toast(msg, 'error');
+  }
+  function hideError(which = 'g') {
+    const box = $(which === 'd' ? 'd-error' : 'g-error');
+    if (box) box.hidden = true;
+  }
+
   async function runGenerate() {
     const btn = $('g-run');
     btn.disabled = true;
+    hideError('g');
+    $('g-note').textContent = 'собираю черновики…';
     try {
       const fd = new FormData();
       fd.append('registry', state.registry.file, state.registry.file.name);
       fd.append('template', state.template.file, state.template.file.name);
       const res = await apiForm('/generate', fd);
-      if (!res.ok) { toast(await readError(res), 'error'); return; }
+      if (!res.ok) { $('g-note').textContent = ''; showError(await readError(res)); return; }
       let report = null;
       try { report = JSON.parse(decodeURIComponent(res.headers.get('x-akty-report') || '')); } catch { report = null; }
       saveBlob(await res.blob(), 'Черновики актов.zip');
       const box = $('g-report');
       box.hidden = false;
       box.innerHTML = '';
+      $('g-note').textContent = report ? `актов: ${report.total}` : '';
       if (report) {
         box.append(h('div', {}, `Сгенерировано актов: ${report.total}.`));
         if (report.unknownKeys && report.unknownKeys.length) {
@@ -180,18 +196,21 @@
   async function runDates() {
     const btn = $('d-run');
     btn.disabled = true;
+    hideError('d');
+    $('d-note').textContent = 'сверяю даты…';
     try {
       const fd = new FormData();
       fd.append('acts', state.acts, state.acts.name);
       fd.append('journal', state.journal, state.journal.name);
       const res = await apiForm('/dates', fd);
-      if (!res.ok) { toast(await readError(res), 'error'); return; }
+      if (!res.ok) { $('d-note').textContent = ''; showError(await readError(res), 'd'); return; }
       const data = await res.json();
       $('d-result').hidden = false;
       $('d-note').textContent = `актов: ${data.rows.length} · конфликтов: ${data.conflicts}`;
 
       const tbody = $('d-rows');
       tbody.innerHTML = '';
+      if (!data.rows.length) tbody.append(h('tr', {}, h('td', { colspan: '6', class: 'empty-state' }, 'В реестре актов нет строк.')));
       for (const r of data.rows) {
         tbody.append(h('tr', {},
           h('td', {}, r.act_no),
@@ -236,9 +255,9 @@
     renderUserBox();
     if (window.EnsoShell) await window.EnsoShell.start();
 
-    wireDropzone('g-reg-dz', 'g-reg-file', (f) => onRegistry(f).catch((e) => toast(e.message, 'error')));
-    wireDropzone('g-tpl-dz', 'g-tpl-file', (f) => onTemplate(f).catch((e) => toast(e.message, 'error')));
-    $('g-run').addEventListener('click', () => runGenerate().catch((e) => toast(e.message, 'error')));
+    wireDropzone('g-reg-dz', 'g-reg-file', (f) => onRegistry(f).catch((e) => showError(e.message)));
+    wireDropzone('g-tpl-dz', 'g-tpl-file', (f) => onTemplate(f).catch((e) => showError(e.message)));
+    $('g-run').addEventListener('click', () => runGenerate().catch((e) => { $('g-note').textContent = ''; showError(e.message); }));
 
     wireDropzone('d-acts-dz', 'd-acts-file', (f) => {
       state.acts = f;
@@ -250,7 +269,7 @@
       $('d-jrn-info').textContent = f.name;
       refreshDatesState();
     });
-    $('d-run').addEventListener('click', () => runDates().catch((e) => toast(e.message, 'error')));
+    $('d-run').addEventListener('click', () => runDates().catch((e) => { $('d-note').textContent = ''; showError(e.message, 'd'); }));
 
   }
 

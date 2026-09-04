@@ -60,7 +60,7 @@
     el.dataset.type = type;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3500);
+    toastTimer = setTimeout(() => { el.hidden = true; }, type === 'error' ? 6000 : 3000);
   }
 
   function fmtDateTime(value) {
@@ -129,8 +129,13 @@
 
   async function loadHealth() {
     try {
-      const res = await fetch('/api/health', { headers: userHeaders() });
-      const data = await res.json();
+      let data = null;
+      // каркас уже получил /health с теми же заголовками — второй запрос на загрузке ни к чему
+      if (window.EnsoShell && window.EnsoShell.ready) { await window.EnsoShell.ready; data = window.EnsoShell.health; }
+      if (!data) {
+        const res = await fetch('/api/health', { headers: userHeaders() });
+        data = await res.json();
+      }
       state.providers = (data.providers || []).filter((p) => p.id !== 'demo');
     } catch { state.providers = []; }
   }
@@ -193,8 +198,8 @@
     if (!items || !items.length) { nav.hidden = true; return; }
     nav.hidden = false;
     items.forEach((it, i) => {
-      if (i) nav.append(' / ');
-      nav.append(it.href ? h('a', { href: it.href }, it.label) : h('span', {}, it.label));
+      if (i) nav.append(h('span', { class: 'sep' }, '/'));
+      nav.append(it.href ? h('a', { href: it.href }, it.label) : h('span', { class: 'here' }, it.label));
     });
   }
 
@@ -228,10 +233,10 @@
       for (const c of list) {
         const type = typeById(c.chosen_type || c.detected_type);
         box.append(h('button', {
-          class: 'mod-card-btn', type: 'button',
+          class: 'mod-card-btn list-card', type: 'button',
           onclick: () => { location.hash = `#/c/${c.id}`; },
         },
-        h('h3', {}, c.name),
+        h('span', { class: 'list-card-name' }, c.name),
         h('span', { class: 'meta' }, c.has_document
           ? `${c.document_name || 'текст'} · ${fmtChars(c.document_chars)}` : 'документ не загружен'),
         h('span', { class: 'meta' }, type ? `тип: ${type.label}${c.chosen_type ? ' (выбран человеком)' : ''}` : 'тип ещё не определён'),
@@ -251,10 +256,10 @@
       for (const a of abList) {
         const s = a.summary || {};
         abBox.append(h('button', {
-          class: 'mod-card-btn', type: 'button',
+          class: 'mod-card-btn list-card', type: 'button',
           onclick: () => { location.hash = `#/ab/${a.id}`; },
         },
-        h('h3', {}, a.name),
+        h('span', { class: 'list-card-name' }, a.name),
         h('span', { class: 'meta' }, `A: ${a.a_names || '—'}`),
         h('span', { class: 'meta' }, `B: ${a.b_names || '—'}`),
         h('span', { class: 'meta' },
@@ -265,7 +270,11 @@
         ));
       }
     } catch (err) {
-      errBox.textContent = err.message;
+      $('dc-checks').innerHTML = '';
+      $('ab-list').innerHTML = '';
+      $('dc-checks-empty').hidden = true;
+      $('ab-empty').hidden = true;
+      errBox.textContent = `Не удалось получить список проверок: ${err.message}`;
       errBox.hidden = false;
     }
   }
@@ -293,8 +302,9 @@
     }
     sel.disabled = false;
     sel.append(h('option', { value: '' }, `основной: ${t.promptTitle}`));
+    const titles = new Map((t.alternativeTitles || []).map((a) => [a.id, a.title]));
     for (const alt of t.alternatives) {
-      sel.append(h('option', { value: alt, selected: alt === chosenPromptId || null }, alt));
+      sel.append(h('option', { value: alt, selected: alt === chosenPromptId || null }, titles.get(alt) || alt));
     }
   }
 
@@ -302,12 +312,15 @@
     showScreen('dc-s-check');
     const errBox = $('c-error');
     errBox.hidden = true;
+    $('c-name').textContent = 'Загрузка…';
+    $('c-sub').textContent = '';
+    crumbs([{ label: 'Проверки', href: '#/' }, { label: '…' }]);
     let data;
     try {
       data = await api(`/checks/${encodeURIComponent(id)}`);
     } catch (err) {
       if (err.status === 404) { toast('Проверка не найдена — возможно, удалена', 'error'); location.hash = '#/'; return; }
-      errBox.textContent = err.message;
+      errBox.textContent = `Не удалось открыть проверку: ${err.message}`;
       errBox.hidden = false;
       return;
     }
@@ -359,8 +372,9 @@
     const tbody = $('c-runs');
     tbody.innerHTML = '';
     $('c-runs-empty').hidden = !!state.runs.length;
+    $('c-analyze').textContent = state.runs.length ? 'Проверить снова' : 'Проверить';
     for (const r of state.runs) {
-      tbody.append(h('tr', { class: 'mod-run-row', style: 'cursor:pointer', onclick: () => { location.hash = `#/r/${r.id}`; } },
+      tbody.append(h('tr', { class: 'row-link', onclick: () => { location.hash = `#/r/${r.id}`; } },
         h('td', {}, fmtDateTime(r.created_at)),
         h('td', {}, r.provider ? `${r.provider}${r.model ? ` (${r.model})` : ''}` : 'без модели'),
         h('td', {}, [r.doc_type ? (typeById(r.doc_type) || { label: r.doc_type }).label : '—',
@@ -368,7 +382,10 @@
         h('td', {}, h('span', { class: 'mod-badge', 'data-run': r.status },
           r.status === 'running' && r.progress ? r.progress : (RUN_LABEL[r.status] || r.status))),
         h('td', {}, r.findings_count != null ? String(r.findings_count) : (r.status === 'failed' ? (r.error_text || 'ошибка') : '—')),
-        h('td', {}, h('a', { href: `#/r/${r.id}`, onclick: (e) => e.stopPropagation() }, 'открыть')),
+        h('td', { class: 'row-actions' }, h('button', {
+          class: 'btn btn-quiet btn-sm', type: 'button',
+          onclick: (e) => { e.stopPropagation(); location.hash = `#/r/${r.id}`; },
+        }, 'Открыть')),
       ));
     }
   }
@@ -440,7 +457,7 @@
   }
 
   async function deleteCheck() {
-    const ok = await window.EnsoShell.confirm({ title: `Удалить проверку «${state.check.name}»?`, message: 'Прогоны останутся в базе.', confirmText: 'Удалить', danger: true });
+    const ok = await window.EnsoShell.confirm({ title: `Удалить проверку «${state.check.name}»?`, message: 'Проверка уйдёт из списка. Прогоны останутся в базе.', confirmText: 'Удалить', danger: true });
     if (!ok) return;
     try {
       await api(`/checks/${encodeURIComponent(state.check.id)}`, { method: 'DELETE' });
@@ -454,17 +471,23 @@
   async function showRun(rid) {
     showScreen('dc-s-run');
     $('r-error').hidden = true;
+    $('r-title').textContent = 'Загрузка…';
+    $('r-sub').textContent = '';
+    crumbs([{ label: 'Проверки', href: '#/' }, { label: '…' }]);
+    const myRoute = location.hash; // ответ опроса после ухода с экрана экран не возвращает
     let data;
     try {
-      data = await api(`/runs/${rid}`);
+      data = await api(`/runs/${encodeURIComponent(rid)}`);
     } catch (err) {
-      $('r-error').textContent = err.message;
+      if (err.status === 404) { toast('Прогон не найден — возможно, удалён', 'error'); location.hash = '#/'; return; }
+      $('r-error').textContent = `Не удалось открыть результат: ${err.message}`;
       $('r-error').hidden = false;
       return;
     }
     state.run = data.run;
     const run = state.run;
-    crumbs([{ label: 'Проверки', href: '#/' }, { label: 'Проверка', href: `#/c/${run.check_id}` }, { label: 'Результат' }]);
+    $('r-title').textContent = 'Результат проверки';
+    crumbs([{ label: 'Проверки', href: '#/' }, { label: run.check_name || 'Проверка', href: `#/c/${run.check_id}` }, { label: 'Результат' }]);
     $('r-sub').textContent = `${fmtDateTime(run.created_at)}${run.provider ? ` · ${run.provider}${run.model ? ` (${run.model})` : ''}` : ' · без модели'}${run.started_by_name ? ` · запустил: ${run.started_by_name}` : ''}`;
 
     if (['queued', 'running'].includes(run.status)) {
@@ -480,7 +503,7 @@
           } else {
             clearInterval(pollTimer);
             pollTimer = null;
-            await showRun(rid);
+            if (location.hash === myRoute) await showRun(rid);
           }
         } catch { /* сеть мигнула */ }
       }, 2500);
@@ -599,18 +622,21 @@
   async function showAb(id) {
     showScreen('dc-s-ab');
     $('ab-error').hidden = true;
+    $('ab-name').textContent = 'Загрузка…';
+    $('ab-sub').textContent = '';
+    crumbs([{ label: 'Проверки', href: '#/' }, { label: '…' }]);
     let data;
     try {
       data = await api(`/ab/${encodeURIComponent(id)}`);
     } catch (err) {
       if (err.status === 404) { toast('Сравнение не найдено — возможно, удалено', 'error'); location.hash = '#/'; return; }
-      $('ab-error').textContent = err.message;
+      $('ab-error').textContent = `Не удалось открыть сравнение: ${err.message}`;
       $('ab-error').hidden = false;
       return;
     }
     state.ab = data.ab;
     const a = state.ab;
-    crumbs([{ label: 'Проверки', href: '#/' }, { label: `A→B: ${a.name}` }]);
+    crumbs([{ label: 'Проверки', href: '#/' }, { label: `A → B: ${a.name}` }]);
     $('ab-name').textContent = a.name;
     $('ab-sub').textContent = `создано ${fmtDateTime(a.created_at)}${a.created_by_name ? ` · ${a.created_by_name}` : ''}`;
     fillProviderSelect($('ab-provider'), $('ab-model'), a.ai_provider, a.ai_model, null);
@@ -639,13 +665,13 @@
     for (const [kind, label] of AB_KINDS) {
       const names = a[`${kind}_names`];
       const chars = a[`${kind}_chars`];
-      const wrap = h('div', { style: 'margin-bottom: 14px;' });
+      const wrap = h('div', { class: 'mod-ab-doc' });
       wrap.append(h('div', { class: 'mod-doc-state' },
         h('strong', {}, label),
         h('span', { class: names ? 'ok' : 'none' },
           names ? ` — ${names}${chars ? ` · ${fmtChars(chars)}` : ''}` : ' — не загружено'),
         names ? h('button', {
-          class: 'btn btn-quiet btn-sm', type: 'button', style: 'margin-left: 8px;',
+          class: 'btn btn-quiet btn-sm mod-ml', type: 'button',
           onclick: async () => {
             try {
               const res = await api(`/ab/${encodeURIComponent(a.id)}/docs/${kind}`, { method: 'DELETE' });
@@ -667,7 +693,9 @@
           if (res.note) toast(res.note, 'error');
         } catch (err) { toast(err.message, 'error'); }
       };
+      dz.setAttribute('aria-label', `Добавить файл: ${kind === 'req' ? 'требования' : kind === 'a' ? 'документы модели A' : 'документы модели B'}`);
       dz.addEventListener('click', () => input.click());
+      dz.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
       dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
       dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
       dz.addEventListener('drop', (e) => {
@@ -684,7 +712,11 @@
   function renderAbStatus() {
     const a = state.ab;
     $('ab-status').textContent = a.status === 'running' ? (a.progress || 'идёт…')
-      : a.status === 'failed' ? `ошибка: ${a.error_text}` : a.status === 'done' ? 'протокол готов' : '';
+      : a.status === 'failed' ? 'прогон упал' : a.status === 'done' ? 'протокол готов' : '';
+    // упавший прогон — ошибка страницы (как у проверки), а не серая подсказка
+    const errBox = $('ab-error');
+    if (a.status === 'failed') { errBox.textContent = `Прогон сравнения упал: ${a.error_text || 'причина не названа'}`; errBox.hidden = false; }
+    else if (errBox.textContent.startsWith('Прогон сравнения упал')) { errBox.hidden = true; errBox.textContent = ''; }
     $('ab-run').disabled = a.status === 'running';
     $('ab-result').hidden = !(a.status === 'done' && a.result);
     if (a.status === 'done' && a.result) renderAbResult();
@@ -700,7 +732,7 @@
     tbody.innerHTML = '';
     for (const row of result.rows || []) {
       const d = (a.decisions || {})[row.id] || null;
-      const sel = h('select', {}, h('option', { value: '' }, '—'),
+      const sel = h('select', { 'aria-label': `Решение инженера по строке ${row.id}` }, h('option', { value: '' }, '—'),
         AB_STATUSES.map((st) => h('option', { value: st, selected: d && d.decision === st || null }, st)));
       sel.addEventListener('change', async () => {
         try {
@@ -771,7 +803,7 @@
   }
 
   async function deleteAb() {
-    const ok = await window.EnsoShell.confirm({ title: `Удалить сравнение «${state.ab.name}»?`, confirmText: 'Удалить', danger: true });
+    const ok = await window.EnsoShell.confirm({ title: `Удалить сравнение «${state.ab.name}»?`, message: 'Сравнение уйдёт из списка. Протокол останется в базе.', confirmText: 'Удалить', danger: true });
     if (!ok) return;
     try {
       await api(`/ab/${encodeURIComponent(state.ab.id)}`, { method: 'DELETE' });
@@ -786,12 +818,24 @@
     state.newKind = kind;
     $('nc-form').reset();
     $('nc-error').hidden = true;
+    modalOpener = document.activeElement;
     $('nc-title').textContent = kind === 'ab' ? 'Новое сравнение A → B' : 'Новая проверка';
+    $('nc-submit').textContent = kind === 'ab' ? 'Создать сравнение' : 'Создать проверку';
+    $('nc-name').placeholder = kind === 'ab' ? 'Например: замена насосов, корпус 2' : 'Например: ПЗ КЖ, корпус 2';
     fillProviderSelect($('nc-provider'), $('nc-model'), '', '', null);
+    const pp = window.EnsoShell && window.EnsoShell.project;
+    if (pp) $('nc-name').value = pp.full_name || pp.name || '';
     $('nc-modal').hidden = false;
     $('nc-name').focus();
+    $('nc-name').select();
   }
-  function closeNew() { $('nc-modal').hidden = true; }
+  let modalOpener = null;
+  function closeNew() {
+    $('nc-modal').hidden = true;
+    if (modalOpener && modalOpener.isConnected && modalOpener.offsetParent !== null) modalOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    modalOpener = null;
+  }
 
   async function submitNew(e) {
     e.preventDefault();
@@ -799,6 +843,8 @@
     errBox.hidden = true;
     const name = $('nc-name').value.trim();
     if (!name) { errBox.textContent = 'Нужно название.'; errBox.hidden = false; return; }
+    const btn = $('nc-submit');
+    btn.disabled = true;
     try {
       const payload = { name, projectId: projectId(), provider: $('nc-provider').value, model: $('nc-model').value };
       if (state.newKind === 'ab') {
@@ -811,8 +857,10 @@
         location.hash = `#/c/${data.check.id}`;
       }
     } catch (err) {
-      errBox.textContent = err.message;
+      errBox.textContent = `Не удалось создать ${state.newKind === 'ab' ? 'сравнение' : 'проверку'}: ${err.message}`;
       errBox.hidden = false;
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -832,7 +880,12 @@
     $('nc-close').addEventListener('click', closeNew);
     $('nc-cancel').addEventListener('click', closeNew);
     $('nc-modal').addEventListener('click', (e) => { if (e.target === $('nc-modal')) closeNew(); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('nc-modal').hidden) closeNew(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || $('nc-modal').hidden) return;
+      const dlg = $('shell-dialog');
+      if (dlg && !dlg.hidden) return;
+      closeNew();
+    });
 
     $('c-save').addEventListener('click', saveCheckSettings);
     $('c-text-save').addEventListener('click', saveCheckText);

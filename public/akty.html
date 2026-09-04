@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Акты (АОСР) — Enso-nexus</title>
-  <meta name="description" content="Конвейер черновиков актов из таблицы данных и шаблона DOCX; сверка дат актов с общим журналом работ. Полностью детерминированно, без нейросети.">
+  <meta name="description" content="Конвейер черновиков актов из таблицы данных и шаблона DOCX и сверка дат актов с общим журналом работ, полностью детерминированно, без нейросети">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="mod.css?v=3">
-  <link rel="stylesheet" href="shell.css?v=2">
+  <link rel="stylesheet" href="mod.css?v=6">
+  <link rel="stylesheet" href="shell.css?v=6">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M25 20h36l14 14v46H25z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M61 20v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M35 52h30M35 62h30M35 42h12' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/></svg>">
 </head>
@@ -20,23 +20,23 @@
     <main class="content" id="content">
       <header class="toolbar">
         <h1>Акты (АОСР)</h1>
-        <p class="toolbar-sub">Пачка черновиков актов из таблицы данных и шаблона — и сверка дат актов с общим журналом. Всё считается кодом, нейросеть не участвует: данные не покидают контур.</p>
+        <p class="toolbar-note">Пачка черновиков актов из таблицы и шаблона, сверка дат актов с общим журналом. Всё считается кодом, нейросеть не участвует: данные не покидают контур</p>
       </header>
 
       <!-- ══════════ Конвейер актов ══════════ -->
       <div class="card">
         <h2>Конвейер черновиков</h2>
-        <p class="mod-h2-note">Раз акты отличаются только данными — заполните таблицу один раз. Пустая ячейка станет «{НЕТ ДАННЫХ}» в тексте и попадёт в отчёт пропусков; конвейер ничего не выдумывает.</p>
+        <p class="h2-note">Раз акты отличаются только данными — заполните таблицу один раз. Пустая ячейка станет «{НЕТ ДАННЫХ}» в тексте и попадёт в отчёт пропусков; конвейер ничего не выдумывает.</p>
         <div class="mod-cols">
           <div>
-            <div id="g-reg-dz" class="mod-dz-mini" tabindex="0" role="button">
+            <div id="g-reg-dz" class="mod-dz-mini" tabindex="0" role="button" aria-label="Реестр данных (XLSX) — первая строка листа: заголовки колонок">
               <strong>Реестр данных (XLSX)</strong> — первая строка листа: заголовки колонок
             </div>
             <input id="g-reg-file" type="file" accept=".xlsx" hidden>
             <div id="g-reg-info" class="mod-files-list"></div>
           </div>
           <div>
-            <div id="g-tpl-dz" class="mod-dz-mini" tabindex="0" role="button">
+            <div id="g-tpl-dz" class="mod-dz-mini" tabindex="0" role="button" aria-label="Шаблон акта (DOCX) — плейсхолдеры вида {{Имя колонки}}">
               <strong>Шаблон акта (DOCX)</strong> — плейсхолдеры вида {{Имя колонки}}
             </div>
             <input id="g-tpl-file" type="file" accept=".docx" hidden>
@@ -45,25 +45,26 @@
         </div>
         <div class="mod-bar">
           <button id="g-run" class="btn btn-primary" type="button" disabled>Сгенерировать пачку (.zip)</button>
-          <span id="g-note" class="hint"></span>
+          <span id="g-note" class="hint" aria-live="polite"></span>
         </div>
+        <p id="g-error" class="mod-error" role="alert" hidden></p>
         <div id="g-report" class="mod-files-list" hidden></div>
       </div>
 
       <!-- ══════════ Сверка дат ══════════ -->
       <div class="card">
         <h2>Сверка дат: акты ↔ общий журнал</h2>
-        <p class="mod-h2-note">Акт подписан 14-го, запись в журнале — 17-го: стройконтроль такое находит за один проход. Сопоставление — по совпадению формулировок вида работ; строки без пары проверяются вручную.</p>
+        <p class="h2-note">Акт подписан 14-го, запись в журнале — 17-го: стройконтроль такое находит за один проход. Сопоставление — по совпадению формулировок вида работ; строки без пары проверяются вручную.</p>
         <div class="mod-cols">
           <div>
-            <div id="d-acts-dz" class="mod-dz-mini" tabindex="0" role="button">
+            <div id="d-acts-dz" class="mod-dz-mini" tabindex="0" role="button" aria-label="Реестр актов (XLSX) — номер, вид работ, дата акта">
               <strong>Реестр актов (XLSX)</strong> — номер, вид работ, дата акта
             </div>
             <input id="d-acts-file" type="file" accept=".xlsx" hidden>
             <div id="d-acts-info" class="mod-files-list"></div>
           </div>
           <div>
-            <div id="d-jrn-dz" class="mod-dz-mini" tabindex="0" role="button">
+            <div id="d-jrn-dz" class="mod-dz-mini" tabindex="0" role="button" aria-label="Журнал (XLSX) — дата записи, содержание работ">
               <strong>Журнал (XLSX)</strong> — дата записи, содержание работ
             </div>
             <input id="d-jrn-file" type="file" accept=".xlsx" hidden>
@@ -72,7 +73,7 @@
         </div>
         <div class="mod-bar">
           <button id="d-run" class="btn btn-primary" type="button" disabled>Сверить даты</button>
-          <span id="d-note" class="hint"></span>
+          <span id="d-note" class="hint" aria-live="polite"></span>
         </div>
 
         <div id="d-result" hidden>
@@ -87,8 +88,8 @@
           <div id="d-unmatched" class="mod-files-list" hidden></div>
           <ul id="d-warnings" class="mod-unverified"></ul>
         </div>
+        <p id="d-error" class="mod-error" role="alert" hidden></p>
       </div>
-      <p id="ak-error" class="mod-error" role="alert" hidden></p>
     </main>
   </div>
 
@@ -138,8 +139,8 @@
 
   <div id="toast" class="toast" role="alert" hidden></div>
 
-  <script src="auth.js?v=4"></script>
-  <script src="shell.js?v=2"></script>
-  <script src="akty.js?v=2"></script>
+  <script src="auth.js?v=5"></script>
+  <script src="shell.js?v=6"></script>
+  <script src="akty.js?v=5"></script>
 </body>
 </html>

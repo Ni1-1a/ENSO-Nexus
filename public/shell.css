@@ -33,7 +33,14 @@ body { line-height: 1.55; }
 .tz-cols, .mod-cols, .nm-cols { gap: 24px; }
 .tz-projects-grid, .mod-grid, .nm-projects-grid { gap: 24px; }
 .tz-project-card, .mod-card-btn, .nm-proj-card { padding: 24px 26px; border-radius: 18px; }
-.tz-bar, .mod-bar, .nm-bar { margin: 18px 0 22px; }
+/* карточка списка — один каркас у всех модулей: имя серифом, строки мета, подвал с бейджами */
+.list-card {
+  display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--stroke-soft); box-shadow: var(--shadow);
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.list-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: var(--shadow-pop); transform: translateY(-1px); }
+.list-card-name { font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 2px; overflow-wrap: anywhere; }
 .empty-state { padding: 18px 4px; font-size: 13.5px; }
 
 /* ---------- скелет ---------- */
@@ -159,8 +166,10 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
 .ph-actions { display: flex; gap: 10px; align-items: center; padding-bottom: 6px; }
 .ph-line {
   color: var(--text-3); font-size: 11px; font-family: var(--font-mono);
-  text-transform: uppercase; letter-spacing: .07em; margin-bottom: -20px;
+  text-transform: uppercase; letter-spacing: .07em; margin: 0;
 }
+/* на страницах модулей заголовок проекта — одна строка контекста над h1 экрана */
+body[data-page="module"] .project-head { gap: 16px; margin-bottom: 14px; }
 .btn-ghost { background: transparent; color: var(--text-2); border: 1px solid var(--stroke); }
 .btn-ghost:not(:disabled):hover { background: var(--fill); color: var(--text); }
 
@@ -172,7 +181,7 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
   background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text);
   font-size: 13.5px;
 }
-.projects-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.projects-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
 .proj-card {
   display: flex; flex-direction: column; gap: 16px; min-height: 236px;
   padding: 28px 30px; border-radius: 18px; text-decoration: none; color: var(--text);
@@ -223,7 +232,7 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
 .pill-soft { color: var(--text-2); background: var(--fill); }
 
 /* ---------- экран «Стол проекта» ---------- */
-.hub-modules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.hub-modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
 .hub-tile {
   display: flex; flex-direction: column; gap: 16px; min-height: 176px;
   padding: 26px 28px; border-radius: 18px; text-decoration: none; color: var(--text);
@@ -263,17 +272,15 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
 /* ---------- окно проекта ---------- */
 .proj-form { display: flex; flex-direction: column; gap: 16px; color: var(--text); }
 .proj-form label { display: flex; flex-direction: column; gap: 6px; }
-.proj-form label > span { font-size: 11px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--text-3); }
+.proj-form label > span { font-size: 12.5px; font-weight: 590; color: var(--text-2); }
 .proj-form input, .proj-form select {
-  font: inherit; font-size: 14.5px; color: var(--text);
-  padding: 11px 13px; border-radius: 12px; border: 1px solid var(--stroke);
+  font: inherit; font-size: 14px; color: var(--text);
+  padding: 9px 11px; border-radius: var(--radius-sm); border: 1px solid var(--stroke);
   background: var(--panel-solid); width: 100%;
 }
-.proj-form input:focus, .proj-form select:focus { outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 1px; }
 .proj-form .pf-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.proj-form .pf-foot { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }
-.proj-form .pf-error { color: var(--red); font-size: 13px; }
-#proj-modal .modal { width: min(640px, 100%); border-radius: 18px; }
+.proj-form .pf-error { color: var(--red); font-size: 12.5px; line-height: 1.5; }
+#proj-modal .modal { width: min(640px, 100%); border-radius: var(--radius-lg); }
 #proj-modal .modal-body { padding: 20px 24px 24px; }
 #proj-modal .modal-head { padding: 18px 24px 12px; }
 
@@ -286,7 +293,6 @@ html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .view-option:hover { border-color: var(--stroke); }
-.view-option[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .view-option .vo-name { font-weight: 600; font-size: 13.5px; }
 .view-option .vo-key { font-family: var(--font-mono); font-size: 11px; color: var(--accent); margin-right: 6px; }
 .view-option .vo-sub { font-size: 12px; color: var(--text-2); line-height: 1.45; }
@@ -328,7 +334,6 @@ html[data-view="a"] .project-head .mn-item:hover { background: transparent; }
 html[data-view="a"] .project-head .mn-head { display: flex; align-items: center; gap: 8px; }
 html[data-view="a"] .project-head .mn-body { display: flex; gap: 7px; align-items: flex-start; }
 html[data-view="a"] .project-head .mn-body .mn-dot { margin-top: 5px; }
-html[data-view="a"] .ph-line { display: none; }
 html[data-view="a"] .ph-text:empty + .module-nav { margin-top: 0; }
 
 /* ═══════════════════ вариант b — «Стол проекта» ═══════════════════ */
@@ -336,7 +341,7 @@ html[data-view="b"] .topbar .module-nav {
   gap: 6px; align-items: center; padding: 6px 10px; border-radius: 999px; background: var(--fill);
 }
 html[data-view="b"] .topbar .mn-item {
-  width: 24px; height: 24px; border-radius: 50%; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%; align-items: center; justify-content: center;
   background: var(--panel-solid); border: 1.5px solid color-mix(in srgb, var(--text) 18%, transparent);
 }
 html[data-view="b"] .topbar .mn-item[data-state="ok"] { border-color: var(--green); }
@@ -356,7 +361,8 @@ html[data-view="c"] .content {
 }
 html[data-view="c"] .content > * { grid-column: 2; min-width: 0; }
 html[data-view="c"] .project-head { display: contents; }
-html[data-view="c"] .ph-text, html[data-view="c"] .ph-line { grid-column: 2; margin-bottom: 32px; }
+html[data-view="c"] .ph-text { grid-column: 2; margin-bottom: 32px; }
+html[data-view="c"] .ph-line { grid-column: 2; margin-bottom: 14px; }
 html[data-view="c"] .project-head .module-nav {
   grid-column: 1; grid-row: 1 / span 40; align-self: start; position: sticky; top: 90px;
   flex-direction: column; gap: 10px; align-items: center; padding-top: 6px;
@@ -419,7 +425,7 @@ html[data-view="d"] .topbar { width: min(var(--content-w), calc(100% - 24px)); }
 html[data-view="d"] .content {
   position: relative; margin: 0 auto 36px; padding: 44px var(--page-pad) 190px;
   background: var(--panel-solid); border: 1.5px solid var(--text); border-radius: 0 2px 2px 2px;
-  box-shadow: 0 1px 2px rgba(70, 55, 35, .05), 0 12px 36px rgba(70, 55, 35, .09);
+  box-shadow: var(--shadow);
   min-height: calc(100vh - 160px);
 }
 html[data-view="d"] .content::before {
@@ -461,13 +467,12 @@ html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(-n+4) { border-top: 0;
 html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(4n) { border-right: 0; }
 html[data-view="d"] .sheet-stamp .st-k { color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; font-size: 9.5px; }
 html[data-view="d"] .sheet-stamp .st-v { font-family: var(--font-text); font-size: 12px; }
-html[data-view="d"] .ph-line { display: none; }
 html[data-view="d"] .projects-list { display: flex; flex-direction: column; }
 html[data-view="d"] .proj-card {
   display: grid; grid-template-columns: 40px 1.4fr 1fr .6fr 150px auto 24px; align-items: center; gap: 20px;
   min-height: 0; padding: 16px 0; border: 0; border-bottom: 1px solid var(--stroke-soft); border-radius: 0; background: transparent;
 }
-html[data-view="d"] .proj-card:hover { transform: none; }
+html[data-view="d"] .proj-card:hover, html[data-view="d"] .hub-tile:hover, html[data-view="d"] .list-card:hover { transform: none; box-shadow: none; }
 html[data-view="d"] .proj-card::before { content: attr(data-n); font-family: var(--font-mono); color: var(--text-2); }
 html[data-view="d"] .proj-card .pc-head { display: contents; }
 html[data-view="d"] .proj-card .pc-name { font-family: var(--font-text); font-size: 14.5px; }
@@ -485,7 +490,7 @@ html[data-view="d"] .proj-new .pn-sub { display: none; }
 @media (max-width: 800px) {
   :root { --page-pad: 16px; }
   .content { padding: 20px var(--page-pad) 56px; }
-  .card { padding: 18px; }
+  .card:not(.card-fold) { padding: 18px; }
   .topbar { margin-top: 8px; padding: 6px 12px; gap: 8px; flex-wrap: wrap; }
   .topbar .module-nav, .tb-sep-module, .module-pill, .topbar .ai-badge, .tb-platform a span { display: none !important; }
   .topbar .user-name { display: none; }
@@ -493,6 +498,7 @@ html[data-view="d"] .proj-new .pn-sub { display: none; }
   .proj-card, .hub-tile, .proj-new { min-height: 0; }
   .ph-name { font-size: 28px; }
   html[data-view="a"] .content { padding: 62px 14px 40px; }
+  html[data-view="a"] .shell.sidebar-collapsed .content { padding-left: 14px; }
   html[data-view="a"] .mobile-bar { display: flex; }
   html[data-view="a"] .project-head .module-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   html[data-view="c"] .content { grid-template-columns: 44px minmax(0, 1fr); }
@@ -547,7 +553,7 @@ html[data-view="c"] .col-dialog { grid-column: 1 / -1; order: 3; }
 /* ошибка списка проектов в заголовке */
 .ph-line.ph-error { color: var(--red); }
 /* модалка нормоконтроля на ноутбуке: шесть полей не помещались в 640px */
-#np-modal .modal { max-height: 90vh; }
+.modal-tall .modal { max-height: 90vh; }
 @media (max-width: 800px) {
   /* вид A на телефоне: затемнение под выехавшей панелью (общее правило выше его гасило) */
   html[data-view="a"] .sidebar-scrim { display: block; }
@@ -561,7 +567,136 @@ html[data-view="c"] .col-dialog { grid-column: 1 / -1; order: 3; }
   html[data-view="a"] .project-head .mn-name, html[data-view="a"] .project-head .mn-body { display: none; }
   /* вид B на телефоне: модули строкой кружков под капсулой, а не спрятаны */
   html[data-view="b"] .topbar .module-nav { display: flex !important; order: 10; width: 100%; justify-content: center; padding: 4px 0 2px; background: transparent; }
-  html[data-view="b"] .topbar .mn-item { width: 32px; height: 32px; }
+  html[data-view="b"] .topbar .mn-item { width: 40px; height: 40px; }
   /* ссылки платформы — цель не меньше 40px */
   .tb-platform a, .sb-platform a { min-width: 40px; min-height: 36px; justify-content: center; }
 }
+
+
+/* ═══════════════════ круг 1 (04.09.2026): единые общие блоки ═══════════════════ */
+/* Футер модальных окон: один вид у всех окон создания и у диалогов */
+.tz-modal-foot, .mod-modal-foot, .nm-modal-foot, .pf-foot, .dialog-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--stroke-soft);
+}
+.pf-foot .dialog-extra { margin-right: auto; }
+/* Крошки: штампованный стиль нормоконтроля — эталон для всех модулей */
+.tz-crumbs, .mod-crumbs, .nm-crumbs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin: 0 0 14px; font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+}
+.tz-crumbs a, .mod-crumbs a, .nm-crumbs a { color: var(--text-2); text-decoration: none; padding: 2px 4px; border-radius: 5px; }
+.tz-crumbs a:hover, .mod-crumbs a:hover, .nm-crumbs a:hover { color: var(--accent); background: var(--fill); text-decoration: none; }
+.tz-crumbs .sep, .mod-crumbs .sep, .nm-crumbs .sep { color: var(--text-3); opacity: .6; }
+.tz-crumbs .here, .mod-crumbs .here, .nm-crumbs .here { color: var(--text); }
+/* Панели действий: одна выключка и поля */
+.tz-bar, .mod-bar, .nm-bar { align-items: center; margin: 18px 0 22px; }
+/* Ошибки: один размер */
+.tz-error, .mod-error, .nm-error { font-size: 12.5px; line-height: 1.5; color: var(--red); margin-top: 12px; }
+/* Две карточки рядом: .card + .card из воздуха не должно сдвигать правую */
+.tz-cols > .card, .mod-cols > .card, .nm-cols > .card { margin-top: 0; }
+/* Раскрывающиеся карточки: содержимому возвращаем поля (styles.css обнуляет padding) */
+.card-fold > :not(.fold-summary) { padding: 0 28px 24px; }
+.card-fold > .hint { padding-bottom: 8px; }
+.card-fold > ul, .tz-unverified, .mod-unverified { list-style: none; }
+/* Заголовки вне карточек — тем же серифом, что .card h2 */
+.section-h2 { font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: .005em; margin: 0; }
+.card h3 { font-family: var(--font-display); font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+/* Кликабельные строки таблиц */
+tr.row-link { cursor: pointer; transition: background .12s ease; }
+tr.row-link:hover { background: var(--fill); }
+/* Описание экрана под заголовком — обычным регистром, а не штампом */
+.toolbar-note { margin-top: 8px; font-size: 13px; color: var(--text-2); max-width: 72ch; }
+/* Бейджи: заливка токеном, как у нормоконтроля; hex-цветов нет */
+.tz-badge, .mod-badge {
+  display: inline-block; white-space: nowrap;
+  border: 0; background: var(--fill); color: var(--text-2);
+  font-family: var(--font-mono); font-size: 11px; padding: 2px 9px; border-radius: 999px;
+}
+.tz-badge[data-sev="БЛОКЕР"], .tz-badge[data-status="НЕТ"], .tz-badge[data-run="failed"], .mod-badge[data-run="failed"],
+.mod-badge[data-st="НЕ СООТВЕТСТВУЕТ"], .mod-badge[data-st="не найдено"], .mod-badge[data-st="заменён или утратил силу"], .mod-badge[data-act="исправить"] {
+  background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red);
+}
+.tz-badge[data-sev="СУЩЕСТВЕННО"], .tz-badge[data-status="НЕПОЛНО"], .tz-badge[data-run="running"], .tz-badge[data-run="queued"],
+.mod-badge[data-run="running"], .mod-badge[data-run="queued"], .mod-badge[data-run="draft"],
+.mod-badge[data-st="ТРЕБУЕТ ПРОВЕРКИ"], .mod-badge[data-st="с отличиями"], .mod-badge[data-st="похожая строка"], .mod-badge[data-st="статус по реестру неоднозначен"], .mod-badge[data-st="нет в реестре"], .mod-badge[data-act="проверить"] {
+  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+}
+.tz-badge[data-status="ЕСТЬ"], .tz-badge[data-run="done"], .mod-badge[data-run="done"],
+.mod-badge[data-st="ПОДТВЕРЖДЕНО"], .mod-badge[data-st="точно"], .mod-badge[data-st="действует (по реестру)"] {
+  background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green);
+}
+.tz-badge[data-sev="ЗАМЕЧАНИЕ"] { background: var(--fill); color: var(--text); }
+/* Крупные цифры отчётов и подсказки прогресса — один размер */
+.mod-class .big { font-size: 22px; }
+.tz-progress .hint { font-size: 12.5px; }
+/* Вид C: две карточки рядом не помещаются в узкую колонку */
+html[data-view="c"] .tz-cols, html[data-view="c"] .mod-cols, html[data-view="c"] .nm-cols { grid-template-columns: 1fr; }
+/* Ссылки платформы — цель не меньше 36px и на десктопе */
+.tb-platform a { min-height: 34px; }
+
+/* ─── обход в браузере 04.09.2026 ─── */
+/* длинное имя без пробелов не должно выламывать карточку, заголовок и окно */
+.proj-card .pc-name, .ph-name, .hub-tile .ht-name, .modal h2, .modal h3, .tm-name, .dialog-message { overflow-wrap: anywhere; min-width: 0; }
+.card, .tz-cols > *, .mod-cols > *, .nm-cols > * { min-width: 0; }
+.nm-table-wrap { max-width: 100%; }
+/* элементы полосы сессий доступны с клавиатуры */
+.sessions-strip .sess-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* вид A на планшете: шесть подписей модулей в одну строку не помещаются */
+@media (max-width: 1100px) {
+  html[data-view="a"] .project-head .module-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+/* вид C на телефоне: две колонки модуля 2 не помещаются */
+@media (max-width: 800px) {
+  html[data-view="c"] .columns { grid-template-columns: 1fr; }
+}
+
+/* ─── круг 2 (04.09.2026) ─── */
+.tz-screen.active, .mod-screen.active, .nm-screen.active { animation: screen-in .28s ease; }
+.mod-progress .hint { font-size: 12.5px; }
+.findings-counts { font-size: 13px; color: var(--text-2); }
+.stat-table td.row-actions { text-align: right; white-space: nowrap; }
+.tm-empty { display: block; padding: 8px 10px; }
+.brand-name { color: inherit; text-decoration: none; }
+@media (max-width: 860px) { .tz-cols, .mod-cols, .nm-cols { grid-template-columns: 1fr; } }
+/* красная кнопка в тёмной теме: 4.0:1 на панели — светлее (обход 04.09.2026) */
+:root[data-theme="dark"] .btn-danger { color: color-mix(in srgb, var(--red) 72%, white); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .btn-danger { color: color-mix(in srgb, var(--red) 72%, white); }
+}
+
+/* ─── круг 3 (04.09.2026): блоки, дословно совпадавшие в tz.css и mod.css ─── */
+.tz-doc-state, .mod-doc-state { margin: 4px 0 12px; font-size: 13.5px; }
+.tz-doc-state .ok, .mod-doc-state .ok { color: var(--text); }
+.tz-doc-state .none, .mod-doc-state .none { color: var(--text-2); }
+.tz-paste-fold, .mod-paste-fold { margin-top: 12px; }
+.tz-paste-fold summary, .mod-paste-fold summary { cursor: pointer; color: var(--text-2); font-size: 13.5px; }
+.tz-paste-fold textarea, .mod-paste-fold textarea {
+  width: 100%; margin: 10px 0; resize: vertical;
+  font-family: var(--font-mono); font-size: 12.5px;
+  border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm);
+  background: var(--fill); color: var(--text); padding: 10px;
+}
+.tz-finding, .mod-finding { border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm); padding: 12px 14px; margin: 10px 0; }
+.tz-finding .head, .mod-finding .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.tz-finding .fid, .mod-finding .fid { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+.tz-finding .ref, .mod-finding .ref { font-size: 13px; color: var(--text-2); }
+.tz-finding blockquote, .mod-finding blockquote { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--stroke-soft); color: var(--text-2); font-size: 13px; }
+.tz-finding .problem, .mod-finding .problem { margin: 6px 0; }
+.tz-finding .row, .mod-finding .row { font-size: 13px; color: var(--text-2); margin: 3px 0; }
+.tz-finding .proposed { margin: 8px 0 2px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--fill); font-size: 13.5px; }
+.tz-finding .decide, .mod-finding .decide { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.tz-finding .decide .who, .mod-finding .decide .who { font-size: 12.5px; color: var(--text-2); }
+.tz-finding[data-decision="accepted"], .mod-finding[data-decision="accepted"] { border-left: 3px solid var(--green); }
+.tz-finding[data-decision="rejected"], .mod-finding[data-decision="rejected"] { opacity: .62; }
+.tz-unverified li, .mod-unverified li { margin: 6px 0; color: var(--text-2); font-size: 13.5px; }
+/* шапки «прогон» и «находки/замечания»: заголовок без нижнего поля, одна выключка, одно поведение на телефоне */
+.tz-run-head, .mod-run-head, .nm-run-head, .tz-findings-head, .nm-findings-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tz-findings-head, .nm-findings-head { margin-bottom: 12px; }
+.tz-run-head h2, .mod-run-head h2, .nm-run-head h2, .tz-findings-head h2, .nm-findings-head h2 { margin: 0; }
+@media (max-width: 800px) {
+  .tz-findings-head, .nm-findings-head, .mod-run-head { align-items: flex-start; flex-direction: column; }
+  .tz-findings-head .tz-spacer, .nm-findings-head .nm-spacer, .mod-run-head .mod-spacer { display: none; }
+}
+/* пояснение под заголовком карточки — один класс на все модули */
+.h2-note { font-size: 12.5px; color: var(--text-2); margin: -6px 0 12px; }

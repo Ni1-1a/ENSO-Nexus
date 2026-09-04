@@ -248,6 +248,7 @@ function appDialog({
   return new Promise((resolve) => {
     if (dialogResolve) dialogResolve(null); // предыдущий незакрытый диалог — отменяем
     dialogResolve = resolve;
+    dialogOpener = document.activeElement;
     $('dialog-title').textContent = title;
     $('dialog-message').textContent = message;
     $('dialog-message').hidden = !message;
@@ -275,13 +276,19 @@ function appDialog({
     $('dialog-ok').classList.toggle('btn-primary', !danger);
     $('dialog-modal').hidden = false;
     const first = wrap.querySelector('input');
-    if (first) { first.focus(); first.select(); } else $('dialog-ok').focus();
+    // в разрушающем окне Enter не должен удалять: фокус на «Отмена»
+    if (first) { first.focus(); first.select(); } else (danger ? $('dialog-cancel') : $('dialog-ok')).focus();
   });
 }
 
+let dialogOpener = null;
 function closeDialog(result) {
   $('dialog-modal').hidden = true;
   if (dialogResolve) { dialogResolve(result); dialogResolve = null; }
+  // фокус возвращается туда, откуда окно открыли
+  if (dialogOpener && dialogOpener.isConnected && dialogOpener.offsetParent !== null) dialogOpener.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  dialogOpener = null;
 }
 
 function dialogValues() {
@@ -328,9 +335,10 @@ function renderSessionsList() {
   const items = state.deviceSessions.map((s) => {
     const active = state.session && s.id === state.session.id;
     const date = new Date(s.updatedAt || s.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-    const status = SESS_STATUS[s.jobStatus] || '';
+    // файлы уже лежат, анализа не было — это не «ожидает данных»
+    const status = (!s.jobStatus || s.jobStatus === 'idle') && s.files ? 'Данные загружены' : (SESS_STATUS[s.jobStatus] || '');
     const meta = [date, s.files ? `файлов: ${s.files}` : '', status].filter(Boolean).join(' · ');
-    return `<li class="sess-item${active ? ' active' : ''}" data-sess="${s.id}">
+    return `<li class="sess-item${active ? ' active' : ''}" data-sess="${s.id}" tabindex="0" role="button" aria-current="${active ? 'true' : 'false'}">
       <span class="sess-title">${esc(s.title || 'Новая сессия')}</span>
       <span class="sess-meta"><span class="sess-dot" data-status="${esc(s.jobStatus || 'idle')}"
             aria-hidden="true"></span>${esc(meta)}</span>
@@ -420,6 +428,13 @@ function initSessionsList() {
   list.addEventListener('dblclick', (e) => {
     const li = e.target.closest('.sess-item');
     if (li) openSessMenu(li.dataset.sess, li);
+  });
+  // с клавиатуры: Enter/пробел открывает сессию, Shift+F10 — меню
+  list.addEventListener('keydown', (e) => {
+    const li = e.target.closest('.sess-item');
+    if (!li || e.target !== li) return;
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchSession(li.dataset.sess).catch((err) => toast(err.message, 'error')); }
+    else if (e.key === 'F10' && e.shiftKey) { e.preventDefault(); openSessMenu(li.dataset.sess, li); }
   });
 
   // touch: долгое нажатие открывает меню, свайп влево обнажает «⋮».
@@ -697,9 +712,11 @@ function render() {
 
   // строка активного проекта в сайдбаре: свежие название и статус без запроса
   const mine = state.deviceSessions.find((x) => x.id === v.id);
-  if (mine && (mine.title !== v.title || mine.jobStatus !== v.jobStatus)) {
+  const filesN = (v.files || []).length;
+  if (mine && (mine.title !== v.title || mine.jobStatus !== v.jobStatus || (mine.files || 0) !== filesN)) {
     mine.title = v.title;
     mine.jobStatus = v.jobStatus;
+    mine.files = filesN; // «файлов: N · Данные загружены» — сразу, а не после опроса
     renderSessionsList();
   }
 
@@ -742,7 +759,9 @@ function render() {
 
   // status + events
   $('job-status').dataset.status = v.jobStatus;
-  $('job-status').textContent = STATUS_LABELS[v.jobStatus] || v.jobStatus;
+  // файлы уже лежат, анализа не было — «данные загружены», как в полосе сессий
+  $('job-status').textContent = (!v.jobStatus || v.jobStatus === 'idle') && (v.files || []).length
+    ? 'Данные загружены — можно запускать анализ' : (STATUS_LABELS[v.jobStatus] || v.jobStatus);
 
   // расход сессии: входные/выходные токены и стоимость (облачные модели платные, локальные — нет)
   const u = v.usage;
@@ -2467,7 +2486,7 @@ function renderStats() {
   if (d.since) {
     since.hidden = false;
     since.textContent = `История расхода ведётся с ${new Date(d.since).toLocaleString('ru-RU')}. `
-      + 'Прогоны до этого момента остались только итогами в самих проектах — в графики они не попадают.';
+      + 'Прогоны до этого момента остались только итогами в самих сессиях — в графики они не попадают.';
   } else {
     since.hidden = false;
     since.textContent = 'Событий расхода ещё нет: график появится после первого обращения к модели.';
