@@ -10,7 +10,7 @@ const projects = require('../services/projects');
 const { sanitizeFilename, validateUpload } = require('../services/validation');
 const pipeline = require('../services/pipeline');
 const stages = require('../services/stages');
-const { rateLimit, sessionAuth, userAuth, optionalUser, sessionOwner } = require('../middleware');
+const { rateLimit, sessionAuth, userAuth, optionalUser, sessionOwner, requestSizeLimit } = require('../middleware');
 
 const router = express.Router();
 const upload = multer({
@@ -21,6 +21,18 @@ const upload = multer({
 const generalLimit = rateLimit(config.rateLimitGeneral, 'general');
 const expensiveLimit = rateLimit(config.rateLimitExpensive, 'expensive');
 router.use(generalLimit);
+
+/**
+ * Текстовое поле тела — строка либо не задано. Массив и объект раньше
+ * склеивались String()-ом: ['x'] уходило в ленту как «x», {a:1} — как
+ * «[object Object]», и это попадало в промпт модели (третий круг 04.09.2026).
+ * Когда вернулось true, ответ 400 уже записан в res.
+ */
+function notString(res, value, field) {
+  if (value === undefined || value === null || typeof value === 'string') return false;
+  res.status(400).json({ error: `Поле ${field} должно быть строкой` });
+  return true;
+}
 
 /* ---------- health ---------- */
 router.get('/health', optionalUser, async (req, res) => {
@@ -57,6 +69,10 @@ router.get('/health', optionalUser, async (req, res) => {
       visionMaxPages: config.visionMaxPages,
       maxMessageLength: config.maxMessageLength,
       sessionTtlHours: config.sessionTtlHours,
+      // потолки аудита 02.09.2026: запрос с файлами, запись zip до распаковки, текст документа модулей
+      uploadTotalMb: Math.round(config.uploadTotalBytes / 1048576),
+      zipEntryMb: Math.round(config.zipEntryBytes / 1048576),
+      docCharLimit: config.docCharLimit,
     },
   });
 });
@@ -82,7 +98,9 @@ router.get('/auth/state', (req, res) => {
  * Наружу уходит либо токен, либо «ждите одобрения», либо «проверьте написание».
  */
 router.post('/auth/enter', authLimit, express.json(), (req, res) => {
-  const result = users.enter({
+  // массив ['Иванов'] раньше склеивался в «Иванов» и впускал — имя только строкой
+  const body = req.body || {};
+  const result = (typeof body.lastName !== 'string' || typeof body.firstName !== 'string') ? { status: 'invalid' } : users.enter({
     lastName: req.body?.lastName,
     firstName: req.body?.firstName,
     ip: req.ip,
@@ -240,18 +258,27 @@ router.get('/devices/:deviceId/sessions', userAuth, (req, res) => {
   const userId = (req.user && req.user.id) || '';
   // ?project=<id> — только сессии этого проекта платформы; без параметра — все (старый клиент)
   const projectId = projects.filterId(req.query.project, req.user);
-  // Ответ содержит токены проектов, поэтому маршрут закрыт входом. Отдаём
+  // Кто вправе править проект — автор проекта или владелец платформы — видит в
+  // нём ВСЕ сессии, а не только свои: сводка проекта считает их все, и список
+  // обязан сходиться с ней (второй круг 04.09.2026: сессия, заведённая
+  // владельцем в чужом проекте, была невидима автору этого проекта).
+  // Без ?project= список по-прежнему свой.
+  const asEditor = (projectId && projects.accessTo(projectId, req.user).edit) ? 1 : 0;
+  // Токенов в ответе нет (в базе только хеш), но маршрут закрыт входом. Отдаём
   // СВОИ проекты плюс «ничьи» проекты этого же устройства — те, что заведены
   // до появления входа: они подхватятся и закрепятся при первом открытии.
+  // Сессии мягко удалённого проекта из общего списка уходят, как задания и
+  // проверки из своих списков (по прямой ссылке и по токену они живы).
   const sessions = db.prepare(`
     SELECT s.id, s.title, s.job_status AS jobStatus,
            s.created_at AS createdAt, s.updated_at AS updatedAt,
            (SELECT COUNT(*) FROM files f WHERE f.session_id = s.id) AS files
     FROM sessions s
     WHERE s.status = 'active'
-      AND ((? <> '' AND s.user_id = ?) OR (s.user_id = '' AND s.device_id = ?))
+      AND (? = 1 OR (? <> '' AND s.user_id = ?) OR (s.user_id = '' AND s.device_id = ?))
       AND (? = '' OR s.project_id = ?)
-    ORDER BY s.updated_at DESC LIMIT 50`).all(userId, userId, deviceId, projectId, projectId);
+      AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = s.project_id AND p.deleted_at IS NOT NULL)
+    ORDER BY s.updated_at DESC LIMIT 50`).all(asEditor, userId, userId, deviceId, projectId, projectId);
   res.json({ sessions });
 });
 
@@ -270,7 +297,12 @@ router.post('/sessions/:id/token', userAuth, express.json(), (req, res) => {
   const deviceId = normDeviceId(req.body?.deviceId);
   const mine = !!userId && session.user_id === userId;
   const orphanOfDevice = !session.user_id && !!deviceId && session.device_id === deviceId;
-  if (!mine && !orphanOfDevice) return res.status(403).json({ error: 'Это чужая сессия' });
+  // владелец платформы открывает любую сессию: он видит и правит всё; автор
+  // проекта — любую сессию своего проекта (в том числе заведённую владельцем).
+  // Сессия «Ранних работ» этим не открывается: их правит только владелец.
+  const owner = !!(req.user && req.user.owner === true);
+  const projectEditor = !!session.project_id && projects.accessTo(session.project_id, req.user).edit;
+  if (!mine && !orphanOfDevice && !owner && !projectEditor) return res.status(403).json({ error: 'Это чужая сессия' });
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare("UPDATE sessions SET token_hash = ?, token = '', user_id = CASE WHEN user_id = '' THEN ? ELSE user_id END WHERE id = ?")
     .run(hashToken(token), userId, id);
@@ -384,7 +416,7 @@ function deleteSessionData(sessionId) {
 }
 
 /* ---------- files ---------- */
-router.post('/sessions/:id/files', sessionAuth, sessionOwner, expensiveLimit, upload.array('files', 5), (req, res) => {
+router.post('/sessions/:id/files', sessionAuth, sessionOwner, expensiveLimit, requestSizeLimit(config.uploadTotalBytes), upload.array('files', 5), (req, res) => {
   const uploaded = [];
   const errors = [];
   const incoming = req.files || [];
@@ -517,6 +549,18 @@ router.post('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, expen
     const parcelSource = require('../services/geometry/parcel-source');
     const { db } = require('../db');
     const body = req.body || {};
+    // points заданы — это массив не меньше чем из трёх пар конечных чисел [x, y]:
+    // [1, 2, 3] и [["a","b"], …] раньше сохранялись как есть и молча давали
+    // «границы из документа не построены» на каждом показе плана
+    if (body.points !== undefined && body.points !== null) {
+      const pair = (p) => Array.isArray(p) && p.length === 2 && p.every((v) => typeof v === 'number' && Number.isFinite(v));
+      if (!Array.isArray(body.points) || body.points.length < 3 || !body.points.every(pair)) {
+        return res.status(400).json({ error: 'points: не меньше трёх пар чисел [x, y] в метрах' });
+      }
+    }
+    if (body.meta !== undefined && body.meta !== null && (typeof body.meta !== 'object' || Array.isArray(body.meta))) {
+      return res.status(400).json({ error: 'Поле meta должно быть объектом' });
+    }
     const hasPoints = Array.isArray(body.points) && body.points.length >= 3;
     // без точек и без единого документа модели искать не в чем — это 400, а не
     // прогон впустую, который в демо-режиме заканчивался 500-кой
@@ -774,6 +818,7 @@ router.post('/sessions/:id/plan/restrictions', sessionAuth, sessionOwner, expens
 /** Вопрос модели по выделенной области: мультимодальный контекст (ТЗ, п. 34). */
 router.post('/sessions/:id/annotations/:aid/ask', sessionAuth, sessionOwner, expensiveLimit, express.json(), async (req, res, next) => {
   try {
+    if (notString(res, req.body?.question, 'question')) return;
     const question = String(req.body?.question ?? '').trim();
     if (!question) return res.status(400).json({ error: 'Пустой вопрос' });
     if (question.length > config.maxMessageLength) {
@@ -823,13 +868,14 @@ router.get('/sessions/:id/workplan.xlsx', sessionAuth, (req, res) => {
 });
 
 // загрузка своего Excel с порядком работы
-router.post('/sessions/:id/workplan', sessionAuth, sessionOwner, expensiveLimit, upload.single('file'), (req, res) => {
+router.post('/sessions/:id/workplan', sessionAuth, sessionOwner, expensiveLimit, requestSizeLimit(config.uploadTotalBytes), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Файл не передан' });
   const name = sanitizeFilename(Buffer.from(req.file.originalname, 'latin1').toString('utf8'));
   if (!/\.xlsx$/i.test(name)) return res.status(400).json({ error: 'Нужен файл Excel (.xlsx)' });
   if (req.file.buffer.length > 2 * 1024 * 1024) return res.status(400).json({ error: 'Файл больше 2 МБ' });
   const parsed = workplanSvc.parseXlsx(req.file.buffer);
-  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  // zip-бомба внутри xlsx — 422 от zip-guard, а не «неверный файл» 400
+  if (!parsed.ok) return res.status(parsed.status || 400).json({ error: parsed.error });
   db.prepare('UPDATE sessions SET workplan = ?, updated_at = ? WHERE id = ?')
     .run(JSON.stringify({ name, steps: parsed.steps }), now(), req.session.id);
   pipeline.logEvent(req.session.id, 'Загружен пользовательский порядок работы', `${name} — шагов: ${parsed.steps.length}`);
@@ -847,6 +893,9 @@ router.delete('/sessions/:id/workplan', sessionAuth, sessionOwner, (req, res) =>
 router.post('/sessions/:id/settings', sessionAuth, sessionOwner, express.json(), async (req, res, next) => {
   try {
     const { aiProvider, aiModel, kbChoice } = req.body || {};
+    // ['demo'] раньше сходил за «demo», {a:1} в модели — за «[object Object]» в тексте отказа
+    if (notString(res, aiProvider, 'aiProvider') || notString(res, aiModel, 'aiModel')
+        || notString(res, kbChoice, 'kbChoice') || notString(res, req.body?.title, 'title')) return;
     const updates = {};
     if (aiProvider !== undefined) {
       if (aiProvider === '') {
@@ -913,6 +962,7 @@ router.post('/sessions/:id/comment', sessionAuth, sessionOwner, express.json(), 
  */
 router.post('/sessions/:id/messages', sessionAuth, sessionOwner, expensiveLimit, express.json(), (req, res, next) => {
   try {
+    if (notString(res, req.body?.text, 'text')) return;
     const text = String(req.body?.text ?? '').trim();
     if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
     if (text.length > config.maxMessageLength) {
@@ -1139,6 +1189,7 @@ router.post('/sessions/:id/stages/zones/approve', sessionAuth, sessionOwner, exp
 /** Замечания к схеме зон — зоны считаются заново с их учётом. */
 router.post('/sessions/:id/stages/zones/revise', sessionAuth, sessionOwner, expensiveLimit, express.json(), async (req, res, next) => {
   try {
+    if (notString(res, req.body?.note, 'note')) return;
     const note = String(req.body?.note || '').trim();
     if (!note) return res.status(400).json({ error: 'Замечание пустое — писать в промпт нечего.' });
     stages.addNote(req.session.id, 'zones', note);
@@ -1152,6 +1203,7 @@ router.post('/sessions/:id/stages/zones/revise', sessionAuth, sessionOwner, expe
 /** Замечания к вариантам — четвёрка генерируется заново. */
 router.post('/sessions/:id/stages/variants/revise', sessionAuth, sessionOwner, expensiveLimit, express.json(), async (req, res, next) => {
   try {
+    if (notString(res, req.body?.note, 'note')) return;
     const note = String(req.body?.note || '').trim();
     if (!note) return res.status(400).json({ error: 'Замечание пустое — переделывать не по чему.' });
     stages.addNote(req.session.id, 'variants', note);
@@ -1259,6 +1311,7 @@ router.post('/sessions/:id/cancel', sessionAuth, sessionOwner, express.json(), (
 router.post('/sessions/:id/process', sessionAuth, sessionOwner, expensiveLimit, express.json(), (req, res, next) => {
   // Задание пользователя ДОПОЛНЯЕТ порядок работы, а не подменяет его: подмена
   // выкидывала бы все шаги из настроек ради одной фразы из поля ввода.
+  if (notString(res, req.body?.instruction, 'instruction')) return;
   const extra = String(req.body?.instruction || '').trim().slice(0, config.maxMessageLength);
   Promise.resolve(pipeline.startProcessing(req.session.id, { extraInstruction: extra })).then(
     () => res.status(202).json({ ok: true, jobStatus: 'queued' }),
@@ -1289,6 +1342,7 @@ router.post('/sessions/:id/compare', sessionAuth, sessionOwner, expensiveLimit, 
 
 /* ---------- clarifying questions ---------- */
 router.post('/sessions/:id/questions/:qid/answer', sessionAuth, sessionOwner, expensiveLimit, express.json(), (req, res, next) => {
+  if (notString(res, req.body?.answer, 'answer')) return;
   const answer = String(req.body?.answer ?? '').trim();
   if (!answer) return res.status(400).json({ error: 'Пустой ответ' });
   if (answer.length > config.maxMessageLength) {

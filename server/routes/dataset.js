@@ -15,7 +15,7 @@ const path = require('path');
 const express = require('express');
 const multer = require('multer');
 const config = require('../config');
-const { rateLimit, userAuth } = require('../middleware');
+const { rateLimit, userAuth, requestSizeLimit } = require('../middleware');
 const { sanitizeFilename, validateUpload } = require('../services/validation');
 const store = require('../services/dataset/store');
 const { datasetAccess } = require('../services/dataset/access');
@@ -64,7 +64,7 @@ router.get('/documents', (req, res) => {
   res.json({ documents: store.listDocuments() });
 });
 
-router.post('/documents', rateLimit(config.rateLimitExpensive, 'dataset-upload'), upload.single('file'), wrap(async (req, res) => {
+router.post('/documents', rateLimit(config.rateLimitExpensive, 'dataset-upload'), requestSizeLimit(config.uploadTotalBytes), upload.single('file'), wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Файл не передан' });
   const originalName = sanitizeFilename(Buffer.from(req.file.originalname, 'latin1').toString('utf8'));
   // те же форматы, лимит размера и проверка магических байтов, что у платформы;

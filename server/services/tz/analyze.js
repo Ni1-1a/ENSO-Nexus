@@ -280,11 +280,15 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
   const found = parse(findOut, 'дефекты');
 
   const modelFindings = (Array.isArray(found.findings) ? found.findings : [])
-    .filter((f) => f && f.problem && f.znp_ref)
+    .filter((f) => f && f.problem)
     .map((f) => ({
       ...f,
+      // Ссылка на пункт ЗнП обязательна по промту, но модель её иногда не даёт
+      // (только цитату). Раньше такая находка молча выбрасывалась; теперь она
+      // остаётся с пометкой «место не указано» и уходит человеку (рецензия промтов 04.09.2026).
+      znp_ref: f.znp_ref || 'место не указано',
       // статус НПА в v1 не сверяется с внешним источником — только человек
-      needs_human: f.category === 'нормативная_база' ? true : !!f.needs_human,
+      needs_human: f.category === 'нормативная_база' || !f.znp_ref ? true : !!f.needs_human,
       requirement_source: null,
     }));
 

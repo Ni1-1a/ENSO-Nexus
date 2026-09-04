@@ -32,9 +32,25 @@ function keyOf(rawInner) {
   return rawInner.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Текст ошибки чтения шаблона по-русски. adm-zip на не-zip и битом архиве
+ * бросает английскую фразу («Invalid or unsupported zip format…»), и она
+ * уходила человеку как есть; zip-бомба (422 из zip-guard) и наши сообщения
+ * проходят без изменений.
+ */
+function docxError(err) {
+  if (err && (err.status === 422 || /[А-Яа-яЁё]/.test(String(err.message)))) return err.message;
+  return 'Файл не читается как DOCX (не zip-контейнер)';
+}
+
+/** Zip шаблона; ошибка чтения архива сразу по-русски. */
+function openDocx(templateBuffer) {
+  try { return new AdmZip(templateBuffer); } catch { throw new Error('Файл не читается как DOCX (не zip-контейнер)'); }
+}
+
 /** Плейсхолдеры шаблона: уникальные ключи в порядке появления. */
 function templateKeys(templateBuffer) {
-  const zip = new AdmZip(templateBuffer);
+  const zip = openDocx(templateBuffer);
   const entry = zip.getEntry('word/document.xml');
   if (!entry) throw new Error('Файл не читается как DOCX (нет word/document.xml)');
   const xml = zipGuard.entryData(entry, 'Шаблон DOCX').toString('utf8');
@@ -49,7 +65,7 @@ function templateKeys(templateBuffer) {
 }
 
 function fillTemplate(templateBuffer, values) {
-  const zip = new AdmZip(templateBuffer);
+  const zip = openDocx(templateBuffer);
   const entry = zip.getEntry('word/document.xml');
   const xml = zipGuard.entryData(entry, 'Шаблон DOCX').toString('utf8');
   const missing = [];
@@ -123,4 +139,4 @@ function generateBatch(templateBuffer, table) {
   };
 }
 
-module.exports = { generateBatch, templateKeys, fillTemplate, PLACEHOLDER_RE };
+module.exports = { generateBatch, templateKeys, fillTemplate, docxError, PLACEHOLDER_RE };

@@ -230,17 +230,22 @@ test('маршрут по умолчанию не уводит закрытог�
 test('пикер: облачные провайдеры помечены недоступными для закрытого человека', async () => {
   const closed = { id: 'u1', approved: true, cloudAi: false };
   const open = { id: 'u2', approved: true, cloudAi: true };
+  const forOpen = await providers.listProvidersFor(open);
   const forClosed = await providers.listProvidersFor(closed);
   for (const p of forClosed) {
     if (cloudAccess.isCloud(p.id)) {
       assert.strictEqual(p.available, false, `${p.id} не имеет права быть доступным`);
-      assert.strictEqual(p.note, providers.CLOUD_CLOSED_NOTE);
+      // сначала ключ, потом доступ: у провайдера без ключа на сервере пометка
+      // «нужен ключ» (он закрыт всем), у остальных — «только по отметке»
+      const keyed = forOpen.find((x) => x.id === p.id).available;
+      if (keyed) assert.strictEqual(p.note, providers.cloudClosedNote());
+      else assert.match(p.note, /нужен .*на сервере/, `${p.id}: ${p.note}`);
     }
   }
+  assert.match(forClosed.find((p) => p.id === 'claude').note, /ANTHROPIC_API_KEY/, 'без ключа причина — ключ, а не отметка');
   const lm = forClosed.find((p) => p.id === 'lmstudio');
   assert.ok(lm, 'локальный провайдер обязан остаться в списке');
 
-  const forOpen = await providers.listProvidersFor(open);
   const gpt = forOpen.find((p) => p.id === 'chatgpt');
   assert.strictEqual(gpt.available, true, 'владельцу список не режется');
 
@@ -384,6 +389,35 @@ test('в отказе названо, чем можно воспользоват
     assert.match(текст, /Kimi/, 'и увидеть открытую замену, а не только запрет');
     assert.match(текст, /локальную модель/);
   });
+});
+
+/*
+ * Западная тройка в «доступны всем» не бывает (OWNER_ONLY), что бы ни стояло в
+ * CLOUD_AI_OPEN_PROVIDERS: на VPS список перечислял все шесть, и отказ по Claude
+ * советовал «выберите Claude — доступен всем». Пометка пикера тоже называет
+ * открытых, когда они есть.
+ */
+test('отказ и пометка пикера не называют западную тройку открытой всем', async () => {
+  const config = require('../server/config');
+  const было = config.cloudAiOpenProviders;
+  config.cloudAiOpenProviders = new Set(['claude', 'kimi']);
+  try {
+    const текст = cloudAccess.denyMessage('claude');
+    assert.match(текст, /^Claude на этой платформе/, 'название отказанной модели — в начале');
+    assert.ok(!/Выберите[^.]*Claude/.test(текст), `Claude предложен как замена: ${текст}`);
+    assert.match(текст, /Выберите[^.]*Kimi/, 'Kimi открыт списком — он и есть замена');
+    assert.deepStrictEqual(cloudAccess.openProviders(), ['kimi']);
+    const note = providers.cloudClosedNote();
+    assert.match(note, /Kimi/);
+    assert.match(note, /открыт всем/);
+    assert.ok(!note.includes('Claude'));
+    // без открытых — прежняя короткая пометка
+    config.cloudAiOpenProviders = new Set(['claude']);
+    assert.strictEqual(providers.cloudClosedNote(), providers.CLOUD_CLOSED_NOTE);
+    assert.match(cloudAccess.denyMessage('gemini'), /локальную модель — она доступна всем/);
+  } finally {
+    config.cloudAiOpenProviders = было;
+  }
 });
 
 /*

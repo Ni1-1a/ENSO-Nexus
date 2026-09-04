@@ -112,11 +112,19 @@ function hostDenyMessage() {
     : 'Эта модель на этом адресе платформы недоступна — выберите другую в «Настройках».';
 }
 
+/**
+ * Провайдеры, открытые всем вошедшим на деле: список CLOUD_AI_OPEN_PROVIDERS
+ * без западной тройки (OWNER_ONLY) и без незнакомых имён. Именно их называет
+ * отказ как замену — Claude в «доступны всем» не бывает, что бы ни стояло в списке.
+ */
+function openProviders() {
+  return [...config.cloudAiOpenProviders].filter((id) => CLOUD_PROVIDERS.has(id) && !OWNER_ONLY.has(id));
+}
+
 /** Текст отказа: называет и то, чем человек может воспользоваться вместо. */
 function denyMessage(providerId) {
   const имя = PROVIDER_LABELS[providerId] || 'Эта облачная модель';
-  const открытые = [...config.cloudAiOpenProviders]
-    .map((id) => PROVIDER_LABELS[id] || id).join(', ');
+  const открытые = openProviders().map((id) => PROVIDER_LABELS[id] || id).join(', ');
   return `${имя} на этой платформе доступна только владельцу: условия провайдера `
     + 'запрещают открывать доступ к их сервису другим людям. '
     + (открытые
@@ -190,6 +198,6 @@ function safetyIdentifier(sessionId) {
 
 module.exports = {
   CLOUD_PROVIDERS, OWNER_ONLY, DENY_MESSAGE, PROVIDER_LABELS,
-  isCloud, openToEveryone, denyMessage, userAllowed, allowedForSession, safetyIdentifier, ownerOf,
+  isCloud, openToEveryone, openProviders, denyMessage, userAllowed, allowedForSession, safetyIdentifier, ownerOf,
   normHost, hostAllowed, hostOf, hostDenyMessage,
 };

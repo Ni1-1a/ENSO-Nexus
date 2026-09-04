@@ -134,8 +134,9 @@ test('проекты: сессия посадки, проверка ТЗ и пр
   assert.strictEqual(p.body.project.summary.site.count, 1);
   assert.strictEqual(p.body.project.summary.tz.count, 1);
   assert.strictEqual(p.body.project.summary.doc.count, 2);
-  assert.strictEqual(p.body.project.summary.doc.state, 'ok');
-  assert.match(p.body.project.summary.doc.line, /1 проверка · 1 сравнение/);
+  // без единого прогона — «none · без прогона», как у ТЗ, а не «ok»
+  assert.strictEqual(p.body.project.summary.doc.state, 'none');
+  assert.match(p.body.project.summary.doc.line, /1 проверка · 1 сравнение · без прогона/);
 });
 
 test('проекты: правка, отметки прогонов и мягкое удаление', async () => {
@@ -161,9 +162,22 @@ test('проекты: правка, отметки прогонов и мягк�
   assert.strictEqual(gone.status, 404);
   const again = await api(`/api/projects/${projectId}`, { method: 'DELETE', headers: asUser() });
   assert.strictEqual(again.status, 404);
-  // сущности модуля остаются читаемыми по прямой ссылке
+  // задания удалённого проекта уходят из списков — и из фильтра, и из общего —
+  // но по прямой ссылке остаются читаемыми (мягкое удаление)
+  const tzOfDeleted = tzStore.listProjects({ projectId }).map((t) => t.id);
+  assert.ok(tzOfDeleted.length >= 1, 'у удалённого проекта должно быть задание');
+  const filtered = await api(`/api/tz/projects?project=${projectId}`, { headers: asUser() });
+  assert.strictEqual(filtered.status, 404, JSON.stringify(filtered.body));
   const tzAll = await api('/api/tz/projects', { headers: asUser() });
-  assert.ok(tzAll.body.projects.length >= 2);
+  assert.strictEqual(tzAll.status, 200);
+  assert.ok(!tzAll.body.projects.some((t) => tzOfDeleted.includes(t.id)), 'задание удалённого проекта в общем списке');
+  assert.ok(tzAll.body.projects.length >= 1, 'задания живых проектов остались');
+  const direct = await api(`/api/tz/projects/${tzOfDeleted[0]}`, { headers: asUser() });
+  assert.strictEqual(direct.status, 200, 'по прямой ссылке задание удалённого проекта читается');
+  const dcAll = await api('/api/doccheck/checks', { headers: asUser() });
+  assert.ok(!dcAll.body.checks.some((c) => c.project_id === projectId), 'проверка удалённого проекта в общем списке');
+  const abAll = await api('/api/doccheck/ab', { headers: asUser() });
+  assert.ok(!abAll.body.list.some((c) => c.project_id === projectId), 'сравнение удалённого проекта в общем списке');
 });
 
 test('проекты: записи без проекта переезжают в «Ранние работы», повторно — ничего', async () => {
@@ -329,12 +343,16 @@ test('проекты: чужой проект не виден, не правит
   assert.strictEqual((await api(`/api/projects/${myId}`, { headers: asUser(other) })).status, 404);
   assert.strictEqual((await api(`/api/projects/${myId}`, { method: 'PATCH', ...json({ name: 'Захвачен' }, other) })).status, 404);
   assert.strictEqual((await api(`/api/projects/${myId}`, { method: 'DELETE', headers: asUser(other) })).status, 404);
-  // и завести в нём задание или сессию нельзя
+  // и завести в нём задание или сессию нельзя — ответ тот же 404: существование
+  // чужого проекта не подтверждается ни одним маршрутом (единое правило 04.09.2026)
   const tz = await api('/api/tz/projects', { method: 'POST', ...json({ name: 'Чужое', checklist: 'production', projectId: myId }, other) });
-  assert.strictEqual(tz.status, 403, JSON.stringify(tz.body));
+  assert.strictEqual(tz.status, 404, JSON.stringify(tz.body));
+  assert.match(tz.body.error, /Проект не найден/);
   const sess = await api('/api/sessions', { method: 'POST', ...json({ deviceId: 'device-other-000001', projectId: myId }, other) });
-  assert.strictEqual(sess.status, 403);
-  assert.strictEqual((await api(`/api/tz/projects?project=${myId}`, { headers: asUser(other) })).status, 403);
+  assert.strictEqual(sess.status, 404);
+  const filtered = await api(`/api/tz/projects?project=${myId}`, { headers: asUser(other) });
+  assert.strictEqual(filtered.status, 404, JSON.stringify(filtered.body));
+  assert.match(filtered.body.error, /Проект не найден/);
   // общий проект править нельзя, читать можно
   assert.strictEqual((await api(`/api/projects/${projects.LEGACY_ID}`, { method: 'PATCH', ...json({ name: 'x' }, other) })).status, 403);
   assert.strictEqual((await api(`/api/projects/${projects.LEGACY_ID}`, { headers: asUser(other) })).status, 200);

@@ -7,8 +7,14 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const pg = require('pg');
 const config = require('../../config');
+
+const { Pool } = pg;
+// DATE (oid 1082) — строкой как есть: pg по умолчанию делает из неё Date в
+// местной зоне, и date_started «2026-08-01» уезжало клиенту как
+// «2026-07-31T21:00:00.000Z». Дата без времени временем и не является.
+pg.types.setTypeParser(1082, (v) => v);
 
 let pool = null;
 

@@ -201,11 +201,13 @@ function ensureServiceSession(ab, user, host = '') {
     }
   }
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO sessions (id, token, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-    id, crypto.randomBytes(32).toString('hex'), 'service', '',
+  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, project_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    // открытого токена нет: служебную сессию по токену не открывают, в базе — только хеш случайного;
+    // project_id — проекта платформы сравнения, иначе migrateLegacy уводит её в «Ранние работы»
+    id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     (user && user.id) || ab.created_by || '', config.promptVersion, host,
-    `Замена A→B: ${ab.name}`.slice(0, 60), now(), now());
+    `Замена A→B: ${ab.name}`.slice(0, 60), ab.project_id || 'legacy', now(), now());
   db.prepare('UPDATE doccheck_ab SET service_session_id = ? WHERE id = ?').run(id, ab.id);
   return id;
 }
@@ -436,6 +438,6 @@ function protocolXlsx(ab) {
 
 module.exports = {
   AB_STATUSES, AB_CATEGORIES, AB_SCHEMA, AB_CHAR_LIMIT,
-  createAb, abById, listAb, appendDoc, clearDocs, deleteAb, setStatus, recoverInterrupted,
+  createAb, abById, listAb, appendDoc, clearDocs, deleteAb, setStatus, recoverInterrupted, ensureServiceSession,
   setRowDecision, runCompare, runPrecheck, protocolXlsx, _setCallFn,
 };

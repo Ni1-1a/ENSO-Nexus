@@ -15,7 +15,7 @@ const express = require('express');
 const platformProjects = require('../services/projects');
 const multer = require('multer');
 const config = require('../config');
-const { rateLimit, userAuth } = require('../middleware');
+const { rateLimit, userAuth, requestSizeLimit } = require('../middleware');
 const store = require('../services/doccheck/store');
 const ab = require('../services/doccheck/ab');
 const doclib = require('../services/doclib');
@@ -48,6 +48,38 @@ router.use((req, res, next) => {
   }
   next();
 });
+
+/**
+ * Гейт «свои проекты» для проверки и сравнения (решение владельца 02.09.2026,
+ * закрыто 04.09.2026): запись из чужого проекта для человека не существует —
+ * 404; запись видимого проекта, но не своя и не владельца платформы, читается,
+ * а правится — 403. Когда вернулось false, ответ уже записан в res.
+ */
+function allowed(row, req, res, { write = false, notFound = 'Проверка не найдена' } = {}) {
+  const denied = platformProjects.entityDenial(row, req.user, { write, notFound });
+  if (denied) { res.status(denied.status).json({ error: denied.error }); return false; }
+  return true;
+}
+const AB_NOT_FOUND = 'Сравнение не найдено';
+
+/** Проверка, которой принадлежит прогон, — и мягко удалённая: прогоны остаются читаемыми. */
+function checkForRun(run, req, res, opts) {
+  return allowed(store.checkRowAny(run.check_id), req, res, opts);
+}
+
+/** Значение в тексте ошибки: null и пустая строка — «не указан», а не «null». */
+const shown = (v) => (v === null || v === undefined || v === '' ? 'не указан' : String(v));
+
+/** Текст и имя из тела — строки: объект раньше сохранялся как «[object Object]». */
+function badStrings(body, res, fields = ['text', 'name']) {
+  for (const f of fields) {
+    if (body[f] !== undefined && body[f] !== null && typeof body[f] !== 'string') {
+      res.status(400).json({ error: `Поле ${f} должно быть строкой` });
+      return true;
+    }
+  }
+  return false;
+}
 
 /* ---------------- справочное ---------------- */
 
@@ -103,6 +135,8 @@ async function extractUpload(req, res) {
 
 router.post('/checks', bigJson, wrap(async (req, res) => {
   const { name, provider, model, projectId } = req.body || {};
+  // как в PATCH: объект и число в name/provider/model — 400, а не «[object Object]» в базе
+  if (badStrings(req.body || {}, res, ['name', 'provider', 'model'])) return;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Нужно имя проверки (name)' });
   if (provider) {
     const check = await require('../services/providers')
@@ -122,12 +156,15 @@ router.post('/checks', bigJson, wrap(async (req, res) => {
 }));
 
 router.get('/checks', wrap(async (req, res) => {
-  res.json({ checks: store.listChecks({ projectId: platformProjects.filterId(req.query.project, req.user) }) });
+  const projectId = platformProjects.filterId(req.query.project, req.user);
+  const rows = store.listChecks({ projectId });
+  // без ?project= — только проверки из видимых, не удалённых проектов платформы
+  res.json({ checks: projectId ? rows : platformProjects.onlyVisible(rows, req.user) });
 }));
 
 router.get('/checks/:id', wrap(async (req, res) => {
   const check = store.checkById(req.params.id);
-  if (!check) return res.status(404).json({ error: 'Проверка не найдена' });
+  if (!allowed(check, req, res)) return;
   res.json({
     check: { ...check, document_text: undefined, document_chars: check.document_text.length },
     runs: store.listRuns(check.id),
@@ -137,7 +174,8 @@ router.get('/checks/:id', wrap(async (req, res) => {
 router.patch('/checks/:id', bigJson, wrap(async (req, res) => {
   const { name, provider, model, chosen_type: chosenType, chosen_prompt_id: chosenPromptId } = req.body || {};
   const found = store.checkById(req.params.id);
-  if (!found) return res.status(404).json({ error: 'Проверка не найдена' });
+  if (!allowed(found, req, res, { write: true })) return;
+  if (badStrings(req.body || {}, res, ['name', 'provider', 'model', 'chosen_type', 'chosen_prompt_id'])) return;
   // проверка ПОСЛЕ trim: null раньше становился именем «null», пробелы — пустым именем
   if (name !== undefined && !String(name ?? '').trim()) {
     return res.status(400).json({ error: 'Название не может быть пустым' });
@@ -148,7 +186,7 @@ router.patch('/checks/:id', bigJson, wrap(async (req, res) => {
     if (!check.ok) return res.status(400).json({ error: check.error });
   }
   if (chosenType !== undefined && chosenType !== '' && !doclib.DOC_TYPES.includes(chosenType)) {
-    return res.status(400).json({ error: `Неизвестный тип документа: ${chosenType}` });
+    return res.status(400).json({ error: `Неизвестный тип документа: ${shown(chosenType)}` });
   }
   // ТЗ здесь не прогоняется — у него свой модуль с чек-листами и вердиктом
   if (chosenType === 'tz') return res.status(400).json({ error: 'ТЗ проверяется в модуле „Анализ ТЗ“' });
@@ -168,12 +206,15 @@ router.patch('/checks/:id', bigJson, wrap(async (req, res) => {
     ai_provider: provider !== undefined ? String(provider) : undefined,
     ai_model: model !== undefined ? String(model) : undefined,
     chosen_type: chosenType,
-    chosen_prompt_id: chosenPromptId,
+    // снятый тип («») снимает и выбранный промпт: он относился к прежнему типу;
+    // null — тоже «снять», а не строка «null» в базе
+    chosen_prompt_id: chosenPromptId === null || (chosenType === '' && chosenPromptId === undefined) ? '' : chosenPromptId,
   });
   res.json({ check: { ...check, document_text: undefined, document_chars: check.document_text.length } });
 }));
 
 router.delete('/checks/:id', wrap(async (req, res) => {
+  if (!allowed(store.checkById(req.params.id), req, res, { write: true })) return;
   store.deleteCheck(req.params.id);
   res.json({ ok: true });
 }));
@@ -202,6 +243,8 @@ function startRun(check, req) {
 }
 
 router.put('/checks/:id/document', bigJson, wrap(async (req, res) => {
+  if (!allowed(store.checkById(req.params.id), req, res, { write: true })) return;
+  if (badStrings(req.body || {}, res)) return;
   const text = String((req.body || {}).text || '').trim();
   if (!text) return res.status(400).json({ error: 'Пустой текст документа' });
   const tooBig = require('../services/validation').docSizeError(text);
@@ -219,10 +262,10 @@ router.put('/checks/:id/document', bigJson, wrap(async (req, res) => {
 }));
 
 router.post('/checks/:id/document/file',
-  rateLimit(config.rateLimitExpensive, 'doccheck-upload'), upload.single('file'),
+  rateLimit(config.rateLimitExpensive, 'doccheck-upload'), requestSizeLimit(config.uploadTotalBytes), upload.single('file'),
   wrap(async (req, res) => {
     const found = store.checkById(req.params.id);
-    if (!found) return res.status(404).json({ error: 'Проверка не найдена' });
+    if (!allowed(found, req, res, { write: true })) return;
     const extracted = await extractUpload(req, res);
     if (!extracted) return;
     const check = store.setDocument(found.id, extracted);
@@ -237,7 +280,7 @@ router.post('/checks/:id/analyze',
   rateLimit(config.rateLimitExpensive, 'doccheck-analyze'), bigJson,
   wrap(async (req, res) => {
     const check = store.checkById(req.params.id);
-    if (!check) return res.status(404).json({ error: 'Проверка не найдена' });
+    if (!allowed(check, req, res, { write: true })) return;
     if (!check.document_text.trim()) {
       return res.status(422).json({ error: 'Нет текста документа — загрузите файл или вставьте текст' });
     }
@@ -252,10 +295,14 @@ router.post('/checks/:id/analyze',
 router.get('/runs/:rid', wrap(async (req, res) => {
   const run = store.runById(req.params.rid);
   if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!checkForRun(run, req, res)) return;
   res.json({ run });
 }));
 
 router.post('/runs/:rid/findings/:fid/decision', bigJson, wrap(async (req, res) => {
+  const run = store.runById(req.params.rid);
+  if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!checkForRun(run, req, res, { write: true })) return;
   const decision = (req.body || {}).decision ?? null;
   const saved = store.setDecision(req.params.rid, req.params.fid, decision, req.user);
   res.json({ findingId: req.params.fid, decision: saved });
@@ -264,6 +311,7 @@ router.post('/runs/:rid/findings/:fid/decision', bigJson, wrap(async (req, res) 
 router.get('/runs/:rid/export.xlsx', wrap(async (req, res) => {
   const run = store.runById(req.params.rid);
   if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!checkForRun(run, req, res)) return;
   if (run.status !== 'done' || !run.result) {
     return res.status(409).json({ error: 'Прогон ещё не завершён — экспортировать нечего' });
   }
@@ -277,6 +325,7 @@ router.get('/runs/:rid/export.xlsx', wrap(async (req, res) => {
 
 router.post('/ab', bigJson, wrap(async (req, res) => {
   const { name, provider, model, projectId } = req.body || {};
+  if (badStrings(req.body || {}, res, ['name', 'provider', 'model'])) return;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Нужно имя сравнения (name)' });
   if (provider) {
     const check = await require('../services/providers')
@@ -296,18 +345,22 @@ router.post('/ab', bigJson, wrap(async (req, res) => {
 }));
 
 router.get('/ab', wrap(async (req, res) => {
-  res.json({ list: ab.listAb({ projectId: platformProjects.filterId(req.query.project, req.user) }) });
+  const projectId = platformProjects.filterId(req.query.project, req.user);
+  const rows = ab.listAb({ projectId });
+  // без ?project= — только сравнения из видимых, не удалённых проектов платформы
+  res.json({ list: projectId ? rows : platformProjects.onlyVisible(rows, req.user) });
 }));
 
 router.get('/ab/:id', wrap(async (req, res) => {
   const row = ab.abById(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Сравнение не найдено' });
+  if (!allowed(row, req, res, { notFound: AB_NOT_FOUND })) return;
   res.json({ ab: row });
 }));
 
 router.patch('/ab/:id', bigJson, wrap(async (req, res) => {
   const row = ab.abById(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Сравнение не найдено' });
+  if (!allowed(row, req, res, { write: true, notFound: AB_NOT_FOUND })) return;
+  if (badStrings(req.body || {}, res, ['name', 'provider', 'model'])) return;
   const { name, provider, model } = req.body || {};
   // проверка ПОСЛЕ trim: null раньше становился именем «null», пробелы — пустым именем
   if (name !== undefined && !String(name ?? '').trim()) {
@@ -333,11 +386,14 @@ router.patch('/ab/:id', bigJson, wrap(async (req, res) => {
 }));
 
 router.delete('/ab/:id', wrap(async (req, res) => {
+  if (!allowed(ab.abById(req.params.id), req, res, { write: true, notFound: AB_NOT_FOUND })) return;
   ab.deleteAb(req.params.id);
   res.json({ ok: true });
 }));
 
 router.put('/ab/:id/docs/:kind', bigJson, wrap(async (req, res) => {
+  if (!allowed(ab.abById(req.params.id), req, res, { write: true, notFound: AB_NOT_FOUND })) return;
+  if (badStrings(req.body || {}, res)) return;
   const text = String((req.body || {}).text || '').trim();
   if (!text) return res.status(400).json({ error: 'Пустой текст' });
   const row = ab.appendDoc(req.params.id, req.params.kind, {
@@ -348,10 +404,10 @@ router.put('/ab/:id/docs/:kind', bigJson, wrap(async (req, res) => {
 }));
 
 router.post('/ab/:id/docs/:kind/file',
-  rateLimit(config.rateLimitExpensive, 'doccheck-ab-upload'), upload.single('file'),
+  rateLimit(config.rateLimitExpensive, 'doccheck-ab-upload'), requestSizeLimit(config.uploadTotalBytes), upload.single('file'),
   wrap(async (req, res) => {
     const found = ab.abById(req.params.id);
-    if (!found) return res.status(404).json({ error: 'Сравнение не найдено' });
+    if (!allowed(found, req, res, { write: true, notFound: AB_NOT_FOUND })) return;
     const extracted = await extractUpload(req, res);
     if (!extracted) return;
     const row = ab.appendDoc(found.id, req.params.kind, extracted);
@@ -359,6 +415,7 @@ router.post('/ab/:id/docs/:kind/file',
   }));
 
 router.delete('/ab/:id/docs/:kind', wrap(async (req, res) => {
+  if (!allowed(ab.abById(req.params.id), req, res, { write: true, notFound: AB_NOT_FOUND })) return;
   res.json({ ab: ab.clearDocs(req.params.id, req.params.kind) });
 }));
 
@@ -366,7 +423,7 @@ router.post('/ab/:id/run',
   rateLimit(config.rateLimitExpensive, 'doccheck-ab-run'), bigJson,
   wrap(async (req, res) => {
     const row = ab.abById(req.params.id);
-    if (!row) return res.status(404).json({ error: 'Сравнение не найдено' });
+    if (!allowed(row, req, res, { write: true, notFound: AB_NOT_FOUND })) return;
     if (row.status === 'running') return res.status(409).json({ error: 'Сравнение уже идёт' });
     // чего не хватает — говорим сразу (422), как в «Анализе ТЗ», а не роняем
     // сравнение в failed через опрос
@@ -386,6 +443,7 @@ router.post('/ab/:id/run',
   }));
 
 router.post('/ab/:id/rows/:rowId/decision', bigJson, wrap(async (req, res) => {
+  if (!allowed(ab.abById(req.params.id), req, res, { write: true, notFound: AB_NOT_FOUND })) return;
   const { decision = null, comment = '' } = req.body || {};
   const saved = ab.setRowDecision(req.params.id, req.params.rowId, { decision, comment }, req.user);
   res.json({ rowId: req.params.rowId, decision: saved });
@@ -393,7 +451,7 @@ router.post('/ab/:id/rows/:rowId/decision', bigJson, wrap(async (req, res) => {
 
 router.get('/ab/:id/export.xlsx', wrap(async (req, res) => {
   const row = ab.abById(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Сравнение не найдено' });
+  if (!allowed(row, req, res, { notFound: AB_NOT_FOUND })) return;
   if (row.status !== 'done' || !row.result) {
     return res.status(409).json({ error: 'Сравнение ещё не завершено — экспортировать нечего' });
   }

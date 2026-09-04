@@ -258,8 +258,14 @@ function meta() {
   for (const [type, route] of Object.entries(ROUTES)) {
     let promptTitle = route.promptId;
     try { promptTitle = byId(route.promptId).title || route.promptId; } catch { /* нет файла — увидит тест */ }
+    // альтернативы — с заголовками из библиотеки: голые id (dop-kr-k02…) человеку ничего не говорят
+    const alternativeTitles = route.alternatives.map((id) => {
+      let title = id;
+      try { title = byId(id).title || id; } catch { /* нет файла — увидит тест */ }
+      return { id, title };
+    });
     types.push({ id: type, label: route.label, promptId: route.promptId, promptTitle,
-      alternatives: route.alternatives });
+      alternatives: route.alternatives, alternativeTitles });
   }
   for (const [type, sp] of Object.entries(SPECIAL_TYPES)) {
     types.push({ id: type, label: sp.label, promptId: null, promptTitle: null, note: sp.note, alternatives: [] });

@@ -70,39 +70,128 @@ function assertStrings(fields) {
   }
 }
 
+/** Текст отказа на правку чужой записи модуля — один на все модули. */
+const FOREIGN_EDIT = 'Это чужая запись — править может автор или владелец платформы';
+
 /**
  * Привязка сущности модуля к проекту платформы — единое правило для сессий,
  * ТЗ, проверок документов и нормоконтроля:
- *  - пусто → «Ранние работы» (проект заводится тут же, id 'legacy');
+ *  - пусто → «Ранние работы» (проект заводится тут же, id 'legacy'), без проверки:
+ *    так пишет старый клиент и прямой вызов без проекта;
+ *  - явный 'legacy' в теле → только владелец платформы (403): общий приёмник
+ *    ранних записей новыми записями не пополняется кем угодно;
  *  - не по форме идентификатора → 400;
- *  - нет или мягко удалён → 404. Раньше такая запись принималась молча и
- *    исчезала из всех списков: ни в одном проекте её не было.
+ *  - нет, мягко удалён или чужой → 404 «Проект не найден». Чужой проект для
+ *    человека не существует — существование не подтверждается ни здесь, ни
+ *    в GET/PATCH/DELETE самого проекта (единый ответ, 04.09.2026). Раньше такая
+ *    запись принималась молча и исчезала из всех списков.
  */
 function resolveProjectId(raw, user) {
+  // массив и объект раньше приводились к строке («['a']» → «a») и уходили в поиск
+  if (raw != null && typeof raw !== 'string') throw httpError(400, 'Некорректный идентификатор проекта');
   const s = String(raw == null ? '' : raw).trim();
   if (!s) { ensureLegacy(); return { id: LEGACY_ID }; }
   if (!ID_RE.test(s)) throw httpError(400, 'Некорректный идентификатор проекта');
-  const project = byId(s);
-  if (!project) throw httpError(404, 'Проект не найден');
-  if (!canSee(project, user)) throw httpError(403, 'Это чужой проект');
+  const project = s === LEGACY_ID ? ensureLegacy() : byId(s);
+  if (!project || !canSee(project, user)) throw httpError(404, 'Проект не найден');
+  if (s === LEGACY_ID && !canEdit(project, user)) {
+    throw httpError(403, 'В «Ранние работы» новые записи заводит владелец платформы');
+  }
   return { id: s };
 }
 
-/** ?project= в списках: пусто — все записи; не по форме — 400, чужой — 403. */
+/**
+ * ?project= в списках: пусто — все записи; не по форме — 400; чужой или мягко
+ * удалённый — 404 «Проект не найден» (то же правило, что у resolveProjectId).
+ * Несуществующий id пропускается: список по нему просто пуст.
+ */
 function filterId(raw, user) {
+  // ?project=a&project=b приходит массивом — это не идентификатор
+  if (raw != null && typeof raw !== 'string') throw httpError(400, 'Некорректный идентификатор проекта');
   const s = String(raw == null ? '' : raw).trim();
   if (!s) return '';
   if (!ID_RE.test(s)) throw httpError(400, 'Некорректный идентификатор проекта');
-  const project = byId(s);
-  if (project && !canSee(project, user)) throw httpError(403, 'Это чужой проект');
+  const project = byIdAny(s);
+  if (project && (project.deleted_at || !canSee(project, user))) throw httpError(404, 'Проект не найден');
   return s;
+}
+
+/**
+ * Доступ человека к проекту по id: see — читать, edit — править, deleted —
+ * проект мягко удалён. Мягко удалённый проект здесь ещё виден: записи
+ * модулей остаются читаемыми по прямой ссылке после удаления проекта (из
+ * списков они при этом уходят), а вот правка в нём — уже 404 (entityDenial).
+ */
+function accessTo(projectId, user) {
+  const pid = normId(projectId) || LEGACY_ID;
+  let project = byIdAny(pid);
+  if (!project && pid === LEGACY_ID) project = ensureLegacy();
+  if (!project) return { see: false, edit: false, deleted: false };
+  return { see: canSee(project, user), edit: canEdit(project, user), deleted: !!project.deleted_at };
+}
+
+/**
+ * Доступ к записи модуля (задание ТЗ, проверка, сравнение, сессия): читать —
+ * как проект (see); править — владелец проекта либо автор самой записи
+ * (row.created_by). В «Ранних работах» это значит: читают все, правит владелец
+ * платформы или тот, кто запись завёл.
+ */
+function entityAccess(row, user) {
+  if (!row) return { see: false, edit: false, deleted: false };
+  const a = accessTo(row.project_id, user);
+  const own = !!(row.created_by && user && row.created_by === user.id);
+  return { see: a.see, edit: a.edit || (a.see && own), deleted: a.deleted };
+}
+
+/**
+ * Отказ для маршрута записи модуля или null: чужая запись — 404 (существование
+ * не подтверждаем), чужая на правку при видимом проекте — 403. Запись
+ * удалённого проекта читается по прямой ссылке, но правка в удалённом
+ * проекте — 404 «Проект не найден», как и всё остальное в нём (правило
+ * 02.09.2026; второй круг 04.09.2026: раньше PATCH/PUT/DELETE проходили).
+ */
+function entityDenial(row, user, { write = false, notFound = 'Не найдено' } = {}) {
+  const a = entityAccess(row, user);
+  if (!row || !a.see) return { status: 404, error: notFound };
+  if (write && a.deleted) return { status: 404, error: 'Проект не найден' };
+  if (write && !a.edit) return { status: 403, error: FOREIGN_EDIT };
+  return null;
+}
+
+/** Множество id живых проектов, видимых человеку; «Ранние работы» — всегда (они общие). */
+function visibleIds(user) {
+  const ids = new Set(list(user).map((p) => p.id));
+  ids.add(LEGACY_ID);
+  return ids;
+}
+
+/** Общий список модуля без ?project=: только записи из видимых, не удалённых проектов. */
+function onlyVisible(rows, user) {
+  const ids = visibleIds(user);
+  return rows.filter((r) => ids.has(r.project_id || LEGACY_ID));
+}
+
+/**
+ * Проект для отметки прогона (акты, ГГЭ): ставит её тот, кто вправе править
+ * проект. Кривой id — 400, чужой или удалённый — 404, «Ранние работы» не
+ * владельцем — 403 (они видны всем, но правит их владелец).
+ */
+function markable(raw, user) {
+  const id = normId(raw);
+  if (!id) throw httpError(400, 'Некорректный идентификатор проекта');
+  const project = byId(id);
+  if (!project || !canSee(project, user)) throw httpError(404, 'Проект не найден');
+  if (!canEdit(project, user)) throw httpError(403, 'Это чужой проект — отметку ставит автор или владелец платформы');
+  return project;
 }
 
 /*
  * Решение владельца 02.09.2026: у каждого человека свой набор проектов, править
  * можно свои. Владелец платформы (owner в users.json) видит и правит всё.
  * «Ранние работы» — общий приёмник записей до появления проектов: читают все,
- * правит владелец. При выключенном входе (REQUIRE_LOGIN=0) ограничений нет.
+ * правит владелец (правка не владельцем — 403, единственное место, где
+ * существование проекта подтверждается). При выключенном входе
+ * (REQUIRE_LOGIN=0) ограничений нет.
  */
 function canEdit(project, user) {
   if (!project) return false;
@@ -147,6 +236,11 @@ function create({ name, fullName, client, stage, note, user, id }) {
 
 function byId(id) {
   return db.prepare('SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL').get(id) || null;
+}
+
+/** Проект и мягко удалённый тоже — для проверок доступа и отличия «удалён» от «не было». */
+function byIdAny(id) {
+  return db.prepare('SELECT * FROM projects WHERE id = ?').get(id) || null;
 }
 
 /** Проекты, видимые человеку: свои (+ «Ранние работы»); владельцу — все. */
@@ -259,7 +353,7 @@ function summarizeTz(id) {
   const run = db.prepare(`SELECT r.status, r.result_json FROM tz_runs r
       JOIN tz_projects p ON p.id = r.project_id
       WHERE p.project_id = ? AND p.deleted_at IS NULL ORDER BY r.created_at DESC LIMIT 1`).get(id);
-  const n = plural(row.n, 'проверка', 'проверки', 'проверок');
+  const n = plural(row.n, 'задание', 'задания', 'заданий'); // так модуль зовёт свою сущность
   if (!run) return { state: 'none', count: row.n, line: `${n} · без прогона`, at: row.at };
   if (run.status === 'queued' || run.status === 'running') return { state: 'run', count: row.n, line: `${n} · идёт проверка`, at: row.at };
   if (run.status === 'failed') return { state: 'bad', count: row.n, line: `${n} · последняя упала`, at: row.at };
@@ -285,6 +379,17 @@ function summarizeDoc(id) {
   const at = [c?.at, a?.at].filter(Boolean).sort().pop() || null;
   const busy = (running?.n || 0) + (a?.running || 0);
   if (busy) return { state: 'run', count: total, line: `${parts.join(' · ')} · ${plural(busy, 'идёт', 'идут', 'идут')}`, at };
+  // как у ТЗ: без единого прогона — «none», иначе состояние по последнему
+  // завершённому (прогон проверки или сравнение A→B — что позже)
+  const lastRun = db.prepare(`SELECT r.status, r.created_at AS at FROM doccheck_runs r
+      JOIN doccheck_checks ch ON ch.id = r.check_id
+      WHERE ch.project_id = ? AND ch.deleted_at IS NULL ORDER BY r.created_at DESC LIMIT 1`).get(id);
+  const lastAb = db.prepare(`SELECT status, updated_at AS at FROM doccheck_ab
+      WHERE project_id = ? AND deleted_at IS NULL AND status IN ('done','failed')
+      ORDER BY updated_at DESC LIMIT 1`).get(id);
+  const last = [lastRun, lastAb].filter(Boolean).sort((x, y) => (x.at < y.at ? 1 : -1))[0];
+  if (!last) return { state: 'none', count: total, line: `${parts.join(' · ')} · без прогона`, at };
+  if (last.status === 'failed') return { state: 'bad', count: total, line: `${parts.join(' · ')} · последний упал`, at };
   return { state: 'ok', count: total, line: parts.join(' · '), at };
 }
 
@@ -332,11 +437,17 @@ async function summarize(ids) {
       ? { state: 'off', count: 0, line: 'База нормоконтроля недоступна' }
       : normo[id]
         ? {
-          state: normo[id].open_findings > 0 ? 'warn' : 'ok',
+          // комплект без единой версии ещё не проверялся — «без прогона», как у остальных модулей,
+          // а не зелёное «открытых замечаний нет» (обход 04.09.2026)
+          state: !normo[id].versions ? 'none' : normo[id].open_findings > 0 ? 'warn' : 'ok',
           count: normo[id].projects,
-          line: `${plural(normo[id].sections, 'раздел', 'раздела', 'разделов')} · ${normo[id].open_findings
-            ? plural(normo[id].open_findings, 'открытое замечание', 'открытых замечания', 'открытых замечаний')
-            : 'открытых замечаний нет'}`,
+          line: !normo[id].versions
+            ? `${plural(normo[id].projects, 'комплект', 'комплекта', 'комплектов')} · ${plural(normo[id].sections, 'раздел', 'раздела', 'разделов')} · без прогона`
+            : `${plural(normo[id].sections, 'раздел', 'раздела', 'разделов')} · ${normo[id].open_findings
+              ? plural(normo[id].open_findings, 'открытое замечание', 'открытых замечания', 'открытых замечаний')
+              : 'открытых замечаний нет'}`,
+          // последняя загрузка версии или заведение комплекта — как у остальных модулей
+          at: normo[id].at ? new Date(normo[id].at).toISOString() : null,
         }
         : NONE('Не запускался');
     out[id] = {
@@ -352,7 +463,8 @@ async function summarize(ids) {
 }
 
 module.exports = {
-  LEGACY_ID, MODULES, MARK_MODULES, normId, resolveProjectId, filterId,
-  create, byId, list, update, remove, touch, mark, canEdit, canSee,
+  LEGACY_ID, MODULES, MARK_MODULES, FOREIGN_EDIT, normId, resolveProjectId, filterId,
+  accessTo, entityAccess, entityDenial, visibleIds, onlyVisible, markable,
+  create, byId, byIdAny, list, update, remove, touch, mark, canEdit, canSee,
   ensureLegacy, migrateLegacy, summarize, _resetNormoDown,
 };

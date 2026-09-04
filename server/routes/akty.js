@@ -13,10 +13,16 @@ const generate = require('../services/akty/generate');
 const dates = require('../services/akty/dates');
 const projects = require('../services/projects');
 
-/** ?project=<id> — проект платформы помнит дату и итог последнего прогона. */
-function markProject(req, note) {
-  const pid = projects.normId(req.query.project);
-  if (pid) projects.mark(pid, 'akty', note, req.user);
+/**
+ * ?project=<id> — проект платформы помнит дату и итог последнего прогона.
+ * Право ставить отметку проверяется ДО работы с файлами (projects.markable):
+ * чужой или удалённый проект → 404, «Ранние работы» не владельцем → 403.
+ */
+function markTarget(req) {
+  return String(req.query.project || '').trim() ? projects.markable(req.query.project, req.user) : null;
+}
+function markProject(target, req, note) {
+  if (target) projects.mark(target.id, 'akty', note, req.user);
 }
 
 const router = express.Router();
@@ -56,7 +62,7 @@ router.post('/template/preview', requestSizeLimit(config.uploadTotalBytes), uplo
   try {
     res.json({ keys: generate.templateKeys(tpl.buffer) });
   } catch (err) {
-    res.status(422).json({ error: `Шаблон не разобран: ${err.message}` });
+    res.status(422).json({ error: `Шаблон не разобран: ${generate.docxError(err)}` });
   }
 }));
 
@@ -64,6 +70,7 @@ router.post('/template/preview', requestSizeLimit(config.uploadTotalBytes), uplo
 router.post('/generate',
   rateLimit(config.rateLimitExpensive, 'akty-generate'), requestSizeLimit(config.uploadTotalBytes), upload.any(),
   wrap(async (req, res) => {
+    const target = markTarget(req);
     const reg = fileByField(req, 'registry');
     const tpl = fileByField(req, 'template');
     if (!reg || !tpl) {
@@ -75,9 +82,9 @@ router.post('/generate',
     }
     let out;
     try { out = generate.generateBatch(tpl.buffer, table); } catch (err) {
-      return res.status(422).json({ error: err.message });
+      return res.status(422).json({ error: generate.docxError(err) });
     }
-    markProject(req, `черновиков: ${table.rowCount}`);
+    markProject(target, req, `черновиков: ${table.rowCount}`);
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('Черновики актов.zip')}`);
     res.setHeader('X-Akty-Report', encodeURIComponent(JSON.stringify(out.report)));
@@ -88,6 +95,7 @@ router.post('/generate',
 router.post('/dates',
   rateLimit(config.rateLimitExpensive, 'akty-dates'), requestSizeLimit(config.uploadTotalBytes), upload.any(),
   wrap(async (req, res) => {
+    const target = markTarget(req);
     const acts = fileByField(req, 'acts');
     const journal = fileByField(req, 'journal');
     if (!acts || !journal) {
@@ -103,7 +111,7 @@ router.post('/dates',
     }
     try {
       const result = dates.compare(actsTable, journalTable);
-      markProject(req, 'сверка дат акт↔журнал');
+      markProject(target, req, 'сверка дат акт↔журнал');
       res.json(result);
     } catch (err) {
       res.status(422).json({ error: err.message });

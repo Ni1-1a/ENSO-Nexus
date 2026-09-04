@@ -115,19 +115,37 @@ function optionalUser(req, res, next) {
 }
 
 /**
- * Владелец проекта. Токен проекта — по-прежнему доказательство права на него,
- * но если у проекта есть хозяин, посторонний с этим токеном не должен тратить
+ * Хозяин сессии. Токен сессии — по-прежнему доказательство права на неё, но
+ * если у сессии есть хозяин, посторонний с этим токеном не должен тратить
  * деньги владельца на модели и рушить его данные.
+ *
+ * Правит сессию тот же круг, что и любую запись модуля (projects.entityAccess,
+ * второй круг 04.09.2026): её хозяин, автор проекта платформы, в котором она
+ * заведена, и владелец платформы. Раньше даже владелец, взяв токен чужой
+ * сессии, получал 403 на каждом действии — «видит и правит всё» не сходилось.
  */
 function sessionOwner(req, res, next) {
   // опознание идёт всегда: даже с выключенным входом обработчику нужно знать,
   // кто именно подписывает решение по мероприятию
   optionalUser(req, res, () => {
+    const projects = require('../services/projects');
+    // Сессия мягко удалённого проекта читается по токену, но не правится — ни
+    // хозяином, ни автором проекта, ни владельцем платформы: всё в удалённом
+    // проекте — 404 «Проект не найден» (правило 02.09.2026). Третий круг
+    // 04.09.2026: проверка стояла ПОСЛЕ ветки «своя сессия», и хозяин сессии
+    // продолжал писать в удалённый проект.
+    if (req.session && req.session.project_id && projects.accessTo(req.session.project_id, req.user).deleted) {
+      return res.status(404).json({ error: 'Проект не найден' });
+    }
     if (!config.requireLogin) return next();
     const owner = req.session && req.session.user_id;
-    if (!owner) return next();                       // проект заведён до входа — хозяина нет
-    if (req.user && req.user.approved && req.user.id === owner) return next();
-    return res.status(403).json({ error: 'Это чужой проект — войдите под своим именем', needLogin: !req.user });
+    if (!owner) return next();                       // сессия заведена до входа — хозяина нет
+    if (req.user && req.user.approved) {
+      if (req.user.id === owner) return next();
+      const access = projects.entityAccess({ project_id: req.session.project_id, created_by: owner }, req.user);
+      if (access.edit) return next();
+    }
+    return res.status(403).json({ error: 'Это чужая сессия — войдите под своим именем', needLogin: !req.user });
   });
 }
 
@@ -187,7 +205,9 @@ const ERROR_PAGES = path.join(__dirname, '..', '..', 'public', 'error-pages');
 
 function notFound(req, res) {
   if (wantsHtml(req)) {
-    return res.status(404).sendFile(path.join(ERROR_PAGES, 'app-404.html'), (err) => {
+    // как у остальных страниц (express.static): ревалидация по ETag, а не
+    // «public, max-age=0» по умолчанию sendFile
+    return res.status(404).sendFile(path.join(ERROR_PAGES, 'app-404.html'), { headers: { 'Cache-Control': 'no-cache' } }, (err) => {
       if (err && !res.headersSent) res.status(404).json({ error: 'Не найдено' });
     });
   }
@@ -224,6 +244,11 @@ function errorHandler(err, req, res, next) {
   }
   if (err.type === 'charset.unsupported' || err.type === 'encoding.unsupported') {
     return res.status(400).json({ error: 'Неподдерживаемая кодировка тела запроса' });
+  }
+  // Битое percent-кодирование в пути (/api/sessions/%E0): роутер Express отдаёт
+  // 400 с английской фразой «Failed to decode param» — наружу, как и всё, по-русски
+  if (err.status === 400 && /^Failed to decode param/.test(String(err.message || ''))) {
+    return res.status(400).json({ error: 'Некорректный адрес запроса: путь содержит неверное percent-кодирование' });
   }
   if (err.name === 'MulterError') {
     // файл пришёл не в том поле — это ошибка формы (400), а не размера (413)

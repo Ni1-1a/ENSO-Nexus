@@ -82,6 +82,94 @@ test('zip-бомба в DOCX: запись больше ZIP_ENTRY_MB не рас
   assert.match(JSON.parse(okText).document.name, /ok\.docx/);
 });
 
+/** XLSX с одним листом заданного размера — зип-бомба для порядка работы. */
+function xlsx(bodyChars) {
+  const zip = new AdmZip();
+  zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
+  zip.addFile('xl/workbook.xml', Buffer.from('<workbook><sheets><sheet name="Лист1" sheetId="1"/></sheets></workbook>'));
+  zip.addFile('xl/worksheets/sheet1.xml', Buffer.from(
+    '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>' + ' '.repeat(bodyChars) + '</t></is></c></row></sheetData></worksheet>', 'utf8'));
+  return zip.toBuffer();
+}
+
+test('файлы сессии и порядок работы: запрос больше UPLOAD_TOTAL_MB — 413, зип-бомба в xlsx — 422', async () => {
+  const created = await fetch(`${base}/api/sessions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Token': token },
+    body: JSON.stringify({ deviceId: 'device-uplim-test-0001' }),
+  });
+  assert.strictEqual(created.status, 201);
+  const { id, token: sessionToken } = await created.json();
+  const headers = { Authorization: `Bearer ${sessionToken}`, 'X-User-Token': token };
+
+  const fd = new FormData();
+  fd.append('files', new Blob([Buffer.alloc(2 * 1024 * 1024, 65)], { type: 'text/plain' }), 'big.txt');
+  const big = await fetch(`${base}/api/sessions/${id}/files`, { method: 'POST', headers, body: fd });
+  const bigText = await big.text();
+  assert.strictEqual(big.status, 413, bigText);
+  assert.match(JSON.parse(bigText).error, /Слишком большой запрос/);
+  // файлы сессии не появились
+  const view = await fetch(`${base}/api/sessions/${id}`, { headers });
+  assert.strictEqual((await view.json()).files.length, 0);
+
+  const fdWp = new FormData();
+  fdWp.append('file', new Blob([Buffer.alloc(2 * 1024 * 1024, 65)]), 'plan.xlsx');
+  const bigWp = await fetch(`${base}/api/sessions/${id}/workplan`, { method: 'POST', headers, body: fdWp });
+  assert.strictEqual(bigWp.status, 413, await bigWp.text());
+
+  // зип-бомба в xlsx порядка работы — 422 от zip-guard, а не 400 «неверный файл»
+  const bomb = xlsx(2 * 1024 * 1024);
+  assert.ok(bomb.length < 200 * 1024, `бомба обязана быть маленькой: ${bomb.length}`);
+  const fdBomb = new FormData();
+  fdBomb.append('file', new Blob([bomb]), 'bomb.xlsx');
+  const res = await fetch(`${base}/api/sessions/${id}/workplan`, { method: 'POST', headers, body: fdBomb });
+  const text = await res.text();
+  assert.strictEqual(res.status, 422, text);
+  assert.match(JSON.parse(text).error, /слишком велико при распаковке/);
+  // не-zip под именем xlsx — по-прежнему 400
+  const fdNoZip = new FormData();
+  fdNoZip.append('file', new Blob(['это не excel']), 'plan.xlsx');
+  const noZip = await fetch(`${base}/api/sessions/${id}/workplan`, { method: 'POST', headers, body: fdNoZip });
+  assert.strictEqual(noZip.status, 400);
+});
+
+test('проверка документа, замена A→B и датасет: запрос больше UPLOAD_TOTAL_MB — 413 до разбора', async () => {
+  const check = await (await fetch(`${base}/api/doccheck/checks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Token': token },
+    body: JSON.stringify({ name: 'Лимит' }),
+  })).json();
+  const cmp = await (await fetch(`${base}/api/doccheck/ab`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Token': token },
+    body: JSON.stringify({ name: 'Лимит A→B' }),
+  })).json();
+  for (const url of [
+    `/api/doccheck/checks/${check.check.id}/document/file`,
+    `/api/doccheck/ab/${cmp.ab.id}/docs/a/file`,
+    '/api/dataset/documents',
+  ]) {
+    const fd = new FormData();
+    fd.append('file', new Blob([Buffer.alloc(2 * 1024 * 1024, 65)], { type: 'text/plain' }), 'big.txt');
+    const res = await fetch(`${base}${url}`, { method: 'POST', headers: { 'X-User-Token': token }, body: fd });
+    assert.strictEqual(res.status, 413, `${url}: ${res.status} ${await res.text()}`);
+  }
+});
+
+test('шаблон актов: не-zip под именем DOCX — русский текст, а не фраза adm-zip', async () => {
+  const fd = new FormData();
+  fd.append('template', new Blob(['это не docx']), 'шаблон.docx');
+  const res = await fetch(`${base}/api/akty/template/preview`, { method: 'POST', headers: { 'X-User-Token': token }, body: fd });
+  const body = await res.json();
+  assert.strictEqual(res.status, 422, JSON.stringify(body));
+  assert.match(body.error, /не читается как DOCX \(не zip-контейнер\)/);
+  assert.ok(!/zip format|Invalid/i.test(body.error), body.error);
+  // и в генерации — тот же текст
+  const fd2 = new FormData();
+  fd2.append('registry', new Blob([Buffer.from('PK')]), 'реестр.xlsx');
+  fd2.append('template', new Blob(['это не docx']), 'шаблон.docx');
+  const gen = await fetch(`${base}/api/akty/generate`, { method: 'POST', headers: { 'X-User-Token': token }, body: fd2 });
+  assert.strictEqual(gen.status, 422);
+  assert.match((await gen.json()).error, /не читается как (DOCX|XLSX)/);
+});
+
 test('шаблон актов: зип-бомба в DOCX даёт 422, а не падение процесса', async () => {
   const fd = new FormData();
   fd.append('template', new Blob([docx(2 * 1024 * 1024)]), 'bomb.docx');

@@ -17,9 +17,15 @@
 
 Ключи не смешиваются: в `Authorization` живёт только токен сессии, токен
 человека всегда в `X-User-Token`. Маршруты сессии проверяют её токен; те, что
-меняют данные или тратят модель, дополнительно требуют хозяина (`sessionOwner`):
-чужой человек с верным токеном сессии получает `403`, сессия без хозяина
-(заведена до появления входа) закрепляется за первым вошедшим.
+меняют данные или тратят модель, дополнительно требуют права на сессию
+(`sessionOwner`) — тот же круг, что у любой записи модуля: хозяин сессии, автор
+проекта платформы, в котором она заведена, и владелец платформы. Чужой человек
+с верным токеном сессии получает `403`; сессия в мягко удалённом проекте на
+S+U — `404 { error: "Проект не найден" }` всем, включая хозяина (читается по
+токену, токен выдаётся); сессия без хозяина (заведена до появления входа)
+закрепляется за первым вошедшим. Текстовые поля тела (`text`, `title`,
+`aiProvider`, `aiModel`, `instruction`, `answer`, `note`, `question`) — только
+строки, иначе `400 { error: "Поле … должно быть строкой" }`.
 
 Обозначения в таблицах: **U** — `X-User-Token` одобренного человека;
 **S** — `Authorization: Bearer` токен сессии; **S+U** — токен сессии и её
@@ -34,7 +40,7 @@
 | Метод | Путь | Смысл | Заголовок |
 |---|---|---|---|
 | GET | `/api/auth/state` | `{ requireLogin, registration }` — нужен ли вход и какой режим | — |
-| POST | `/api/auth/enter` | `{ lastName, firstName, deviceId? }` → `{ status: "active", token, user }`, либо `{ status: "pending", message }`, либо `400 { status: "invalid", error }`. Ответ одинаков для нового и известного имени. Лимит попыток — `RATE_LIMIT_AUTH` | — |
+| POST | `/api/auth/enter` | `{ lastName, firstName, deviceId? }` → `{ status: "active", token, user }`, либо `{ status: "pending", message }`, либо `400 { status: "invalid", error }` (в том числе когда фамилия или имя — не строка). Ответ одинаков для нового и известного имени. Лимит попыток — `RATE_LIMIT_AUTH` | — |
 | GET | `/api/auth/me` | кто вошёл: `{ status: "active" \| "pending", user }`; без токена `401 { needLogin: true }` | U (любой статус) |
 | POST | `/api/auth/logout` | отозвать токен → `{ ok }` | U |
 
@@ -64,7 +70,8 @@
   "kbBases": [{ "id": "main", "label": "Общая база" }, { "id": "verified", "label": "Верифицировано (разбор по пунктам и таблицам)" }],
   "limits": { "maxFileSizeMb": 25, "maxTotalUploadMb": 60, "maxFiles": 10, "visionMaxPages": 50,
               "allowedExtensions": ["pdf","dwg","dxf","docx","txt","md","json","csv","png","jpg","jpeg"],
-              "maxMessageLength": 4000, "sessionTtlHours": 72 } }
+              "maxMessageLength": 4000, "sessionTtlHours": 72,
+              "uploadTotalMb": 200, "zipEntryMb": 50, "docCharLimit": 1500000 } }
 ```
 
 ## Провайдеры и базы знаний
@@ -97,11 +104,36 @@
 | GET | `/api/projects/:id` | `{ project }` со сводкой |
 | PATCH | `/api/projects/:id` | правка тех же полей → `{ project }` |
 | DELETE | `/api/projects/:id` | мягкое удаление → `{ ok }`; сущности модулей остаются |
-| POST | `/api/projects/:id/marks` | `{ module: "gge" \| "akty", note? }` — отметка прогона модуля без хранения |
+| POST | `/api/projects/:id/marks` | `{ module: "gge" \| "akty", note? }` — отметка прогона модуля без хранения; `module` и `note` — строки, иначе `400` |
 
 `summary` считает сервер, по строке на модуль (`tz`, `site`, `doc`, `normo`,
 `gge`, `akty`): `{ state: "none" \| "ok" \| "warn" \| "bad" \| "run" \| "off", count, line, at }`.
-`off` — база нормоконтроля недоступна.
+`off` — база нормоконтроля недоступна. Модуль без единого прогона — `none`
+(«N проверок · без прогона»), дальше по последнему прогону: `done` → `ok`,
+`failed` → `bad`, идёт → `run`. У нормоконтроля `at` — последняя загрузка
+версии или заведение комплекта.
+
+**Свои проекты.** У каждого человека свой набор проектов; владелец платформы
+(`owner` в `users.json`) видит и правит всё. `can_edit` в каждом проекте
+списка — может ли этот человек править (клиент прячет кнопки). **Чужой проект
+не существует**: `GET`/`PATCH`/`DELETE /api/projects/:id`, `?project=` в
+списках, `projectId` при создании записи модуля и `?project=` у актов/ГГЭ
+отвечают одинаково — `404 { error: "Проект не найден" }`, существование не
+подтверждается. Мягко удалённый проект — тоже `404`; его записи (задания,
+проверки, сравнения, комплекты, сессии) уходят из списков, но по прямой ссылке
+и по токену сессии читаются, а любая правка в них (`PATCH`/`PUT`/`POST`/`DELETE`,
+запуск прогона, новая версия) — `404 { error: "Проект не найден" }`, как и всё
+остальное в удалённом проекте. Единственное исключение — «Ранние
+работы» (`legacy`): они видны всем, а правка (`PATCH`, отметки, новая запись
+с явным `projectId: "legacy"`) не владельцем — `403`. Пустой `projectId`
+по-прежнему кладёт запись в «Ранние работы» без проверки (старый клиент).
+
+**Записи модулей** (задание ТЗ, проверка, сравнение A→B, комплект
+нормоконтроля и всё под ними — документ, прогоны, решения, экспорт) берутся
+с проверкой проекта: запись чужого проекта — `404`; запись видимого проекта,
+но не своя (`created_by` / `owner_user`) и не владельца платформы — читается,
+а на `PATCH`/`PUT`/`POST`/`DELETE` отвечает
+`403 { error: "Это чужая запись — править может автор или владелец платформы" }`.
 
 ## Посадка здания — сессии `/api/sessions`
 
@@ -120,8 +152,9 @@
 
 | Метод | Путь | Смысл | Заголовок |
 |---|---|---|---|
-| POST | `/api/sessions` | `{ deviceId?, projectId? }` → `201 { id, token }` | U |
-| GET | `/api/devices/:deviceId/sessions` | `?project=<id>` — сессии человека (плюс «ничьи» этого устройства) → `{ sessions: [{ id, token, title, jobStatus, createdAt, updatedAt, files }] }` | U |
+| POST | `/api/sessions` | `{ deviceId?, projectId? }` → `201 { id, token }` — токен выдаётся один раз, в базе только хеш | U |
+| GET | `/api/devices/:deviceId/sessions` | `?project=<id>` — сессии человека (плюс «ничьи» этого устройства) → `{ sessions: [{ id, title, jobStatus, createdAt, updatedAt, files }] }` — **без токенов**; тому, кто вправе править проект (его автор, владелец платформы), с `?project=` — все сессии проекта (список сходится со сводкой); без `?project=` сессии мягко удалённых проектов не показываются | U |
+| POST | `/api/sessions/:id/token` | `{ deviceId? }` → `{ id, token }` — новый токен своей сессии (прежний отзывается); своя — заведённая этим человеком, «ничья» того же устройства, любая сессия проекта, который человек вправе править, или любая для владельца платформы; чужая → `403` | U |
 | POST | `/api/sessions/:id/device` | привязать сессию к устройству и закрепить за вошедшим | S+U |
 | GET | `/api/sessions/:id` | полное состояние (см. ниже) | S |
 | GET | `/api/sessions/:id/status` | `{ jobStatus, events }` — для опроса | S |
@@ -150,10 +183,10 @@
 
 | Метод | Путь | Смысл | Заголовок |
 |---|---|---|---|
-| POST | `/api/sessions/:id/files` | multipart, поле `files` (до 5 за запрос) → `{ uploaded, errors: [{ name, error }] }`; тип проверяется по magic bytes | S+U |
+| POST | `/api/sessions/:id/files` | multipart, поле `files` (до 5 за запрос) → `{ uploaded, errors: [{ name, error }] }`; тип проверяется по magic bytes; запрос больше `UPLOAD_TOTAL_MB` → `413` | S+U |
 | DELETE | `/api/sessions/:id/files/:fileId` | удалить файл | S+U |
 | GET | `/api/sessions/:id/workplan.xlsx` | текущий порядок работы сессии (Excel) | S |
-| POST | `/api/sessions/:id/workplan` | multipart `file` — свой порядок работы | S+U |
+| POST | `/api/sessions/:id/workplan` | multipart `file` — свой порядок работы; не Excel → `400`, зип-бомба в xlsx → `422` | S+U |
 | DELETE | `/api/sessions/:id/workplan` | вернуть стандартный порядок | S+U |
 
 ### Обработка и диалог
@@ -171,7 +204,7 @@
 | Метод | Путь | Смысл | Заголовок |
 |---|---|---|---|
 | GET | `/api/sessions/:id/plan` | разбор чертежей: объекты, слои, участок (детерминирован, без модели) | S |
-| POST | `/api/sessions/:id/plan/parcel-source` | границы ЗУ по поворотным точкам (ГПЗУ/ЕГРН); полигон считает код | S+U |
+| POST | `/api/sessions/:id/plan/parcel-source` | границы ЗУ по поворотным точкам (ГПЗУ/ЕГРН); `points` — не меньше трёх пар конечных чисел `[x, y]`, `meta` — объект, иначе `400`; без `points` точки ищет модель в документах; полигон считает код | S+U |
 | DELETE | `/api/sessions/:id/plan/parcel-source` | убрать заданные границы | S+U |
 | POST | `/api/sessions/:id/plan/objects/:objectId` | правка типа/свойств объекта человеком (переживает переразбор) | S+U |
 | DELETE | `/api/sessions/:id/plan/objects/:objectKey` | снять правку | S+U |
@@ -229,14 +262,14 @@
 | Метод | Путь | Смысл |
 |---|---|---|
 | GET | `/api/tz/meta` | `{ checklists, severities, itemStatuses }` |
-| POST | `/api/tz/projects` | `{ name, checklist?, provider?, model?, object?, projectId? }` → `201 { project }` |
-| GET | `/api/tz/projects` | `?project=` → `{ projects: [{ id, name, checklist, ai_provider, ai_model, document_name, project_id, has_document, document_chars, run_count, last_run_status, last_run_id, … }] }` |
+| POST | `/api/tz/projects` | `{ name, checklist?, provider?, model?, object?, projectId? }` → `201 { project }` (без `document_text` и `object_json`, как в GET); `name`, `provider`, `model`, `projectId` — строки, `object` — объект до 20 000 символов, иначе `400` (то же на `PATCH`) |
+| GET | `/api/tz/projects` | `?project=` → `{ projects: [{ id, name, checklist, ai_provider, ai_model, document_name, project_id, has_document, document_chars, run_count, last_run_status, last_run_id, … }] }`; без `?project=` — только задания видимых, не удалённых проектов |
 | GET | `/api/tz/projects/:id` | `{ project, runs }` (без текста документа) |
-| PATCH | `/api/tz/projects/:id` | имя, чек-лист, модель, объект |
+| PATCH | `/api/tz/projects/:id` | имя, чек-лист, модель, объект; `checklist` — строка из перечня, иначе `400` |
 | DELETE | `/api/tz/projects/:id` | удалить |
 | GET | `/api/tz/projects/:id/document` | `{ name, note, text }` |
-| PUT | `/api/tz/projects/:id/document` | `{ text, name? }` — вставить текст руками |
-| POST | `/api/tz/projects/:id/document/file` | multipart `file`: DOCX, PDF с текстовым слоем, TXT, MD; скан → `422` |
+| PUT | `/api/tz/projects/:id/document` | `{ text, name? }` — вставить текст руками; нестрока → `400` |
+| POST | `/api/tz/projects/:id/document/file` | multipart `file`: DOCX, PDF с текстовым слоем, TXT, MD; скан → `422`; больше `UPLOAD_TOTAL_MB` → `413` |
 | POST | `/api/tz/projects/:id/analyze` | запустить прогон → `202 { runId, status: "queued" }`; идущий прогон → `409` |
 | GET | `/api/tz/runs/:rid` | `{ run }` — статус, прогресс, находки |
 | POST | `/api/tz/runs/:rid/findings/:fid/decision` | решение человека по находке |
@@ -251,13 +284,13 @@
 | Метод | Путь | Смысл |
 |---|---|---|
 | GET | `/api/doccheck/meta` | `{ types }` — типы документов библиотеки |
-| POST | `/api/doccheck/checks` | `{ name, provider?, model?, projectId? }` → `201 { check }` |
-| GET | `/api/doccheck/checks` | `?project=` → `{ checks: [{ id, name, ai_provider, ai_model, document_name, project_id, has_document, document_chars, detected_type, chosen_type, run_count, last_run_status, last_run_id, … }] }` |
+| POST | `/api/doccheck/checks` | `{ name, provider?, model?, projectId? }` → `201 { check }`; нестроки в полях → `400` (то же на `PATCH` и у сравнений A→B) |
+| GET | `/api/doccheck/checks` | `?project=` → `{ checks: [{ id, name, ai_provider, ai_model, document_name, project_id, has_document, document_chars, detected_type, chosen_type, run_count, last_run_status, last_run_id, … }] }`; без `?project=` — только из видимых, не удалённых проектов |
 | GET | `/api/doccheck/checks/:id` | проверка с прогонами (без текста) |
-| PATCH | `/api/doccheck/checks/:id` | имя, модель, выбранный тип документа |
+| PATCH | `/api/doccheck/checks/:id` | имя, модель, выбранный тип документа (`chosen_type`) и промпт (`chosen_prompt_id`); `chosen_type: ""` снимает и промпт, `chosen_prompt_id: null` — только промпт |
 | DELETE | `/api/doccheck/checks/:id` | удалить |
-| PUT | `/api/doccheck/checks/:id/document` | `{ text, name? }` — текст руками; тип документа определяется сразу |
-| POST | `/api/doccheck/checks/:id/document/file` | multipart `file`: DOCX, PDF с текстовым слоем, TXT, MD, XML (график MS Project) |
+| PUT | `/api/doccheck/checks/:id/document` | `{ text, name? }` — текст руками → `{ document: { name, chars }, runId }`: загрузка САМА запускает прогон, `runId` — его id (`null`, если прогон уже идёт); нестрока → `400` |
+| POST | `/api/doccheck/checks/:id/document/file` | multipart `file`: DOCX, PDF с текстовым слоем, TXT, MD, XML (график MS Project) → `201 { document, runId }` (автозапуск, как у PUT); больше `UPLOAD_TOTAL_MB` → `413` |
 | POST | `/api/doccheck/checks/:id/analyze` | прогон → `202 { runId, status: "queued" }` |
 | GET | `/api/doccheck/runs/:rid` | `{ run }` |
 | POST | `/api/doccheck/runs/:rid/findings/:fid/decision` | решение по находке |
@@ -267,9 +300,9 @@
 | GET | `/api/doccheck/ab/:id` | `{ ab }` |
 | PATCH | `/api/doccheck/ab/:id` | имя, модель |
 | DELETE | `/api/doccheck/ab/:id` | удалить |
-| PUT | `/api/doccheck/ab/:id/docs/:kind` | текст редакции `a` или `b` руками |
-| POST | `/api/doccheck/ab/:id/docs/:kind/file` | файл редакции (те же форматы) |
-| DELETE | `/api/doccheck/ab/:id/docs/:kind` | убрать редакцию |
+| PUT | `/api/doccheck/ab/:id/docs/:kind` | текст руками; `kind` — `req` (требования проекта/ТЗ), `a` (проектная модель), `b` (предлагаемая); документы одного `kind` дописываются друг к другу |
+| POST | `/api/doccheck/ab/:id/docs/:kind/file` | файл того же `kind` (те же форматы); больше `UPLOAD_TOTAL_MB` → `413` |
+| DELETE | `/api/doccheck/ab/:id/docs/:kind` | убрать документы этого `kind` |
 | POST | `/api/doccheck/ab/:id/run` | запустить сравнение → `202 { status: "running" }` |
 | POST | `/api/doccheck/ab/:id/rows/:rowId/decision` | решение по строке сравнения |
 | GET | `/api/doccheck/ab/:id/export.xlsx` | таблица сравнения (Excel) |
@@ -279,23 +312,32 @@
 Своя БД PostgreSQL + pgvector (`NORMO_DATABASE_URL`, порт 5433), файлы — в
 `NORMO_DATA_DIR`, база знаний модуля — каталог `нормоконтроль/` (`NORMO_KB_DIR`).
 Схема разворачивается при первом запросе к модулю. Все маршруты — **U**.
+Даты (`date_started`, `checked_at`) — строкой `YYYY-MM-DD`. Гейт «свои проекты»
+стоит на каждом числовом id: объект чужого проекта платформы — `404`, правка
+комплекта в «Ранних работах» — владельцу платформы или автору комплекта
+(`owner_user`), иначе `403`; любая запись в мягко удалённый комплект
+(`archived_at`) — `404 { error: "Комплект не найден" }`, чтение по прямой
+ссылке остаётся. NUL-байт из строк тела вырезается; `name` и `customer`
+комплекта режутся до 200 символов. Фильтры списков (`status`, `severity`,
+`scope`) принимают только значения из перечня, иначе `400`.
 
 | Метод | Путь | Смысл |
 |---|---|---|
 | GET | `/api/normo/health` | `{ db, rules: { files, count, hash } }` |
 | GET | `/api/normo/catalog/rules` | каталог правил; фильтры `?applies_to=`, `?severity=` |
-| POST | `/api/normo/projects` | `{ name, stage, dateStarted, customer?, objectKind?, localOnly?, platformProjectId? }` → `201 { project }` |
+| POST | `/api/normo/projects` | `{ name, stage, dateStarted, customer?, objectKind?, localOnly?, platformProjectId? }` → `201 { project }`; два одинаковых POST дают два комплекта (ключа идемпотентности нет) |
 | GET | `/api/normo/projects` | `?project=<проект платформы>` → `{ projects }` |
 | GET | `/api/normo/projects/:id` | `{ project }` |
-| PUT | `/api/normo/projects/:id/sections` | состав разделов `{ sections: [{ code, name, … }] }` |
-| POST | `/api/normo/projects/:id/sections/:code/versions` | multipart — новая версия раздела (файлы) → `201` |
+| DELETE | `/api/normo/projects/:id` | мягкое удаление комплекта (`archived_at`): из списков и сводки уходит, версии и замечания читаются по прямой ссылке → `{ ok: true }`; повторно → 404; чужой → 404, «Ранние работы» не автором → 403 |
+| PUT | `/api/normo/projects/:id/sections` | состав разделов `{ sections: [{ code, name, … }] }`; `code` до 64 символов и без повторов, иначе `400`; `name` режется до 300 |
+| POST | `/api/normo/projects/:id/sections/:code/versions` | multipart `files[]`, `stage` (П/Р), `author?`, `note?` → `201 { version, files, section, check }`; загрузка сама запускает проверку: `check` = `{ runId, status, cached }` либо `{ error }`, если прогон не стартовал (версия при этом создана). Тот же файл новой версией → `cached: true` и свой прогон с копией замечаний; пустой файл, исполняемый или подделка под PDF/DOCX → `422`; параллельные загрузки в один раздел выстраиваются в очередь (номера версий подряд) |
 | GET | `/api/normo/sections/:sid/versions` | `{ versions }` |
 | GET | `/api/normo/versions/:vid` | `{ version }` |
-| POST | `/api/normo/versions/:vid/check` | проверка версии → `{ runId, status, cached }`; поле `llm` в ответе говорит, включены ли смысловые проверки (`NORMO_LLM`) |
+| POST | `/api/normo/versions/:vid/check` | проверка версии, `{ force? }` → `{ runId, status: "running" \| "done" \| "failed", cached }`; `cached: true` — готовый прогон этой версии либо копия прогона той же по содержимому версии этого раздела (проверки заново не выполняются); `force: true` запускает заново; упавший (`failed`) прогон кэшем не считается — следующий запрос запускает проверку заново. Повторный прогон той же версии её замечания не дублирует: совпавшее по правилу и месту остаётся одной строкой (со статусом и решением человека) и переходит к новому прогону, не найденное вновь при выполненном правиле закрывается как `fixed`. Смысловые проверки включает `NORMO_LLM` |
 | GET | `/api/normo/runs/:rid` | `{ run }` |
 | GET | `/api/normo/versions/:vid/findings` | `{ findings }` |
 | PATCH | `/api/normo/findings/:fid` | `{ status: open \| fixed \| rejected \| accepted_with_deviation, verification: human_confirmed \| human_rejected }` |
-| POST | `/api/normo/projects/:id/input-data` | multipart — исходные данные (ТЗ, ГПЗУ, ТУ) → извлечение требований |
+| POST | `/api/normo/projects/:id/input-data` | multipart `files[]` + `kind` — исходные данные (ТЗ, ГПЗУ, ТУ) → извлечение требований; правила файлов те же, что у версий (`422`) |
 | GET | `/api/normo/projects/:id/input-data` | `{ inputData }` |
 | GET | `/api/normo/projects/:id/requirements` | требования из исходных данных |
 | GET | `/api/normo/projects/:id/traceability` | прослеживаемость «требование → раздел» |
@@ -306,7 +348,7 @@
 | GET | `/api/normo/diffs/:did` | `{ diff }` |
 | GET | `/api/normo/diffs/:did/impact` | на какие разделы влияет изменение |
 | PATCH | `/api/normo/impact/:iid` | решение по влиянию → `{ link }` |
-| POST | `/api/normo/versions/:vid/reports` | заключение нормоконтроля (DOCX по шаблону) → `201 { report }`; вердикты — только от человека |
+| POST | `/api/normo/versions/:vid/reports` | `{ verdictCompliant?, verdictApproved? }` → заключение нормоконтроля (DOCX по шаблону) → `201 { report }`; вердикты — только от человека и только `true`/`false`/`null` (иначе `400`), подпись `reviewer` — ФИО вошедшего (значение из тела игнорируется); версия без завершённого прогона даёт заключение с пустыми галочками («не проверялось») |
 | GET | `/api/normo/reports/:rid` | `{ report }` |
 | GET | `/api/normo/reports/:rid/file` | файл заключения (`?format=json` — данные формы) |
 
@@ -318,7 +360,7 @@
 | Метод | Путь | Смысл |
 |---|---|---|
 | POST | `/api/gge/forks` | `{ taskDate, fgisDate }` — развилки по датам, чистый расчёт |
-| POST | `/api/gge/check` | multipart `files[]` + `fields` (JSON «реквизит → эталон») + даты → отчёт проверки; `?project=<id>` ставит отметку в проекте |
+| POST | `/api/gge/check` | multipart `files[]` + `fields` (JSON «реквизит → эталон») + даты → отчёт проверки; `?project=<id>` ставит отметку в проекте — только тому, кто вправе его править (чужой → `404`, «Ранние работы» не владельцем → `403`, проверяется до разбора файлов) |
 
 ## Акты (АОСР) — `/api/akty`
 
@@ -329,8 +371,8 @@
 |---|---|---|
 | POST | `/api/akty/registry/preview` | multipart `registry` (XLSX) → `{ headers, rowCount, sample }` |
 | POST | `/api/akty/template/preview` | multipart `template` (DOCX) → `{ keys }` — плейсхолдеры шаблона |
-| POST | `/api/akty/generate` | `registry` + `template` → ZIP черновиков; отчёт о пропусках в заголовке `X-Akty-Report`; `?project=<id>` ставит отметку |
-| POST | `/api/akty/dates` | `acts` + `journal` (XLSX) → таблица конфликтов дат |
+| POST | `/api/akty/generate` | `registry` + `template` → ZIP черновиков; отчёт о пропусках в заголовке `X-Akty-Report`; `?project=<id>` ставит отметку (правило то же, что у ГГЭ); не zip под именем DOCX → `422` «Файл не читается как DOCX» |
+| POST | `/api/akty/dates` | `acts` + `journal` (XLSX) → таблица конфликтов дат; `?project=<id>` — отметка по тому же правилу |
 
 ## Датасет — `/api/dataset`
 
@@ -363,13 +405,13 @@
 
 | Код | Когда |
 |---|---|
-| 400 | невалидные данные: пустое поле, битый id, неизвестный провайдер или база, неподдерживаемый файл |
+| 400 | невалидные данные: пустое поле, битый id, нестрока в текстовом поле, неизвестный провайдер или база, неподдерживаемый файл, битое percent-кодирование в пути |
 | 401 | нет токена человека (`needLogin: true`) |
-| 403 | заявка не одобрена (`status: "pending"`), чужая сессия, закрытый модуль |
-| 404 | сессия/проект/файл не найдены либо неверный токен сессии (ответ единый — сессии не перечисляются) |
+| 403 | заявка не одобрена (`status: "pending"`), чужая сессия, закрытый модуль; правка чужой записи в видимом проекте («Ранние работы» не владельцем, чужое задание/комплект) |
+| 404 | сессия/проект/файл не найдены либо неверный токен сессии (ответ единый — сессии не перечисляются); чужой или удалённый проект платформы и всё в нём — существование не подтверждается |
 | 409 | прогон уже идёт; экспорт незавершённого прогона; конфликт правки пары |
-| 413 | файл или тело больше лимита |
-| 422 | файл принят, но текста в нём нет (скан без слоя) или он не разобран |
+| 413 | файл или тело больше лимита (`UPLOAD_TOTAL_MB` на запрос с файлами — везде, где принимаются файлы) |
+| 422 | файл принят, но текста в нём нет (скан без слоя), он не разобран или запись zip внутри docx/xlsx больше `ZIP_ENTRY_MB` |
 | 429 | лимит запросов на IP или превышен лимит одновременных задач |
 | 500 | внутренняя ошибка (детали — только в серверных логах) |
 

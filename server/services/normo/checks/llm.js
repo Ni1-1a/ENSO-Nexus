@@ -96,11 +96,13 @@ async function ensureServiceSession(project) {
   const sid = existing.rows[0] && existing.rows[0].service_session_id;
   if (sid && appDb.db.prepare('SELECT id FROM sessions WHERE id = ?').get(sid)) return sid;
   const id = crypto.randomUUID();
-  appDb.db.prepare(`INSERT INTO sessions (id, token, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-    id, crypto.randomBytes(32).toString('hex'), 'service', '',
+  appDb.db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, project_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    // открытого токена нет: служебную сессию по токену не открывают, в базе — только хеш случайного;
+    // project_id — проект платформы комплекта, иначе migrateLegacy уводит её в «Ранние работы»
+    id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     project.owner_user || '', config.promptVersion, '',
-    `Нормоконтроль: ${project.name}`.slice(0, 60), appDb.now(), appDb.now());
+    `Нормоконтроль: ${project.name}`.slice(0, 60), project.platform_project_id || 'legacy', appDb.now(), appDb.now());
   await db.query('UPDATE projects SET service_session_id = $1 WHERE id = $2', [id, project.id]);
   return id;
 }

@@ -196,7 +196,10 @@ async function runCheck(runId, { callFn = null, host = '' } = {}) {
       ? check.chosen_prompt_id : routeDef.promptId;
     const entry = doclib.byId(promptId);
     const carcass = routeDef.systemId ? doclib.byId(routeDef.systemId) : null;
-    store.setRunRoute(runId, { docType: classification.type, promptId, promptSha: store.sha256(entry.body) });
+    // в провенанс — хеш собранного system-текста (обвязка doccheck-run + каркас +
+    // задание), а не только тела библиотечного промпта: правка обвязки видна в прогоне
+    const systemText = prompts.load('doccheck-run', { carcass: carcass ? `${carcass.body}\n\n` : '', task: entry.body });
+    store.setRunRoute(runId, { docType: classification.type, promptId, promptSha: store.sha256(systemText) });
     store.setRunProgress(runId, `проверка промптом «${entry.title || promptId}»…`);
 
     // Лесенка усечения: документ, не влезающий в окно локальной модели, адаптер

@@ -14,6 +14,7 @@ const { promisify } = require('util');
 const AdmZip = require('adm-zip');
 const yaml = require('js-yaml');
 const config = require('../../config');
+const zipGuard = require('../zip-guard');
 const db = require('./db');
 
 const execFileP = promisify(execFile);
@@ -69,7 +70,8 @@ function docxText(absPath) {
   const parts = [];
   for (const entry of zip.getEntries()) {
     if (/^word\/(document|header\d+|footer\d+)\.xml$/.test(entry.entryName)) {
-      const xml = entry.getData().toString('utf8');
+      // размер записи проверяется ДО распаковки: zip-бомба — 422, а не гигабайтная строка
+      const xml = zipGuard.entryData(entry, 'DOCX').toString('utf8');
       parts.push(`===== ${entry.entryName} =====\n${xmlParagraphs(xml).join('\n')}`);
     }
   }
@@ -86,7 +88,7 @@ function docxStampData(absPath) {
   const properties = {};
   const custom = zip.getEntry('docProps/custom.xml');
   if (custom) {
-    const xml = custom.getData().toString('utf8');
+    const xml = zipGuard.entryData(custom, 'DOCX').toString('utf8');
     for (const m of xml.matchAll(/<property[^>]*name="([^"]+)"[^>]*>\s*<vt:lpwstr>([^<]*)<\/vt:lpwstr>/g)) {
       properties[m[1]] = m[2];
     }
@@ -94,7 +96,7 @@ function docxStampData(absPath) {
   const stampParagraphs = [];
   for (const entry of zip.getEntries()) {
     if (!/^word\/(header|footer)\d+\.xml$/.test(entry.entryName)) continue;
-    const xml = entry.getData().toString('utf8');
+    const xml = zipGuard.entryData(entry, 'DOCX').toString('utf8');
     // текст по параграфам только из ранов <w:t>: «SEC-AVI-2023» + «-» + «АР»
     // из трёх ранов собирается обратно, а координаты текстбоксов не подмешиваются
     for (const text of xmlParagraphs(xml)) {
@@ -183,7 +185,10 @@ async function listProjects({ platformProjectId = '' } = {}) {
   return r.rows;
 }
 
-/** Сводка для проектов платформы: сколько проектов нормоконтроля, разделов и открытых замечаний. */
+/**
+ * Сводка для проектов платформы: сколько проектов нормоконтроля, разделов и
+ * открытых замечаний; at — последняя загрузка версии или заведение комплекта.
+ */
 async function summaryByPlatform(ids) {
   if (!ids.length) return {};
   // сводку зовут с маршрута проектов — схема модуля к этому моменту могла ещё не развернуться
@@ -191,10 +196,14 @@ async function summaryByPlatform(ids) {
   const r = await db.query(
     `SELECT p.platform_project_id AS pid, count(*)::int AS projects,
        coalesce(sum((SELECT count(*) FROM sections s WHERE s.project_id = p.id)), 0)::int AS sections,
+       coalesce(sum((SELECT count(*) FROM section_versions v JOIN sections s ON s.id = v.section_id
+          WHERE s.project_id = p.id)), 0)::int AS versions,
        coalesce(sum((SELECT count(*) FROM findings f
           JOIN section_versions v ON v.id = f.version_id AND v.is_current
           JOIN sections s ON s.id = v.section_id
-        WHERE s.project_id = p.id AND f.status = 'open')), 0)::int AS open_findings
+        WHERE s.project_id = p.id AND f.status = 'open')), 0)::int AS open_findings,
+       max(greatest(p.created_at, (SELECT max(v.uploaded_at) FROM section_versions v
+          JOIN sections s ON s.id = v.section_id WHERE s.project_id = p.id))) AS at
      FROM projects p WHERE p.archived_at IS NULL AND p.platform_project_id = ANY($1)
      GROUP BY p.platform_project_id`, [ids]);
   const out = {};
@@ -203,37 +212,51 @@ async function summaryByPlatform(ids) {
 }
 
 /**
- * Проект платформы, которому принадлежит объект нормоконтроля — по числовому
- * id любого уровня. Нужен гейту «свои проекты»: версии, прогоны, отчёты,
- * замечания и сдвиги нумеруются подряд и раньше открывались перебором.
- * undefined — объекта нет; null — комплект без проекта (до проектов).
+ * Проект платформы и автор комплекта, которым принадлежит объект нормоконтроля —
+ * по числовому id любого уровня. Нужен гейту «свои проекты»: версии, прогоны,
+ * отчёты, замечания и сдвиги нумеруются подряд и раньше открывались перебором.
+ * accessOf → undefined — объекта нет; { pid, owner, archived }: pid null — комплект без
+ * проекта (до проектов), owner — owner_user комплекта (правит его в «Ранних работах»),
+ * archived — комплект в архиве (мягко удалён).
  */
 const OWNER_SQL = {
-  project: 'SELECT p.platform_project_id AS pid FROM projects p WHERE p.id = $1',
-  section: 'SELECT p.platform_project_id AS pid FROM sections s JOIN projects p ON p.id = s.project_id WHERE s.id = $1',
-  version: `SELECT p.platform_project_id AS pid FROM section_versions v
+  project: 'SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM projects p WHERE p.id = $1',
+  section: 'SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM sections s JOIN projects p ON p.id = s.project_id WHERE s.id = $1',
+  version: `SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM section_versions v
             JOIN sections s ON s.id = v.section_id JOIN projects p ON p.id = s.project_id WHERE v.id = $1`,
-  run: 'SELECT p.platform_project_id AS pid FROM analysis_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = $1',
-  finding: `SELECT p.platform_project_id AS pid FROM findings f
+  run: 'SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM analysis_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = $1',
+  finding: `SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM findings f
             JOIN analysis_runs r ON r.id = f.run_id JOIN projects p ON p.id = r.project_id WHERE f.id = $1`,
-  report: 'SELECT p.platform_project_id AS pid FROM reports rp JOIN projects p ON p.id = rp.project_id WHERE rp.id = $1',
-  diff: `SELECT p.platform_project_id AS pid FROM diffs d
+  report: 'SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM reports rp JOIN projects p ON p.id = rp.project_id WHERE rp.id = $1',
+  diff: `SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM diffs d
          JOIN sections s ON s.id = d.section_id JOIN projects p ON p.id = s.project_id WHERE d.id = $1`,
-  impact: `SELECT p.platform_project_id AS pid FROM impact_links il JOIN diffs d ON d.id = il.diff_id
+  impact: `SELECT p.platform_project_id AS pid, p.owner_user AS owner, p.archived_at AS archived FROM impact_links il JOIN diffs d ON d.id = il.diff_id
            JOIN sections s ON s.id = d.section_id JOIN projects p ON p.id = s.project_id WHERE il.id = $1`,
 };
-async function platformProjectOf(kind, id) {
+async function accessOf(kind, id) {
   const sql = OWNER_SQL[kind];
-  if (!sql) throw new Error(`platformProjectOf: неизвестный вид ${kind}`);
+  if (!sql) throw new Error(`accessOf: неизвестный вид ${kind}`);
   const r = await db.query(sql, [id]);
   if (!r.rows.length) return undefined;
-  return r.rows[0].pid || null;
+  // archived — комплект мягко удалён (archived_at): гейт правки отвечает 404
+  return { pid: r.rows[0].pid || null, owner: r.rows[0].owner || '', archived: !!r.rows[0].archived };
+}
+async function platformProjectOf(kind, id) {
+  const a = await accessOf(kind, id);
+  return a === undefined ? undefined : a.pid;
 }
 
 /** Есть ли проекты, доставшиеся «Ранним работам»: тогда этот проект должен существовать на платформе. */
 async function hasLegacy() {
   await db.migrate();
   const r = await db.query("SELECT 1 FROM projects WHERE platform_project_id = 'legacy' AND archived_at IS NULL LIMIT 1");
+  return r.rows.length > 0;
+}
+
+/** Мягкое удаление комплекта: archived_at; версии и замечания остаются читаемыми по прямой ссылке.
+ *  Возвращает false, если комплекта нет или он уже в архиве. */
+async function archiveProject(id) {
+  const r = await db.query('UPDATE projects SET archived_at = now() WHERE id = $1 AND archived_at IS NULL RETURNING id', [id]);
   return r.rows.length > 0;
 }
 
@@ -274,13 +297,17 @@ async function setSections(projectId, list) {
     }
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
+      // required_basis без поля в запросе у существующего раздела не трогается:
+      // клиент шлёт состав без оснований, и они обнулялись при каждом сохранении
+      const basisGiven = s.required_basis !== undefined;
       await client.query(
         `INSERT INTO sections (project_id, code, name, required, required_basis, sort_order)
          VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (project_id, code) DO UPDATE
            SET name = EXCLUDED.name, required = EXCLUDED.required,
-               required_basis = EXCLUDED.required_basis, sort_order = EXCLUDED.sort_order`,
-        [projectId, s.code, s.name, s.required !== false, s.required_basis || null, i],
+               required_basis = CASE WHEN $7 THEN EXCLUDED.required_basis ELSE sections.required_basis END,
+               sort_order = EXCLUDED.sort_order`,
+        [projectId, s.code, s.name, s.required !== false, s.required_basis || null, i, basisGiven],
       );
     }
     const r = await client.query(
@@ -310,6 +337,10 @@ async function addVersion(projectId, code, uploads, { stage, author, uploadedBy,
     .digest('hex');
 
   return db.tx(async (client) => {
+    // Строка раздела блокируется на время транзакции: две параллельные загрузки
+    // в один раздел иначе читали одинаковый max(version_no) и вторая падала на
+    // UNIQUE (section_id, version_no) 500-кой (третий круг 04.09.2026)
+    await client.query('SELECT id FROM sections WHERE id = $1 FOR UPDATE', [section.id]);
     const prev = await client.query(
       'SELECT coalesce(max(version_no), 0) AS n FROM section_versions WHERE section_id = $1',
       [section.id]);
@@ -352,6 +383,6 @@ async function listVersions(sectionId) {
 
 module.exports = {
   dataDir, saveFile, filePath, extractText, docxStampData, sectionDefaults,
-  createProject, listProjects, getProject, setSections, summaryByPlatform, hasLegacy, platformProjectOf,
+  createProject, listProjects, getProject, archiveProject, setSections, summaryByPlatform, hasLegacy, platformProjectOf, accessOf,
   addVersion, getVersion, listVersions,
 };

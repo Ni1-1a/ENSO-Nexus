@@ -83,7 +83,8 @@ function renderConclusion(payload) {
   const zip = new AdmZip(templatePath);
   const entry = zip.getEntry('word/document.xml');
   if (!entry) throw new Error(`В шаблоне нет word/document.xml: ${templatePath}`);
-  let xml = entry.getData().toString('utf8');
+  // тот же предохранитель от zip-бомбы, что у всех docx платформы (zip-guard)
+  let xml = require('../zip-guard').entryData(entry, 'Шаблон заключения').toString('utf8');
 
   const checks = payload.checks || {};
   xml = xml.replace(/\{\{([a-z_]+(?::[a-z0-9_]+){0,2})\}\}/g, (whole, token) => {

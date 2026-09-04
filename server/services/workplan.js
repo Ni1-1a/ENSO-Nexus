@@ -104,12 +104,16 @@ const stripTags = (s) => unEsc(s.replace(/<[^>]+>/g, ''));
 
 /**
  * Разбирает первый лист xlsx в шаги пайплайна.
- * Возвращает { ok, steps } либо { ok: false, error }.
+ * Возвращает { ok, steps } либо { ok: false, error, status? }: у zip-бомбы
+ * (запись больше ZIP_ENTRY_MB, zip-guard) status 422 — маршрут отдаёт его как есть.
  */
 function parseXlsx(buffer) {
   let zip;
   try { zip = new AdmZip(buffer); } catch { return { ok: false, error: 'Файл не похож на Excel (.xlsx)' }; }
-  try { return parseXlsxEntries(zip); } catch (err) { if (err.status === 422) return { ok: false, error: err.message }; throw err; }
+  try { return parseXlsxEntries(zip); } catch (err) {
+    if (err.status === 422) return { ok: false, status: 422, error: err.message };
+    throw err;
+  }
 }
 
 function parseXlsxEntries(zip) {

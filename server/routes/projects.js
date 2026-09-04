@@ -62,17 +62,18 @@ router.delete('/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/** Отметка прогона модуля без хранения (акты, ГГЭ). */
+/** Отметка прогона модуля без хранения (акты, ГГЭ): ставит тот, кто вправе править проект. */
 router.post('/:id/marks', wrap(async (req, res) => {
-  const id = projects.normId(req.params.id);
-  const project = projects.byId(id);
-  if (project && !projects.canSee(project, req.user)) return res.status(404).json({ error: 'Проект не найден' });
+  // чужой или удалённый — 404, «Ранние работы» не владельцем — 403 (projects.markable)
+  const project = projects.markable(req.params.id, req.user);
   const { module, note } = req.body || {};
-  if (!projects.MODULES.includes(String(module))) return res.status(400).json({ error: 'Неизвестный модуль' });
+  // module и note — строки: массив ['gge'] раньше сходил за «gge», объект в note — за «[object Object]»
+  if (typeof module !== 'string' || !projects.MODULES.includes(module)) return res.status(400).json({ error: 'Неизвестный модуль' });
+  if (note !== undefined && note !== null && typeof note !== 'string') return res.status(400).json({ error: 'Поле note должно быть строкой' });
   if (!projects.MARK_MODULES.includes(String(module))) {
     return res.status(400).json({ error: 'Отметки только у модулей без хранения (gge, akty)' });
   }
-  if (!projects.mark(id, String(module), note, req.user)) return res.status(404).json({ error: 'Проект не найден' });
+  if (!projects.mark(project.id, module, note, req.user)) return res.status(404).json({ error: 'Проект не найден' });
   res.json({ ok: true });
 }));
 

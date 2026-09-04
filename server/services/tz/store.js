@@ -101,6 +101,11 @@ function projectById(id) {
   return { ...row, object };
 }
 
+/** Строка задания и после мягкого удаления — для гейта доступа к его прогонам. */
+function projectRowAny(id) {
+  return db.prepare('SELECT id, project_id, created_by, deleted_at FROM tz_projects WHERE id = ?').get(id) || null;
+}
+
 /** ?project=<id платформы> — только проверки этого проекта; пусто — все. */
 function listProjects({ projectId = '' } = {}) {
   return db.prepare(`SELECT p.id, p.name, p.checklist, p.ai_provider, p.ai_model, p.document_name, p.project_id,
@@ -162,11 +167,13 @@ function ensureServiceSession(project, user, host = '') {
     }
   }
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+  // project_id — проекта платформы, в котором живёт задание: с пустым служебная
+  // сессия при каждом перезапуске «переезжала» в «Ранние работы» (migrateLegacy)
+  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, project_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     (user && user.id) || project.created_by || '', config.promptVersion, host,
-    `Анализ ТЗ: ${project.name}`.slice(0, 60), now(), now());
+    `Анализ ТЗ: ${project.name}`.slice(0, 60), project.project_id || 'legacy', now(), now());
   db.prepare('UPDATE tz_projects SET service_session_id = ? WHERE id = ?').run(id, project.id);
   return id;
 }
@@ -260,7 +267,7 @@ function setDecision(runId, findingId, decision, user) {
 
 module.exports = {
   db, httpError, sha256, userName,
-  createProject, projectById, listProjects, updateProject, setDocument, deleteProject,
+  createProject, projectById, projectRowAny, listProjects, updateProject, setDocument, deleteProject,
   ensureServiceSession,
   createRun, runById, listRuns, setRunStatus, setRunProgress, recoverInterrupted, setDecision,
 };

@@ -46,11 +46,13 @@ function ensureServiceSession(doc, user, host = '') {
     if (row) return doc.service_session_id;
   }
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO sessions (id, token, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-    id, crypto.randomBytes(32).toString('hex'), 'service', '',
+  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, project_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    // открытого токена нет: служебную сессию по токену не открывают, в базе — только хеш случайного;
+    // датасет живёт вне проектов — сразу «Ранние работы», а не пустая привязка до перезапуска
+    id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     (user && user.id) || doc.uploaded_by || '', config.promptVersion, host,
-    `Датасет: ${doc.filename}`.slice(0, 60), now(), now());
+    `Датасет: ${doc.filename}`.slice(0, 60), 'legacy', now(), now());
   db.prepare('UPDATE dataset_documents SET service_session_id = ? WHERE id = ?').run(id, doc.id);
   return id;
 }

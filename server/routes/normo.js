@@ -20,6 +20,37 @@ const router = express.Router();
 router.use(rateLimit(config.rateLimitGeneral, 'normo'));
 router.use(userAuth);
 
+/**
+ * NUL-байт в строке PostgreSQL не принимает («invalid byte sequence for
+ * encoding UTF8: 0x00») — любое имя, примечание или фильтр с таким байтом раньше
+ * оборачивались 500-кой (третий круг 04.09.2026). Байт вырезается из всех строк
+ * тела (JSON — здесь, поля multipart — после multer), а фильтры запросов
+ * сверяются со списками допустимых значений на своих маршрутах.
+ */
+function stripNul(value, depth = 0) {
+  if (typeof value === 'string') return value.replace(/\u0000/g, '');
+  if (!value || typeof value !== 'object' || depth > 10) return value;
+  if (Array.isArray(value)) { for (let i = 0; i < value.length; i++) value[i] = stripNul(value[i], depth + 1); return value; }
+  for (const k of Object.keys(value)) value[k] = stripNul(value[k], depth + 1);
+  return value;
+}
+function cleanBody(req, res, next) {
+  if (req.body && typeof req.body === 'object') stripNul(req.body);
+  next();
+}
+router.use(cleanBody);
+
+const FINDING_STATUSES = ['open', 'fixed', 'rejected', 'accepted_with_deviation'];
+const SEVERITIES = ['critical', 'major', 'minor', 'remark'];
+const RUN_SCOPES = ['document', 'complex', 'ingest_id', 'diff', 'impact'];
+const REQUIREMENT_STATUSES = ['new', 'covered', 'partial', 'not_covered', 'conflict', 'dropped'];
+/** Фильтр списка — одно из допустимых значений либо пусто; иначе текст ошибки. */
+function badFilter(value, allowed, name) {
+  if (value === undefined || value === '') return null;
+  if (typeof value !== 'string' || !allowed.includes(value)) return `${name}: допустимо ${allowed.join(', ')}`;
+  return null;
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 90 * 1024 * 1024, files: 40 }, // предел 783/пр — 80 МБ, даём запас: превышение ловит правило, а не транспорт
@@ -42,18 +73,37 @@ function validId(v) {
 }
 /** Какой объект стоит за параметром маршрута — для гейта принадлежности проекту. */
 const PARAM_KIND = { id: 'project', sid: 'section', vid: 'version', rid: null, fid: 'finding', did: 'diff', iid: 'impact' };
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 for (const name of ['id', 'sid', 'vid', 'rid', 'fid', 'did', 'iid']) {
   router.param(name, (req, res, next, value) => {
     if (validId(value) === null) return res.status(400).json({ error: 'Некорректный идентификатор' });
     // «свои проекты» (решение владельца 02.09.2026): объект чужого проекта для
     // человека не существует — 404, а не 403, чтобы не подтверждать его наличие.
     // Комплекты без проекта платформы считаются «Ранними работами» (общие).
+    // Правка (PATCH/PUT/POST/DELETE) — владельцу проекта платформы или автору
+    // комплекта (owner_user): в «Ранних работах» чужой комплект читается, но
+    // не правится — 403 (закрыто 04.09.2026).
     const kind = PARAM_KIND[name];
     if (!kind) return next();
-    store.platformProjectOf(kind, value).then((pid) => {
-      if (pid === undefined) return next(); // объекта нет — маршрут сам ответит своим «не найдено»
-      const project = platformProjects.byId(pid || platformProjects.LEGACY_ID);
+    store.accessOf(kind, value).then((access) => {
+      if (access === undefined) return next(); // объекта нет — маршрут сам ответит своим «не найдено»
+      const project = platformProjects.byIdAny(access.pid || platformProjects.LEGACY_ID)
+        || (access.pid ? null : platformProjects.ensureLegacy());
       if (!project || !platformProjects.canSee(project, req.user)) return res.status(404).json({ error: 'Не найдено' });
+      if (!READ_METHODS.has(req.method)) {
+        // в мягко удалённом проекте платформы читают по прямой ссылке, но не правят:
+        // всё в удалённом проекте — 404 (правило 02.09.2026, как у tz/doccheck)
+        if (project.deleted_at) return res.status(404).json({ error: 'Проект не найден' });
+        // мягко удалённый комплект (archived_at) — то же правило: читается по
+        // ссылке, а новая версия, состав, прогон, заключение и правка замечания —
+        // 404 (третий круг 04.09.2026: раньше в архивный комплект грузились версии,
+        // и он жил дальше невидимкой — вне списка и сводки)
+        if (access.archived) return res.status(404).json({ error: 'Комплект не найден' });
+        const own = !!(access.owner && req.user && access.owner === req.user.id);
+        if (!platformProjects.canEdit(project, req.user) && !own) {
+          return res.status(403).json({ error: platformProjects.FOREIGN_EDIT });
+        }
+      }
       next();
     }).catch(next);
   });
@@ -63,7 +113,7 @@ for (const name of ['id', 'sid', 'vid', 'rid', 'fid', 'did', 'iid']) {
 async function visible(req, kind, id) {
   const pid = await store.platformProjectOf(kind, id);
   if (pid === undefined) return false;
-  const project = platformProjects.byId(pid || platformProjects.LEGACY_ID);
+  const project = platformProjects.byIdAny(pid || platformProjects.LEGACY_ID);
   return !!project && platformProjects.canSee(project, req.user);
 }
 
@@ -86,9 +136,19 @@ function uploadsError(uploads) {
     if (BLOCKED_EXT.has(ext)) {
       return `Файл «${f.originalname}» не принимается: исполняемые файлы (.${ext}) в комплект не входят`;
     }
+    // пустой файл версией не становится: проверять в нём нечего (третий круг 04.09.2026)
+    if (!f.buffer || !f.buffer.length) return `Файл «${f.originalname}» пуст`;
     if (ext === 'pdf' || ext === 'docx') {
       const magic = checkMagic(ext, f.buffer);
       if (!magic.ok) return `${f.originalname}: ${magic.reason}`;
+    }
+    // zip-бомба в docx отвергается ДО записи версии (422), а не глотается при
+    // извлечении текста как «текста нет»
+    if (ext === 'docx') {
+      try { require('../services/zip-guard').checkArchive(f.buffer, `${f.originalname}`); } catch (err) {
+        if (err.status === 422) return err.message;
+        throw err;
+      }
     }
   }
   return null;
@@ -157,7 +217,9 @@ router.post('/projects', wrap(async (req, res) => {
   if (!isoDate(dateStarted)) return res.status(400).json({ error: 'dateStarted: дата в формате YYYY-MM-DD' });
   if (localOnly != null && typeof localOnly !== 'boolean') return res.status(400).json({ error: 'localOnly: true или false' });
   const project = await store.createProject({
-    name: name.trim(), customer, stage, objectKind: objectKind || undefined, dateStarted, localOnly,
+    // потолки как у остальных модулей (200): имя на 5000 символов уходило в базу целиком
+    name: name.trim().slice(0, 200), customer: customer == null ? customer : customer.slice(0, 200),
+    stage, objectKind: objectKind || undefined, dateStarted, localOnly,
     owner: req.user ? req.user.id : null,
     // пусто — «Ранние работы», чужой или удалённый проект платформы — 404
     platformProjectId: platformProjects.resolveProjectId(platformProjectId, req.user).id,
@@ -182,6 +244,14 @@ router.get('/projects/:id', wrap(async (req, res) => {
   res.json({ project });
 }));
 
+// Удаление комплекта — мягкое (archived_at): из списков и сводки он уходит, версии и
+// замечания остаются читаемыми по прямой ссылке. Права — гейт router.param (правка).
+router.delete('/projects/:id', wrap(async (req, res) => {
+  const ok = await store.archiveProject(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'Комплект не найден' });
+  res.json({ ok: true });
+}));
+
 router.put('/projects/:id/sections', wrap(async (req, res) => {
   const list = (req.body || {}).sections;
   if (!Array.isArray(list) || !list.length) {
@@ -190,19 +260,30 @@ router.put('/projects/:id/sections', wrap(async (req, res) => {
   const bad = list.find((s) => !s || typeof s !== 'object'
     || typeof s.code !== 'string' || !s.code.trim() || typeof s.name !== 'string' || !s.name.trim());
   if (bad) return res.status(400).json({ error: 'У каждого раздела нужны code (шифр) и name — непустые строки' });
+  // шифр живёт в адресе (/sections/:code/versions) — резать его молча нельзя, только отказ
+  const longCode = list.find((s) => s.code.trim().length > 64);
+  if (longCode) return res.status(400).json({ error: `Шифр раздела длиннее 64 символов: «${longCode.code.trim().slice(0, 64)}…»` });
+  // два одинаковых шифра в одном составе — ошибка формы, а не «побеждает последний»
+  const codes = list.map((s) => s.code.trim());
+  const dup = codes.find((c, i) => codes.indexOf(c) !== i);
+  if (dup) return res.status(400).json({ error: `Шифр раздела повторяется: ${dup}` });
+  const cleaned = list.map((s) => ({
+    ...s, code: s.code.trim(), name: s.name.trim().slice(0, 300),
+    required_basis: s.required_basis == null ? s.required_basis : String(s.required_basis).slice(0, 500),
+  }));
   // чужой проект — 404, раздел с загруженными версиями — 409: это store
-  res.json({ sections: await store.setSections(req.params.id, list) });
+  res.json({ sections: await store.setSections(req.params.id, cleaned) });
 }));
 
 /* ---------------- версии разделов (сценарий 3) ---------------- */
 
 router.post('/projects/:id/sections/:code/versions',
-  rateLimit(config.rateLimitExpensive, 'normo-upload'), requestSizeLimit(config.uploadTotalBytes), upload.array('files', 40),
+  rateLimit(config.rateLimitExpensive, 'normo-upload'), requestSizeLimit(config.uploadTotalBytes), upload.array('files', 40), cleanBody,
   wrap(async (req, res) => {
     if (!req.files || !req.files.length) {
       return res.status(400).json({ error: 'Нужен хотя бы один файл (multipart-поле files)' });
     }
-    const stage = (req.body.stage || '').trim();
+    const stage = String(req.body.stage || '').trim();
     if (!['П', 'Р'].includes(stage)) {
       return res.status(400).json({ error: 'Нужна стадия версии: П или Р (поле stage)' });
     }
@@ -265,6 +346,8 @@ router.get('/runs/:rid', wrap(async (req, res) => {
 }));
 
 router.get('/versions/:vid/findings', wrap(async (req, res) => {
+  const bad = badFilter(req.query.status, FINDING_STATUSES, 'status') || badFilter(req.query.severity, SEVERITIES, 'severity');
+  if (bad) return res.status(400).json({ error: bad });
   const clauses = ['version_id = $1'];
   const args = [req.params.vid];
   if (req.query.status) { args.push(req.query.status); clauses.push(`status = $${args.length}`); }
@@ -279,19 +362,23 @@ router.get('/versions/:vid/findings', wrap(async (req, res) => {
 /* ---------------- исходные данные и требования (сценарий 2) ---------------- */
 
 router.post('/projects/:id/input-data',
-  rateLimit(config.rateLimitExpensive, 'normo-input'), requestSizeLimit(config.uploadTotalBytes), upload.array('files', 20),
+  rateLimit(config.rateLimitExpensive, 'normo-input'), requestSizeLimit(config.uploadTotalBytes), upload.array('files', 20), cleanBody,
   wrap(async (req, res) => {
     if (!req.files || !req.files.length) {
       return res.status(400).json({ error: 'Нужен хотя бы один файл (multipart-поле files)' });
     }
-    const kind = (req.body.kind || '').trim();
+    const kind = String(req.body.kind || '').trim();
     const allowed = ['ТЗ', 'ТУ', 'ГПЗУ', 'изыскания', 'задание_смежника', 'прочее'];
     if (!allowed.includes(kind)) {
       return res.status(400).json({ error: `Нужен kind из: ${allowed.join(', ')}` });
     }
-    const title = (req.body.title || req.files[0].originalname).trim();
+    const uploads = decodeUploads(req.files);
+    // те же правила, что у версий разделов: исполняемые, пустые и подделки — 422
+    const rejected = uploadsError(uploads);
+    if (rejected) return res.status(422).json({ error: rejected });
+    const title = String(req.body.title || uploads[0].originalname).trim().slice(0, 300) || uploads[0].originalname;
     const inputSvc = require('../services/normo/input-data');
-    const { input } = await inputSvc.addInputData(req.params.id, kind, title, decodeUploads(req.files),
+    const { input } = await inputSvc.addInputData(req.params.id, kind, title, uploads,
       { uploadedBy: req.user ? req.user.id : null });
     // извлечение требований — асинхронно: локальная модель работает минуты
     let extraction = 'queued';
@@ -311,6 +398,8 @@ router.get('/projects/:id/input-data', wrap(async (req, res) => {
 }));
 
 router.get('/projects/:id/requirements', wrap(async (req, res) => {
+  const bad = badFilter(req.query.status, REQUIREMENT_STATUSES, 'status');
+  if (bad) return res.status(400).json({ error: bad });
   res.json({
     requirements: await require('../services/normo/input-data')
       .listRequirements(req.params.id, { status: req.query.status }),
@@ -338,6 +427,8 @@ router.post('/projects/:id/check-complex',
   }));
 
 router.get('/projects/:id/findings', wrap(async (req, res) => {
+  const bad = badFilter(req.query.scope, RUN_SCOPES, 'scope');
+  if (bad) return res.status(400).json({ error: bad });
   const args = [req.params.id];
   let scopeFilter = '';
   if (req.query.scope) { args.push(req.query.scope); scopeFilter = `AND r.scope = $${args.length}`; }
@@ -397,8 +488,16 @@ router.post('/versions/:vid/reports',
   rateLimit(config.rateLimitExpensive, 'normo-report'),
   wrap(async (req, res) => {
     const body = req.body || {};
-    const reviewer = (String(body.reviewer || '').slice(0, 200) || (req.user && `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim())) || 'нормоконтролёр';
-    // Итоговые вердикты модуль не выставляет сам (П41) — только из решения человека
+    // подпись нормоконтролёра — только по вошедшему: значение из тела игнорируется
+    // (правило датасета: ФИО пишет сервер, а не клиент)
+    const reviewer = (req.user && `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim()) || 'нормоконтролёр';
+    // Итоговые вердикты модуль не выставляет сам (П41) — только из решения человека:
+    // true, false или null/пусто; «да» и 1 раньше молча превращались в «не решено»
+    for (const key of ['verdictCompliant', 'verdictApproved']) {
+      if (body[key] !== undefined && body[key] !== null && typeof body[key] !== 'boolean') {
+        return res.status(400).json({ error: `${key}: true, false или null` });
+      }
+    }
     const toBool = (x) => (x === true || x === false ? x : null);
     const { project, version, lastRun, payload } = await require('../services/normo/report-payload')
       .buildPayload(req.params.vid, {

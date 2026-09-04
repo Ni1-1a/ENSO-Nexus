@@ -14,7 +14,7 @@ const express = require('express');
 const platformProjects = require('../services/projects');
 const multer = require('multer');
 const config = require('../config');
-const { rateLimit, userAuth } = require('../middleware');
+const { rateLimit, userAuth, requestSizeLimit } = require('../middleware');
 const store = require('../services/tz/store');
 const checklists = require('../services/tz/checklists');
 
@@ -41,6 +41,56 @@ function decodeName(file) {
   return sanitizeFilename(Buffer.from(String(file.originalname), 'latin1').toString('utf8'));
 }
 
+/**
+ * Гейт «свои проекты» для задания ТЗ (решение владельца 02.09.2026, закрыто
+ * 04.09.2026): задание из чужого проекта для человека не существует — 404;
+ * задание видимого проекта, но не своё и не владельца платформы, читать
+ * можно, править нельзя — 403. Ответ в res уже записан, когда вернулось false.
+ */
+function allowed(project, req, res, { write = false } = {}) {
+  const denied = platformProjects.entityDenial(project, req.user, { write, notFound: 'Проект не найден' });
+  if (denied) { res.status(denied.status).json({ error: denied.error }); return false; }
+  return true;
+}
+
+/** Задание по id для гейта — включая мягко удалённое: прогоны остаются читаемыми. */
+function projectForRun(run, req, res, opts) {
+  const project = store.projectRowAny(run.project_id);
+  return allowed(project, req, res, opts);
+}
+
+/** Значение в тексте ошибки: null и пустая строка — «не указан», а не «null». */
+const shown = (v) => (v === null || v === undefined || v === '' ? 'не указан' : String(v));
+
+/**
+ * Строковые поля тела — только строки (null и отсутствие допустимы): объект
+ * и число раньше на POST записывались как «[object Object]» и «5», хотя PATCH
+ * их отвергал. Когда вернулось true, ответ 400 уже записан в res.
+ */
+function badStrings(body, res, fields) {
+  for (const f of fields) {
+    if (body[f] !== undefined && body[f] !== null && typeof body[f] !== 'string') {
+      res.status(400).json({ error: `Поле ${f} должно быть строкой` });
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Описание объекта — плоский объект не больше 20 000 символов; массив и строка — не описание. */
+function badObject(object, res) {
+  if (object === undefined || object === null) return false;
+  if (typeof object !== 'object' || Array.isArray(object)) {
+    res.status(400).json({ error: 'Поле object должно быть объектом' });
+    return true;
+  }
+  if (JSON.stringify(object).length > 20000) {
+    res.status(400).json({ error: 'Описание объекта слишком большое (предел 20 000 символов)' });
+    return true;
+  }
+  return false;
+}
+
 // прерванные перезапуском прогоны помечаются ошибкой при первом обращении к модулю
 let recovered = false;
 router.use((req, res, next) => {
@@ -62,10 +112,12 @@ router.get('/meta', (req, res) => {
 
 router.post('/projects', bigJson, wrap(async (req, res) => {
   const { name, checklist, provider, model, object, projectId } = req.body || {};
+  if (badStrings(req.body || {}, res, ['name', 'provider', 'model', 'checklist'])) return;
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Нужно имя проекта (name)' });
+  if (badObject(object, res)) return;
   const checklistId = checklist || 'production';
   if (!checklists.CHECKLISTS[checklistId]) {
-    return res.status(400).json({ error: `Неизвестный чек-лист: ${checklistId}` });
+    return res.status(400).json({ error: `Неизвестный чек-лист: ${shown(checklistId)}` });
   }
   if (provider) {
     const check = await require('../services/providers')
@@ -83,39 +135,46 @@ router.post('/projects', bigJson, wrap(async (req, res) => {
     projectId: platformProjects.resolveProjectId(projectId, req.user).id,
   });
   platformProjects.touch(project.project_id);
-  res.status(201).json({ project });
+  // как в GET: текст документа и сырой object_json в ответ не уходят (object — разобранный)
+  res.status(201).json({ project: { ...project, document_text: undefined, object_json: undefined, document_chars: 0 } });
 }));
 
 router.get('/projects', wrap(async (req, res) => {
-  res.json({ projects: store.listProjects({ projectId: platformProjects.filterId(req.query.project, req.user) }) });
+  const projectId = platformProjects.filterId(req.query.project, req.user);
+  const rows = store.listProjects({ projectId });
+  // без ?project= — только задания из видимых, не удалённых проектов платформы
+  res.json({ projects: projectId ? rows : platformProjects.onlyVisible(rows, req.user) });
 }));
 
 router.get('/projects/:id', wrap(async (req, res) => {
   const project = store.projectById(req.params.id);
-  if (!project) return res.status(404).json({ error: 'Проект не найден' });
+  if (!allowed(project, req, res)) return;
   res.json({
-    project: { ...project, document_text: undefined, document_chars: project.document_text.length },
+    project: { ...project, document_text: undefined, object_json: undefined, document_chars: project.document_text.length },
     runs: store.listRuns(project.id),
   });
 }));
 
 router.get('/projects/:id/document', wrap(async (req, res) => {
   const project = store.projectById(req.params.id);
-  if (!project) return res.status(404).json({ error: 'Проект не найден' });
+  if (!allowed(project, req, res)) return;
   res.json({ name: project.document_name, note: project.document_note, text: project.document_text });
 }));
 
 router.patch('/projects/:id', bigJson, wrap(async (req, res) => {
+  if (!allowed(store.projectById(req.params.id), req, res, { write: true })) return;
   const { name, checklist, provider, model, object } = req.body || {};
-  if (object && typeof object === 'object' && JSON.stringify(object).length > 20000) {
-    return res.status(400).json({ error: 'Описание объекта слишком большое (предел 20 000 символов)' });
-  }
+  // имя, модель, провайдер и чек-лист — строки: число и объект раньше записывались
+  // как «5» и «[object Object]», а массив ['production'] проходил проверку
+  // по ключу и падал 500-кой на записи в SQLite (третий круг 04.09.2026)
+  if (badStrings(req.body || {}, res, ['name', 'provider', 'model', 'checklist'])) return;
+  if (badObject(object, res)) return;
   // проверка ПОСЛЕ trim: null раньше становился именем «null», пробелы — пустым именем
   if (name !== undefined && !String(name ?? '').trim()) {
     return res.status(400).json({ error: 'Название не может быть пустым' });
   }
   if (checklist !== undefined && !checklists.CHECKLISTS[checklist]) {
-    return res.status(400).json({ error: `Неизвестный чек-лист: ${checklist}` });
+    return res.status(400).json({ error: `Неизвестный чек-лист: ${shown(checklist)}` });
   }
   if (provider !== undefined && provider !== '') {
     const check = await require('../services/providers')
@@ -129,10 +188,11 @@ router.patch('/projects/:id', bigJson, wrap(async (req, res) => {
     model: model !== undefined ? String(model) : undefined,
     object: object && typeof object === 'object' ? object : undefined,
   });
-  res.json({ project: { ...project, document_text: undefined } });
+  res.json({ project: { ...project, document_text: undefined, object_json: undefined } });
 }));
 
 router.delete('/projects/:id', wrap(async (req, res) => {
+  if (!allowed(store.projectById(req.params.id), req, res, { write: true })) return;
   store.deleteProject(req.params.id);
   res.json({ ok: true });
 }));
@@ -141,13 +201,22 @@ router.delete('/projects/:id', wrap(async (req, res) => {
 
 /** Вставка текста ЗнП руками (основной путь, работает всегда). */
 router.put('/projects/:id/document', bigJson, wrap(async (req, res) => {
-  const text = String((req.body || {}).text || '').trim();
+  if (!allowed(store.projectById(req.params.id), req, res, { write: true })) return;
+  const body = req.body || {};
+  // текст и имя — строки: объект раньше сохранялся как «[object Object]»
+  if (body.text !== undefined && body.text !== null && typeof body.text !== 'string') {
+    return res.status(400).json({ error: 'Поле text должно быть строкой' });
+  }
+  if (body.name !== undefined && body.name !== null && typeof body.name !== 'string') {
+    return res.status(400).json({ error: 'Поле name должно быть строкой' });
+  }
+  const text = String(body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Пустой текст ЗнП' });
   const tooBig = require('../services/validation').docSizeError(text);
   if (tooBig) return res.status(422).json({ error: tooBig });
   const project = store.setDocument(req.params.id, {
     text,
-    name: String((req.body || {}).name || 'вставленный текст').slice(0, 200),
+    name: String(body.name || 'вставленный текст').slice(0, 200),
     note: '',
   });
   res.json({ document: { name: project.document_name, chars: project.document_text.length } });
@@ -158,10 +227,10 @@ router.put('/projects/:id/document', bigJson, wrap(async (req, res) => {
  * слоя в v1 не распознаются — честный отказ, не молчаливый пустой текст.
  */
 router.post('/projects/:id/document/file',
-  rateLimit(config.rateLimitExpensive, 'tz-upload'), upload.single('file'),
+  rateLimit(config.rateLimitExpensive, 'tz-upload'), requestSizeLimit(config.uploadTotalBytes), upload.single('file'),
   wrap(async (req, res) => {
     const project = store.projectById(req.params.id);
-    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (!allowed(project, req, res, { write: true })) return;
     if (!req.file) return res.status(400).json({ error: 'Нужен файл (multipart-поле file)' });
     const name = decodeName(req.file);
     const ext = path.extname(name).toLowerCase().replace('.', '');
@@ -211,7 +280,7 @@ router.post('/projects/:id/analyze',
   rateLimit(config.rateLimitExpensive, 'tz-analyze'), bigJson,
   wrap(async (req, res) => {
     const project = store.projectById(req.params.id);
-    if (!project) return res.status(404).json({ error: 'Проект не найден' });
+    if (!allowed(project, req, res, { write: true })) return;
     if (!project.document_text.trim()) {
       return res.status(422).json({ error: 'В проекте нет текста ЗнП — загрузите документ или вставьте текст' });
     }
@@ -241,12 +310,16 @@ router.post('/projects/:id/analyze',
 router.get('/runs/:rid', wrap(async (req, res) => {
   const run = store.runById(req.params.rid);
   if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!projectForRun(run, req, res)) return;
   res.json({ run });
 }));
 
 /* ---------------- решения по находкам ---------------- */
 
 router.post('/runs/:rid/findings/:fid/decision', bigJson, wrap(async (req, res) => {
+  const run = store.runById(req.params.rid);
+  if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!projectForRun(run, req, res, { write: true })) return;
   const decision = (req.body || {}).decision ?? null;
   const saved = store.setDecision(req.params.rid, req.params.fid, decision, req.user);
   res.json({ findingId: req.params.fid, decision: saved });
@@ -254,9 +327,10 @@ router.post('/runs/:rid/findings/:fid/decision', bigJson, wrap(async (req, res) 
 
 /* ---------------- экспорт ---------------- */
 
-function loadDoneRun(rid, res) {
+function loadDoneRun(rid, req, res) {
   const run = store.runById(rid);
   if (!run) { res.status(404).json({ error: 'Прогон не найден' }); return null; }
+  if (!projectForRun(run, req, res)) return null;
   if (run.status !== 'done' || !run.result) {
     res.status(409).json({ error: 'Прогон ещё не завершён — экспортировать нечего' });
     return null;
@@ -265,7 +339,7 @@ function loadDoneRun(rid, res) {
 }
 
 router.get('/runs/:rid/export.xlsx', wrap(async (req, res) => {
-  const run = loadDoneRun(req.params.rid, res);
+  const run = loadDoneRun(req.params.rid, req, res);
   if (!run) return;
   const buf = require('../services/tz/export').findingsXlsx(run);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -274,7 +348,7 @@ router.get('/runs/:rid/export.xlsx', wrap(async (req, res) => {
 }));
 
 router.get('/runs/:rid/export.docx', wrap(async (req, res) => {
-  const run = loadDoneRun(req.params.rid, res);
+  const run = loadDoneRun(req.params.rid, req, res);
   if (!run) return;
   const project = store.projectById(run.project_id) || { name: 'Проект удалён' };
   const buf = require('../services/tz/export').reportDocx(run, project);

@@ -291,6 +291,18 @@ async function listProviders() {
 const CLOUD_CLOSED_NOTE = 'доступно только владельцу платформы — выберите локальную модель';
 
 /**
+ * Та же пометка, но с названием открытых всем провайдеров, когда они есть:
+ * «выберите Kimi (открыт всем) или локальную модель» — человек видит замену,
+ * а не только запрет. Западная тройка сюда не попадает (OWNER_ONLY).
+ */
+function cloudClosedNote() {
+  const open = cloudAccess.openProviders().map((id) => cloudAccess.PROVIDER_LABELS[id] || id);
+  if (!open.length) return CLOUD_CLOSED_NOTE;
+  return `доступно только владельцу платформы — выберите ${open.join(', ')} `
+    + `(${open.length === 1 ? 'открыт' : 'открыты'} всем) или локальную модель`;
+}
+
+/**
  * Список провайдеров для КОНКРЕТНОГО человека.
  *
  * Сам список (какие модели у ключа вообще есть) общий и кэшируется, а вот
@@ -322,9 +334,12 @@ async function listProvidersFor(user, host = '') {
       if (!cloudAccess.isCloud(p.id)) {
         return (user || !config.requireLogin) ? p : { ...p, endpoint: undefined };
       }
+      // сначала ключ, потом доступ: провайдер без ключа на сервере недоступен
+      // всем, и его пометка «нужен ключ» точнее, чем «только по отметке»
+      if (!p.available) return p;
       return cloudAccess.userAllowed(user, p.id)
         ? p
-        : { ...p, available: false, note: CLOUD_CLOSED_NOTE };
+        : { ...p, available: false, note: cloudClosedNote() };
     });
 }
 
@@ -357,4 +372,4 @@ async function validateChoice(providerId, model, user = null, host = '') {
   return { ok: true, provider: p, warning: (info && info.heavy && info.note) ? info.note : '' };
 }
 
-module.exports = { listProviders, listProvidersFor, validateChoice, probeLocal, CLOUD_CLOSED_NOTE };
+module.exports = { listProviders, listProvidersFor, validateChoice, probeLocal, CLOUD_CLOSED_NOTE, cloudClosedNote };

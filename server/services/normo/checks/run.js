@@ -6,6 +6,13 @@
  * параметры прогона). Повторный запуск той же версии при том же каталоге отдаёт
  * готовый прогон, не выполняя проверки заново (force=true перезапускает явно).
  *
+ * Тот же файл, загруженный НОВОЙ версией (тот же content_hash), проверки тоже
+ * не выполняет — но получает СВОЙ прогон с cached=true: копия журнала и
+ * замечаний готового прогона того же раздела и стадии переносится на новую
+ * версию (04.09.2026). Раньше повторная загрузка отдавала прогон старой версии,
+ * замечания оставались на ней, и новая версия выглядела «чистой»: сводка
+ * говорила «открытых замечаний нет», заключение — «не проверялось».
+ *
  * Выполнение асинхронное: HTTP-запрос получает runId сразу, детерминированные
  * проверки занимают миллисекунды, LLM-проверки — минуты на локальной модели;
  * клиент опрашивает GET /runs/:id. Для тестов есть { wait: true }.
@@ -60,16 +67,44 @@ async function runDocumentCheck(versionId, { force = false, llm = true, wait = f
   const key = cacheKey(version.content_hash, catalog.rulesHash, {
     engine: params.engine, llm: params.llm, local_only: params.local_only,
   });
+  // ключ прогона — свой у каждой версии: у двух версий с одним содержимым
+  // по одному прогону у каждой (старые прогоны несут ключ без суффикса)
+  const ownKey = `${key}:v${versionId}`;
 
+  // свои прогоны версии — с ключом версии и его продолжениями (:force:, :retry:);
+  // старые прогоны несут ключ без суффикса. Последний — первым.
   const existing = await db.query(
-    "SELECT * FROM analysis_runs WHERE cache_key = $1 AND status IN ('done','running','queued')", [key]);
+    `SELECT * FROM analysis_runs WHERE version_id = $1 AND (cache_key = $2 OR cache_key LIKE $3)
+       AND status IN ('done','running','queued') ORDER BY id DESC`, [versionId, key, `${ownKey}%`]);
   if (existing.rows.length && !force) {
     return { run: existing.rows[0], cached: true };
   }
   if (existing.rows.length && force) {
     params.forced_at = new Date().toISOString();
   }
-  const finalKey = existing.rows.length && force ? `${key}:force:${Date.now()}` : key;
+  // Упавший (или отменённый) прогон под тем же ключом повторному запуску не
+  // мешает: раньше INSERT … ON CONFLICT DO NOTHING натыкался на него и отдавал
+  // ЕГО как cached: true — «запустите проверку повторно» после перезапуска
+  // сервера не работало никогда, ни с force, ни без (третий круг 04.09.2026)
+  const dead = existing.rows.length ? { rows: [] } : await db.query(
+    `SELECT 1 FROM analysis_runs WHERE cache_key = $1 AND status IN ('failed','cancelled')`, [ownKey]);
+  const finalKey = existing.rows.length && force ? `${ownKey}:force:${Date.now()}`
+    : dead.rows.length ? `${ownKey}:retry:${Date.now()}` : ownKey;
+
+  if (!force) {
+    // готовый прогон того же содержимого у другой версии этого раздела и стадии —
+    // переносится копией, проверки заново не выполняются
+    const donor = await db.query(
+      `SELECT r.* FROM analysis_runs r JOIN section_versions v ON v.id = r.version_id
+       WHERE (r.cache_key = $1 OR r.cache_key LIKE $2) AND r.status = 'done' AND r.version_id <> $3
+         AND v.section_id = $4 AND v.stage = $5
+       ORDER BY r.finished_at DESC LIMIT 1`,
+      [key, `${key}:v%`, versionId, version.section_id, version.stage]);
+    if (donor.rows.length) {
+      const run = await cloneRun(donor.rows[0], version, { ...params, cached_from: donor.rows[0].id }, ownKey);
+      return { run, cached: true };
+    }
+  }
 
   const inserted = await db.query(
     `INSERT INTO analysis_runs (project_id, version_id, scope, rules_hash, params, cache_key, status, started_at)
@@ -95,6 +130,62 @@ async function runDocumentCheck(versionId, { force = false, llm = true, wait = f
     return { run: fresh.rows[0], cached: false };
   }
   return { run, cached: false };
+}
+
+/**
+ * Прогон-копия для новой версии с тем же содержимым: журнал и замечания
+ * готового прогона переносятся на неё (status open — как у исходных при
+ * создании), а связь с предыдущей версией считается тем же правилом, что и у
+ * настоящего прогона: совпавшие замечания наследуют predecessor_id, несовпавшие
+ * при выполненном правиле закрываются как fixed. Так замечания видны у ОБЕИХ
+ * версий, а не только у первой.
+ */
+async function cloneRun(donor, version, params, cacheKeyValue) {
+  const inserted = await db.query(
+    `INSERT INTO analysis_runs (project_id, version_id, scope, rules_hash, params, cache_key, status, started_at, finished_at)
+     VALUES ($1,$2,'document',$3,$4,$5,'done', now(), now())
+     ON CONFLICT (cache_key) DO NOTHING RETURNING *`,
+    [version.project_id, version.id, donor.rules_hash, JSON.stringify(params), cacheKeyValue]);
+  if (!inserted.rows.length) {
+    const race = await db.query('SELECT * FROM analysis_runs WHERE cache_key = $1', [cacheKeyValue]);
+    return race.rows[0];
+  }
+  const run = inserted.rows[0];
+  await db.query(
+    `INSERT INTO run_rules (run_id, rule_id, outcome, skip_reason, duration_ms)
+     SELECT $1, rule_id, outcome, skip_reason, 0 FROM run_rules WHERE run_id = $2
+     ON CONFLICT DO NOTHING`, [run.id, donor.id]);
+
+  const prev = await db.query(
+    `SELECT f.* FROM findings f
+     JOIN section_versions v ON v.id = f.version_id
+     WHERE v.section_id = (SELECT section_id FROM section_versions WHERE id = $1)
+       AND v.version_no = (SELECT version_no - 1 FROM section_versions WHERE id = $1)
+       AND f.status = 'open'`, [version.id]);
+  const prevByKey = new Map();
+  for (const p of prev.rows) prevByKey.set(`${p.rule_id}|${locationFingerprint(p.location)}`, p);
+  const matchedPrev = new Set();
+
+  const source = await db.query('SELECT * FROM findings WHERE run_id = $1 ORDER BY id', [donor.id]);
+  for (const f of source.rows) {
+    const predecessor = prevByKey.get(`${f.rule_id}|${locationFingerprint(f.location)}`) || null;
+    if (predecessor) matchedPrev.add(predecessor.id);
+    await db.query(
+      `INSERT INTO findings (run_id, version_id, rule_id, rule_hash, origin, severity, verification,
+         location, doc_quote, ntd, ntd_clause, ntd_quote, wording, fix_hint, confidence, codes, predecessor_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [run.id, version.id, f.rule_id, f.rule_hash, f.origin, f.severity, f.verification,
+        JSON.stringify(f.location), f.doc_quote, f.ntd, f.ntd_clause, f.ntd_quote,
+        f.wording, f.fix_hint, f.confidence, JSON.stringify(f.codes || {}), predecessor ? predecessor.id : null]);
+  }
+  const executed = new Set((await db.query(
+    "SELECT rule_id FROM run_rules WHERE run_id = $1 AND outcome IN ('ok','finding')", [donor.id])).rows.map((r) => r.rule_id));
+  for (const p of prev.rows) {
+    if (!matchedPrev.has(p.id) && executed.has(p.rule_id)) {
+      await db.query("UPDATE findings SET status = 'fixed' WHERE id = $1", [p.id]);
+    }
+  }
+  return run;
 }
 
 async function processRun(run, { version, project, rules, llm }) {
@@ -171,11 +262,30 @@ async function processRun(run, { version, project, rules, llm }) {
   const prevByKey = new Map();
   for (const p of prev.rows) prevByKey.set(`${p.rule_id}|${locationFingerprint(p.location)}`, p);
 
+  // Повторный прогон ТОЙ ЖЕ версии (force, повтор после сбоя) её прежние
+  // замечания не дублирует: совпавшее по правилу и месту остаётся одной строкой —
+  // со статусом и решением человека — и переходит к новому прогону; открытое,
+  // которое новый прогон при выполненном правиле не нашёл, закрывается как fixed.
+  // Раньше каждый force добавлял версии второй комплект открытых замечаний, и
+  // сводка проекта считала их дважды (третий круг 04.09.2026).
+  const same = await db.query(
+    `SELECT * FROM findings WHERE version_id = $1 AND run_id <> $2 AND status <> 'fixed' ORDER BY id`,
+    [version.id, run.id]);
+  const sameByKey = new Map();
+  for (const s of same.rows) sameByKey.set(`${s.rule_id}|${locationFingerprint(s.location)}`, s);
+  const matchedSame = new Set();
+
   const matchedPrev = new Set();
   for (const nf of newFindings) {
     const fp = `${nf.rule.id}|${locationFingerprint(nf.location)}`;
     const predecessor = prevByKey.get(fp) || null;
     if (predecessor) matchedPrev.add(predecessor.id);
+    const kept = sameByKey.get(fp);
+    if (kept && !matchedSame.has(kept.id)) {
+      matchedSame.add(kept.id);
+      await db.query('UPDATE findings SET run_id = $1 WHERE id = $2', [run.id, kept.id]);
+      continue;
+    }
     const wording = nf.wordingOverride || (nf.detail ? `${nf.rule.wording} [${nf.detail}]` : nf.rule.wording);
     await db.query(
       `INSERT INTO findings (run_id, version_id, rule_id, rule_hash, origin, severity, verification,
@@ -195,6 +305,11 @@ async function processRun(run, { version, project, rules, llm }) {
   for (const p of prev.rows) {
     if (!matchedPrev.has(p.id) && executed.has(p.rule_id)) {
       await db.query("UPDATE findings SET status = 'fixed' WHERE id = $1", [p.id]);
+    }
+  }
+  for (const s of same.rows) {
+    if (!matchedSame.has(s.id) && s.status === 'open' && executed.has(s.rule_id)) {
+      await db.query("UPDATE findings SET status = 'fixed' WHERE id = $1", [s.id]);
     }
   }
 

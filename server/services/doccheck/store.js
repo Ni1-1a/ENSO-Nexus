@@ -103,6 +103,11 @@ function checkById(id) {
   return db.prepare('SELECT * FROM doccheck_checks WHERE id = ? AND deleted_at IS NULL').get(id) || null;
 }
 
+/** Строка проверки и после мягкого удаления — для гейта доступа к её прогонам. */
+function checkRowAny(id) {
+  return db.prepare('SELECT id, project_id, created_by, deleted_at FROM doccheck_checks WHERE id = ?').get(id) || null;
+}
+
 /** ?project=<id платформы> — только проверки этого проекта; пусто — все. */
 function listChecks({ projectId = '' } = {}) {
   return db.prepare(`SELECT c.id, c.name, c.ai_provider, c.ai_model, c.document_name, c.project_id,
@@ -167,11 +172,13 @@ function ensureServiceSession(check, user, host = '') {
     }
   }
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+  // project_id — проекта платформы проверки: с пустым служебная сессия при каждом
+  // перезапуске «переезжала» в «Ранние работы» (migrateLegacy)
+  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, project_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     (user && user.id) || check.created_by || '', config.promptVersion, host,
-    `Проверка документа: ${check.name}`.slice(0, 60), now(), now());
+    `Проверка документа: ${check.name}`.slice(0, 60), check.project_id || 'legacy', now(), now());
   db.prepare('UPDATE doccheck_checks SET service_session_id = ? WHERE id = ?').run(id, check.id);
   return id;
 }
@@ -266,7 +273,7 @@ function setDecision(runId, findingId, decision, user) {
 
 module.exports = {
   db, httpError, sha256, userName,
-  createCheck, checkById, listChecks, updateCheck, setDocument, setDetected, deleteCheck,
+  createCheck, checkById, checkRowAny, listChecks, updateCheck, setDocument, setDetected, deleteCheck,
   ensureServiceSession,
   createRun, runById, listRuns, setRunRoute, setRunStatus, setRunProgress, recoverInterrupted, setDecision,
 };

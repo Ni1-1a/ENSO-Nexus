@@ -41,6 +41,9 @@ router.post('/forks', express.json(), (req, res) => {
 router.post('/check',
   rateLimit(config.rateLimitExpensive, 'gge-check'), requestSizeLimit(config.uploadTotalBytes), upload.any(),
   wrap(async (req, res) => {
+    // ?project=<id> — отметка прогона в проекте платформы; право ставить её
+    // проверяется ДО разбора файлов: чужой → 404, «Ранние работы» не владельцем → 403
+    const target = String(req.query.project || '').trim() ? projects.markable(req.query.project, req.user) : null;
     const files = (req.files || []).map((f) => ({
       name: decodeName(f),
       size: f.size,
@@ -83,9 +86,8 @@ router.post('/check',
 
     const forks = check.dateForks({ taskDate: req.body.taskDate, fgisDate: req.body.fgisDate });
 
-    // ?project=<id> — проект платформы помнит дату и размер последнего прогона
-    const pid = projects.normId(req.query.project);
-    if (pid) projects.mark(pid, 'gge', `файлов: ${files.length}`, req.user);
+    // проект платформы помнит дату и размер последнего прогона
+    if (target) projects.mark(target.id, 'gge', `файлов: ${files.length}`, req.user);
 
     // текст в ответ не возвращается — только вердикты
     for (const t of textLayers) delete t.text;
