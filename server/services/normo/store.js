@@ -202,6 +202,34 @@ async function summaryByPlatform(ids) {
   return out;
 }
 
+/**
+ * Проект платформы, которому принадлежит объект нормоконтроля — по числовому
+ * id любого уровня. Нужен гейту «свои проекты»: версии, прогоны, отчёты,
+ * замечания и сдвиги нумеруются подряд и раньше открывались перебором.
+ * undefined — объекта нет; null — комплект без проекта (до проектов).
+ */
+const OWNER_SQL = {
+  project: 'SELECT p.platform_project_id AS pid FROM projects p WHERE p.id = $1',
+  section: 'SELECT p.platform_project_id AS pid FROM sections s JOIN projects p ON p.id = s.project_id WHERE s.id = $1',
+  version: `SELECT p.platform_project_id AS pid FROM section_versions v
+            JOIN sections s ON s.id = v.section_id JOIN projects p ON p.id = s.project_id WHERE v.id = $1`,
+  run: 'SELECT p.platform_project_id AS pid FROM analysis_runs r JOIN projects p ON p.id = r.project_id WHERE r.id = $1',
+  finding: `SELECT p.platform_project_id AS pid FROM findings f
+            JOIN analysis_runs r ON r.id = f.run_id JOIN projects p ON p.id = r.project_id WHERE f.id = $1`,
+  report: 'SELECT p.platform_project_id AS pid FROM reports rp JOIN projects p ON p.id = rp.project_id WHERE rp.id = $1',
+  diff: `SELECT p.platform_project_id AS pid FROM diffs d
+         JOIN sections s ON s.id = d.section_id JOIN projects p ON p.id = s.project_id WHERE d.id = $1`,
+  impact: `SELECT p.platform_project_id AS pid FROM impact_links il JOIN diffs d ON d.id = il.diff_id
+           JOIN sections s ON s.id = d.section_id JOIN projects p ON p.id = s.project_id WHERE il.id = $1`,
+};
+async function platformProjectOf(kind, id) {
+  const sql = OWNER_SQL[kind];
+  if (!sql) throw new Error(`platformProjectOf: неизвестный вид ${kind}`);
+  const r = await db.query(sql, [id]);
+  if (!r.rows.length) return undefined;
+  return r.rows[0].pid || null;
+}
+
 /** Есть ли проекты, доставшиеся «Ранним работам»: тогда этот проект должен существовать на платформе. */
 async function hasLegacy() {
   await db.migrate();
@@ -324,6 +352,6 @@ async function listVersions(sectionId) {
 
 module.exports = {
   dataDir, saveFile, filePath, extractText, docxStampData, sectionDefaults,
-  createProject, listProjects, getProject, setSections, summaryByPlatform, hasLegacy,
+  createProject, listProjects, getProject, setSections, summaryByPlatform, hasLegacy, platformProjectOf,
   addVersion, getVersion, listVersions,
 };

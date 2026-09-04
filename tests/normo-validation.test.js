@@ -256,3 +256,32 @@ test('привязка к проекту платформы: несуществ�
   const afterDelete = await api('/api/normo/projects', { method: 'POST', ...json({ ...GOOD, platformProjectId: pid }) });
   assert.strictEqual(afterDelete.status, 404, JSON.stringify(afterDelete.body));
 });
+
+/* ================= свои проекты и внутри нормоконтроля (решение владельца 02.09.2026) ================= */
+
+test('комплект чужого проекта платформы не открывается ни по одному числовому id', async (t) => {
+  if (!available) return t.skip(unavailableReason);
+  if (!userToken) userToken = await login();
+  // проект платформы первого человека и комплект в нём
+  const pp = await api('/api/projects', { method: 'POST', ...json({ name: 'Свой для нормо' }) });
+  assert.strictEqual(pp.status, 201, JSON.stringify(pp.body));
+  const created = await api('/api/normo/projects', { method: 'POST', ...json({ ...GOOD, name: 'Комплект в своём проекте', platformProjectId: pp.body.project.id }) });
+  assert.strictEqual(created.status, 201, JSON.stringify(created.body));
+  const np = created.body.project;
+  const sid = np.sections[0].id;
+
+  // второй человек
+  const other = (await api('/api/auth/enter', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lastName: 'Чужаков', firstName: 'Нормо' }),
+  })).body.token;
+  const asOther = { 'X-User-Token': other };
+  assert.strictEqual((await api(`/api/normo/projects/${np.id}`, { headers: asOther })).status, 404);
+  assert.strictEqual((await api(`/api/normo/sections/${sid}/versions`, { headers: asOther })).status, 404);
+  assert.strictEqual((await api(`/api/normo/projects?project=${pp.body.project.id}`, { headers: asOther })).status, 403);
+  const list = await api('/api/normo/projects', { headers: asOther });
+  assert.ok(!list.body.projects.some((p) => p.id === np.id), 'чужой комплект в общем списке');
+  // свой человек видит
+  assert.strictEqual((await api(`/api/normo/projects/${np.id}`, { headers: asUser() })).status, 200);
+  assert.strictEqual((await api(`/api/normo/sections/${sid}/versions`, { headers: asUser() })).status, 200);
+});

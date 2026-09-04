@@ -40,11 +40,31 @@ function validId(v) {
   const n = Number(s);
   return n >= 1 && n <= ID_MAX ? s : null;
 }
+/** Какой объект стоит за параметром маршрута — для гейта принадлежности проекту. */
+const PARAM_KIND = { id: 'project', sid: 'section', vid: 'version', rid: null, fid: 'finding', did: 'diff', iid: 'impact' };
 for (const name of ['id', 'sid', 'vid', 'rid', 'fid', 'did', 'iid']) {
   router.param(name, (req, res, next, value) => {
     if (validId(value) === null) return res.status(400).json({ error: 'Некорректный идентификатор' });
-    next();
+    // «свои проекты» (решение владельца 02.09.2026): объект чужого проекта для
+    // человека не существует — 404, а не 403, чтобы не подтверждать его наличие.
+    // Комплекты без проекта платформы считаются «Ранними работами» (общие).
+    const kind = PARAM_KIND[name];
+    if (!kind) return next();
+    store.platformProjectOf(kind, value).then((pid) => {
+      if (pid === undefined) return next(); // объекта нет — маршрут сам ответит своим «не найдено»
+      const project = platformProjects.byId(pid || platformProjects.LEGACY_ID);
+      if (!project || !platformProjects.canSee(project, req.user)) return res.status(404).json({ error: 'Не найдено' });
+      next();
+    }).catch(next);
   });
+}
+
+/** Тот же гейт «свои проекты» для маршрутов, где :rid значит то прогон, то заключение. */
+async function visible(req, kind, id) {
+  const pid = await store.platformProjectOf(kind, id);
+  if (pid === undefined) return false;
+  const project = platformProjects.byId(pid || platformProjects.LEGACY_ID);
+  return !!project && platformProjects.canSee(project, req.user);
 }
 
 const STAGES = ['П', 'Р', 'П+Р'];
@@ -147,7 +167,13 @@ router.post('/projects', wrap(async (req, res) => {
 }));
 
 router.get('/projects', wrap(async (req, res) => {
-  res.json({ projects: await store.listProjects({ platformProjectId: platformProjects.filterId(req.query.project, req.user) }) });
+  const all = await store.listProjects({ platformProjectId: platformProjects.filterId(req.query.project, req.user) });
+  // и без фильтра — только комплекты из своих проектов платформы («Ранние работы» общие)
+  const projects = all.filter((p) => {
+    const project = platformProjects.byId(p.platform_project_id || platformProjects.LEGACY_ID);
+    return !!project && platformProjects.canSee(project, req.user);
+  });
+  res.json({ projects });
 }));
 
 router.get('/projects/:id', wrap(async (req, res) => {
@@ -232,6 +258,7 @@ router.post('/versions/:vid/check',
   }));
 
 router.get('/runs/:rid', wrap(async (req, res) => {
+  if (!(await visible(req, 'run', req.params.rid))) return res.status(404).json({ error: 'Прогон не найден' });
   const run = await checks.getRun(req.params.rid);
   if (!run) return res.status(404).json({ error: 'Прогон не найден' });
   res.json({ run });
@@ -397,12 +424,14 @@ router.post('/versions/:vid/reports',
   }));
 
 router.get('/reports/:rid', wrap(async (req, res) => {
+  if (!(await visible(req, 'report', req.params.rid))) return res.status(404).json({ error: 'Заключение не найдено' });
   const r = await db.query('SELECT * FROM reports WHERE id = $1', [req.params.rid]);
   if (!r.rows.length) return res.status(404).json({ error: 'Заключение не найдено' });
   res.json({ report: r.rows[0] });
 }));
 
 router.get('/reports/:rid/file', wrap(async (req, res) => {
+  if (!(await visible(req, 'report', req.params.rid))) return res.status(404).json({ error: 'Заключение не найдено' });
   const r = await db.query('SELECT * FROM reports WHERE id = $1', [req.params.rid]);
   if (!r.rows.length) return res.status(404).json({ error: 'Заключение не найдено' });
   const report = r.rows[0];
