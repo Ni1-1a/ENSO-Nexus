@@ -11,6 +11,10 @@
  */
 (function () {
   const $ = (id) => document.getElementById(id);
+  // контекст проекта платформы: ?project=<id> в адресе, читает общий каркас
+  const projectId = () => (window.EnsoShell && window.EnsoShell.projectId) || '';
+  const projectQuery = () => (projectId() ? `?project=${encodeURIComponent(projectId())}` : '');
+
 
   const RUN_LABEL = { queued: 'в очереди', running: 'идёт', done: 'готово', failed: 'ошибка', draft: 'черновик' };
   const AB_STATUSES = ['ПОДТВЕРЖДЕНО', 'ТРЕБУЕТ ПРОВЕРКИ', 'НЕ СООТВЕТСТВУЕТ', 'НЕТ ДАННЫХ'];
@@ -216,7 +220,7 @@
     const errBox = $('dc-list-error');
     errBox.hidden = true;
     try {
-      const [checks, abs] = await Promise.all([api('/checks'), api('/ab')]);
+      const [checks, abs] = await Promise.all([api(`/checks${projectQuery()}`), api(`/ab${projectQuery()}`)]);
       const box = $('dc-checks');
       box.innerHTML = '';
       const list = checks.checks || [];
@@ -300,8 +304,9 @@
     errBox.hidden = true;
     let data;
     try {
-      data = await api(`/checks/${id}`);
+      data = await api(`/checks/${encodeURIComponent(id)}`);
     } catch (err) {
+      if (err.status === 404) { toast('Проверка не найдена — возможно, удалена', 'error'); location.hash = '#/'; return; }
       errBox.textContent = err.message;
       errBox.hidden = false;
       return;
@@ -326,7 +331,7 @@
     if (state.runs.some((r) => ['queued', 'running'].includes(r.status))) {
       pollTimer = setInterval(async () => {
         try {
-          const fresh = await api(`/checks/${id}`);
+          const fresh = await api(`/checks/${encodeURIComponent(id)}`);
           state.runs = fresh.runs || [];
           renderCheckRuns();
           if (!state.runs.some((r) => ['queued', 'running'].includes(r.status))) {
@@ -372,7 +377,7 @@
     const note = $('c-settings-note');
     note.hidden = true;
     try {
-      const data = await api(`/checks/${state.check.id}`, {
+      const data = await api(`/checks/${encodeURIComponent(state.check.id)}`, {
         method: 'PATCH',
         json: {
           provider: $('c-provider').value,
@@ -406,7 +411,7 @@
     const text = $('c-text').value.trim();
     if (!text) { toast('Текст пуст', 'error'); return; }
     try {
-      const data = await api(`/checks/${state.check.id}/document`, {
+      const data = await api(`/checks/${encodeURIComponent(state.check.id)}/document`, {
         method: 'PUT', json: { text, name: 'вставленный текст' },
       });
       afterDocumentSaved(data, '');
@@ -417,7 +422,7 @@
     const fd = new FormData();
     fd.append('file', file, file.name);
     try {
-      const data = await api(`/checks/${state.check.id}/document/file`, { method: 'POST', body: fd });
+      const data = await api(`/checks/${encodeURIComponent(state.check.id)}/document/file`, { method: 'POST', body: fd });
       afterDocumentSaved(data, data.document.note || '');
     } catch (err) { toast(err.message, 'error'); }
   }
@@ -426,7 +431,7 @@
     const btn = $('c-analyze');
     btn.disabled = true;
     try {
-      const data = await api(`/checks/${state.check.id}/analyze`, { method: 'POST', json: {} });
+      const data = await api(`/checks/${encodeURIComponent(state.check.id)}/analyze`, { method: 'POST', json: {} });
       location.hash = `#/r/${data.runId}`;
     } catch (err) {
       if (err.status === 409 && err.runId) location.hash = `#/r/${err.runId}`;
@@ -435,9 +440,10 @@
   }
 
   async function deleteCheck() {
-    if (!window.confirm(`Удалить проверку «${state.check.name}»? Прогоны останутся в базе.`)) return;
+    const ok = await window.EnsoShell.confirm({ title: `Удалить проверку «${state.check.name}»?`, message: 'Прогоны останутся в базе.', confirmText: 'Удалить', danger: true });
+    if (!ok) return;
     try {
-      await api(`/checks/${state.check.id}`, { method: 'DELETE' });
+      await api(`/checks/${encodeURIComponent(state.check.id)}`, { method: 'DELETE' });
       toast('Проверка удалена');
       location.hash = '#/';
     } catch (err) { toast(err.message, 'error'); }
@@ -595,8 +601,9 @@
     $('ab-error').hidden = true;
     let data;
     try {
-      data = await api(`/ab/${id}`);
+      data = await api(`/ab/${encodeURIComponent(id)}`);
     } catch (err) {
+      if (err.status === 404) { toast('Сравнение не найдено — возможно, удалено', 'error'); location.hash = '#/'; return; }
       $('ab-error').textContent = err.message;
       $('ab-error').hidden = false;
       return;
@@ -613,7 +620,7 @@
     if (a.status === 'running') {
       pollTimer = setInterval(async () => {
         try {
-          const fresh = await api(`/ab/${id}`);
+          const fresh = await api(`/ab/${encodeURIComponent(id)}`);
           state.ab = fresh.ab;
           renderAbStatus();
           if (fresh.ab.status !== 'running') {
@@ -641,7 +648,7 @@
           class: 'btn btn-quiet btn-sm', type: 'button', style: 'margin-left: 8px;',
           onclick: async () => {
             try {
-              const res = await api(`/ab/${a.id}/docs/${kind}`, { method: 'DELETE' });
+              const res = await api(`/ab/${encodeURIComponent(a.id)}/docs/${kind}`, { method: 'DELETE' });
               state.ab = res.ab;
               renderAbDocs();
             } catch (err) { toast(err.message, 'error'); }
@@ -654,7 +661,7 @@
         const fd = new FormData();
         fd.append('file', file, file.name);
         try {
-          const res = await api(`/ab/${a.id}/docs/${kind}/file`, { method: 'POST', body: fd });
+          const res = await api(`/ab/${encodeURIComponent(a.id)}/docs/${kind}/file`, { method: 'POST', body: fd });
           state.ab = res.ab;
           renderAbDocs();
           if (res.note) toast(res.note, 'error');
@@ -697,8 +704,13 @@
         AB_STATUSES.map((st) => h('option', { value: st, selected: d && d.decision === st || null }, st)));
       sel.addEventListener('change', async () => {
         try {
-          const comment = sel.value ? (window.prompt('Комментарий к решению (можно пусто):', d ? d.comment || '' : '') || '') : '';
-          const res = await api(`/ab/${a.id}/rows/${row.id}/decision`, {
+          let comment = '';
+          if (sel.value) {
+            const typed = await window.EnsoShell.prompt({ title: 'Комментарий к решению', label: 'Можно оставить пустым', value: d ? d.comment || '' : '' });
+            if (typed === null) { sel.value = d ? d.decision || '' : ''; return; }
+            comment = typed;
+          }
+          const res = await api(`/ab/${encodeURIComponent(a.id)}/rows/${row.id}/decision`, {
             method: 'POST', json: { decision: sel.value || null, comment },
           });
           if (!state.ab.decisions) state.ab.decisions = {};
@@ -739,7 +751,7 @@
 
   async function saveAb() {
     try {
-      const res = await api(`/ab/${state.ab.id}`, {
+      const res = await api(`/ab/${encodeURIComponent(state.ab.id)}`, {
         method: 'PATCH',
         json: { provider: $('ab-provider').value, model: $('ab-model').value },
       });
@@ -750,18 +762,19 @@
 
   async function runAb() {
     try {
-      await api(`/ab/${state.ab.id}`, {
+      await api(`/ab/${encodeURIComponent(state.ab.id)}`, {
         method: 'PATCH', json: { provider: $('ab-provider').value, model: $('ab-model').value },
       });
-      await api(`/ab/${state.ab.id}/run`, { method: 'POST', json: {} });
+      await api(`/ab/${encodeURIComponent(state.ab.id)}/run`, { method: 'POST', json: {} });
       await showAb(state.ab.id);
     } catch (err) { toast(err.message, 'error'); }
   }
 
   async function deleteAb() {
-    if (!window.confirm(`Удалить сравнение «${state.ab.name}»?`)) return;
+    const ok = await window.EnsoShell.confirm({ title: `Удалить сравнение «${state.ab.name}»?`, confirmText: 'Удалить', danger: true });
+    if (!ok) return;
     try {
-      await api(`/ab/${state.ab.id}`, { method: 'DELETE' });
+      await api(`/ab/${encodeURIComponent(state.ab.id)}`, { method: 'DELETE' });
       toast('Сравнение удалено');
       location.hash = '#/';
     } catch (err) { toast(err.message, 'error'); }
@@ -787,7 +800,7 @@
     const name = $('nc-name').value.trim();
     if (!name) { errBox.textContent = 'Нужно название.'; errBox.hidden = false; return; }
     try {
-      const payload = { name, provider: $('nc-provider').value, model: $('nc-model').value };
+      const payload = { name, projectId: projectId(), provider: $('nc-provider').value, model: $('nc-model').value };
       if (state.newKind === 'ab') {
         const data = await api('/ab', { method: 'POST', json: payload });
         closeNew();
@@ -806,14 +819,8 @@
   /* ---------------- кто вошёл ---------------- */
 
   function renderUserBox() {
-    const box = $('dc-user');
-    const u = (window.Auth && window.Auth.user) || null;
-    if (!u || !window.Auth.requireLogin) { box.hidden = true; return; }
-    const last = String(u.lastName || '').trim();
-    const first = String(u.firstName || '').trim();
-    box.hidden = false;
-    $('dc-user-name').textContent = `${last} ${first}`.trim();
-    $('dc-user-initials').textContent = `${last.slice(0, 1)}${first.slice(0, 1)}`.toUpperCase();
+    // блок человека теперь рисует общий каркас (shell.js)
+    if (window.EnsoShell) window.EnsoShell.renderUser();
   }
 
   /* ---------------- запуск ---------------- */
@@ -846,15 +853,14 @@
     });
 
     $('r-export').addEventListener('click', () =>
-      apiBlob(`/runs/${state.run.id}/export.xlsx`, 'Проверка документа.xlsx').catch((err) => toast(err.message, 'error')));
+      apiBlob(`/runs/${encodeURIComponent(state.run.id)}/export.xlsx`, 'Проверка документа.xlsx').catch((err) => toast(err.message, 'error')));
 
     $('ab-save').addEventListener('click', saveAb);
     $('ab-run').addEventListener('click', runAb);
     $('ab-delete').addEventListener('click', deleteAb);
     $('ab-export').addEventListener('click', () =>
-      apiBlob(`/ab/${state.ab.id}/export.xlsx`, 'Протокол сравнения A-B.xlsx').catch((err) => toast(err.message, 'error')));
+      apiBlob(`/ab/${encodeURIComponent(state.ab.id)}/export.xlsx`, 'Протокол сравнения A-B.xlsx').catch((err) => toast(err.message, 'error')));
 
-    $('dc-sign-out').addEventListener('click', () => window.Auth.signOut());
     window.addEventListener('hashchange', route);
   }
 
@@ -862,6 +868,7 @@
     window.Auth.init();
     await window.Auth.start();
     renderUserBox();
+    if (window.EnsoShell) await window.EnsoShell.start();
     wireStatic();
     await Promise.all([loadHealth(), loadMeta()]);
     await route();

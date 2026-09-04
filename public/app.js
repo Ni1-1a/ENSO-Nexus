@@ -35,6 +35,30 @@ function resetCardData() {
 
 const DEVICE_KEY = 'enso-pilot1-device';
 const LS_KEY = 'enso-pilot1-session';
+/* Указатель на текущую сессию хранится ПО ПРОЕКТУ: вкладка с АВИВАК и вкладка
+   с Горбунками помнят каждая свою (общий ключ заставлял первую опрашивать
+   сессию второй — аудит 02.09.2026). Старый общий ключ читается как запасной. */
+function sessKey() {
+  const pid = (window.EnsoShell && window.EnsoShell.projectId) || '';
+  return pid ? `${LS_KEY}:${pid}` : LS_KEY;
+}
+/* Токены сессий сервер в списке больше не отдаёт (в базе только хеш). Браузер
+   помнит токены сессий, которые сам создал или открыл; незнакомую сессию
+   открывает запросом POST /sessions/:id/token — сервер выдаёт новый токен
+   владельцу (старый перестаёт действовать). */
+const TOK_KEY = 'enso-pilot1-session-tokens';
+const sessTokens = {
+  all() { try { return JSON.parse(localStorage.getItem(TOK_KEY) || '{}') || {}; } catch { return {}; } },
+  get(id) { return this.all()[id] || ''; },
+  set(id, token) { const m = this.all(); m[id] = token; try { localStorage.setItem(TOK_KEY, JSON.stringify(m)); } catch { /* приватный режим */ } },
+  del(id) { const m = this.all(); delete m[id]; try { localStorage.setItem(TOK_KEY, JSON.stringify(m)); } catch { /* приватный режим */ } },
+};
+async function tokenFor(id, { fresh = false } = {}) {
+  if (!fresh) { const known = sessTokens.get(id); if (known) return known; }
+  const r = await api(`/sessions/${id}/token`, { method: 'POST', json: { deviceId: state.deviceId } });
+  sessTokens.set(id, r.token);
+  return r.token;
+}
 const THEME_KEY = 'enso-pilot1-theme';
 const LOG_OPEN_KEY = 'enso-pilot1-log-open';   // «Журнал этапов»: состояние управляет только пользователь
 
@@ -151,6 +175,8 @@ function setOffline(on) {
           loadHealth().catch(() => {});
           refresh().catch(() => {});
           loadDeviceSessions().catch(() => {});
+          // указатель на сессию при обрыве не стирался — поднимаем её заново
+          if (!state.session) restoreOrCreate().catch(() => {});
         }
       } catch { /* всё ещё недоступен — ждём следующей проверки */ }
     }, 10000);
@@ -278,7 +304,9 @@ function ensureDevice() {
 async function loadDeviceSessions() {
   if (!state.deviceId) return;
   try {
-    const data = await api(`/devices/${state.deviceId}/sessions`);
+    // только сессии открытого проекта платформы (?project= в адресе, читает каркас)
+    const pid = (window.EnsoShell && window.EnsoShell.projectId) || '';
+    const data = await api(`/devices/${state.deviceId}/sessions${pid ? `?project=${encodeURIComponent(pid)}` : ''}`);
     state.deviceSessions = data.sessions || [];
     renderSessionsList();
   } catch (err) { console.warn('[projects]', err.message); }
@@ -303,11 +331,11 @@ function renderSessionsList() {
     const status = SESS_STATUS[s.jobStatus] || '';
     const meta = [date, s.files ? `файлов: ${s.files}` : '', status].filter(Boolean).join(' · ');
     return `<li class="sess-item${active ? ' active' : ''}" data-sess="${s.id}">
-      <span class="sess-title">${esc(s.title || 'Новый проект')}</span>
+      <span class="sess-title">${esc(s.title || 'Новая сессия')}</span>
       <span class="sess-meta"><span class="sess-dot" data-status="${esc(s.jobStatus || 'idle')}"
             aria-hidden="true"></span>${esc(meta)}</span>
       <button class="sess-more" type="button" data-more="${s.id}" tabindex="-1"
-              aria-label="Действия с проектом ${esc(s.title || 'Новый проект')}" title="Действия">⋮</button></li>`;
+              aria-label="Действия с сессией ${esc(s.title || 'Новая сессия')}" title="Действия">⋮</button></li>`;
   });
   syncList($('sessions-list'), items);
 }
@@ -315,12 +343,21 @@ function renderSessionsList() {
 async function switchSession(id) {
   const s = state.deviceSessions.find((x) => x.id === id);
   if (!s || (state.session && state.session.id === id)) return;
-  state.session = { id: s.id, token: s.token };
-  localStorage.setItem(LS_KEY, JSON.stringify(state.session));
+  state.session = { id: s.id, token: await tokenFor(id) };
+  localStorage.setItem(sessKey(), JSON.stringify(state.session));
   state.qwId = null;
   state.qBatchTotal = 0;
   resetCardData();
-  await refresh();
+  try {
+    await refresh();
+  } catch (err) {
+    // токен, который помнил браузер, отозван (сессию открывали с другого
+    // устройства) — берём новый и пробуем ещё раз
+    if (err.status !== 404) throw err;
+    state.session = { id: s.id, token: await tokenFor(id, { fresh: true }) };
+    localStorage.setItem(sessKey(), JSON.stringify(state.session));
+    await refresh();
+  }
   renderSessionsList();
 }
 
@@ -328,24 +365,24 @@ async function renameSession(id) {
   const s = state.deviceSessions.find((x) => x.id === id);
   if (!s) return;
   const res = await appDialog({
-    title: 'Название проекта',
-    fields: [{ key: 'title', label: 'Как назвать проект', value: s.title || '', placeholder: 'Например: Школа в Горбунках', maxLength: 120 }],
+    title: 'Название сессии',
+    fields: [{ key: 'title', label: 'Как назвать сессию', value: s.title || '', placeholder: 'Например: вариант с тремя этажами', maxLength: 120 }],
     confirmText: 'Сохранить',
   });
   if (res === null) return;
   // пустое название сервер отвергает с 400: не отправляем его вовсе и говорим,
-  // в чём дело, — иначе безымянный проект не отличить от соседнего
+  // в чём дело, — иначе безымянную сессию не отличить от соседней
   if (!String(res.title || '').trim()) {
-    toast('Название проекта не может быть пустым', 'error');
+    toast('Название сессии не может быть пустым', 'error');
     return;
   }
   try {
     const r = await fetch(`/api/sessions/${id}/settings`, {
       method: 'POST',
-      headers: { ...authHeaders(s.token), 'Content-Type': 'application/json' },
+      headers: { ...authHeaders(await tokenFor(id)), 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: res.title }),
     });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Не удалось переименовать проект');
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Не удалось переименовать сессию');
     await loadDeviceSessions();
   } catch (err) { toast(err.message, 'error'); }
 }
@@ -421,35 +458,59 @@ function initSessionsList() {
 
 /* ---------------- session lifecycle ---------------- */
 async function newSession() {
-  const created = await api('/sessions', { method: 'POST', json: { deviceId: state.deviceId } });
+  const projectId = (window.EnsoShell && window.EnsoShell.projectId) || '';
+  const created = await api('/sessions', { method: 'POST', json: { deviceId: state.deviceId, projectId } });
+  sessTokens.set(created.id, created.token);
   state.session = { id: created.id, token: created.token };
-  localStorage.setItem(LS_KEY, JSON.stringify(state.session));
+  localStorage.setItem(sessKey(), JSON.stringify(state.session));
   state.qwId = null;
   state.qBatchTotal = 0;
   resetCardData();
   await refresh();
   loadDeviceSessions().catch(() => {});
-  toast('Создан новый проект');
+  toast('Создана новая сессия');
 }
 
 async function restoreOrCreate() {
   ensureDevice();
-  const saved = localStorage.getItem(LS_KEY);
+  // Сессии посадки живут внутри проекта платформы: без открытого модуля
+  // «Посадка здания» ничего не восстанавливаем и тем более не создаём —
+  // список проектов и настройки не должны плодить пустые сессии.
+  const shell = window.EnsoShell;
+  if (!shell || shell.module !== 'site') return;
+  // проект должен быть НАЙДЕН в списке, а не просто назван в адресе: под
+  // удалённым или выдуманным id сессия не создаётся (аудит 02.09.2026)
+  await shell.ready;
+  if (!shell.project || shell.module !== 'site') return;
+  const pid = shell.project.id;
+  const saved = localStorage.getItem(sessKey()) || localStorage.getItem(LS_KEY);
   if (saved) {
     try {
       state.session = JSON.parse(saved);
+      if (state.session && state.session.token) sessTokens.set(state.session.id, state.session.token);
       await refresh();
+      if (state.view && state.view.projectId !== pid) {
+        // сохранённая сессия из другого проекта — берём сессии этого
+        throw Object.assign(new Error('другой проект'), { status: 404 });
+      }
+      localStorage.setItem(sessKey(), JSON.stringify(state.session));
       // привязать сессию к устройству (миграция старых сессий) и показать список
       api(`/sessions/${state.session.id}/device`, { method: 'POST', json: { deviceId: state.deviceId } })
         .then(() => loadDeviceSessions()).catch(() => loadDeviceSessions());
       return;
     } catch (err) {
-      if (err.status !== 404) console.warn(err);
+      if (err.offline) {
+        // связь мигнула: указатель не трогаем, сессия поднимется при восстановлении (setOffline)
+        state.session = null;
+        return;
+      }
+      if (err.status !== 404 && err.status !== 403) console.warn(err);
       state.session = null;
-      localStorage.removeItem(LS_KEY);
+      localStorage.removeItem(sessKey());
+      if (localStorage.getItem(LS_KEY) === saved) localStorage.removeItem(LS_KEY);
     }
   }
-  // история по ID устройства: если на устройстве уже есть проекты — открываем последний
+  // история по ID устройства: если в проекте уже есть сессии — открываем последнюю
   await loadDeviceSessions();
   if (state.deviceSessions.length) {
     await switchSession(state.deviceSessions[0].id);
@@ -458,54 +519,54 @@ async function restoreOrCreate() {
   await newSession();
 }
 
-/** Удаление проекта: из меню (любой проект по id) или текущего, если id не задан. */
+/** Удаление сессии: из меню (любая по id) или текущей, если id не задан. */
 async function deleteSession(id = null) {
   const target = id || (state.session && state.session.id);
   if (!target) return;
   const listed = state.deviceSessions.find((x) => x.id === target);
   const ok = await appDialog({
-    title: `Удалить проект${listed && listed.title ? ` «${listed.title}»` : ''}?`,
-    message: 'Проект будет удалён вместе со всеми файлами, перепиской и результатами. Действие необратимо (копии итоговых отчётов останутся в архиве прогонов на сервере).',
+    title: `Удалить сессию${listed && listed.title ? ` «${listed.title}»` : ''}?`,
+    message: 'Сессия будет удалена вместе со всеми файлами, перепиской и результатами. Проект и другие сессии остаются. Действие необратимо (копии итоговых отчётов останутся в архиве прогонов на сервере).',
     confirmText: 'Удалить',
     danger: true,
   });
   if (ok === null) return;
-  const token = (state.session && state.session.id === target)
-    ? state.session.token
-    : (listed && listed.token);
+  let token = (state.session && state.session.id === target) ? state.session.token : '';
   try {
+    if (!token) token = await tokenFor(target);
     const res = await fetch(`/api/sessions/${target}`, { method: 'DELETE', headers: authHeaders(token) });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      toast(data.error || `Не удалось удалить проект (${res.status})`, 'error');
+      toast(data.error || `Не удалось удалить сессию (${res.status})`, 'error');
       return;
     }
   } catch (err) {
-    toast('Сервер не ответил — проект не удалён', 'error');
+    toast('Сервер не ответил — сессия не удалена', 'error');
     return;
   }
 
-  // удалили чужой проект — текущий остаётся открытым, обновляем только список
+  // удалили другую сессию — текущая остаётся открытой, обновляем только список
   if (state.session && state.session.id !== target) {
     await loadDeviceSessions();
-    toast('Проект удалён');
+    toast('Сессия удалена');
     return;
   }
-  localStorage.removeItem(LS_KEY);
+  localStorage.removeItem(sessKey());
+  sessTokens.del(target);
   state.session = null;
   state.view = null;
   await loadDeviceSessions();
   if (state.deviceSessions.length) {
     await switchSession(state.deviceSessions[0].id);
-    toast('Проект удалён — открыт предыдущий');
+    toast('Сессия удалена — открыта предыдущая');
   } else {
     await newSession();
-    toast('Проект удалён, создан новый');
+    toast('Сессия удалена, создана новая');
   }
 }
 
 function startNewSession() {
-  localStorage.removeItem(LS_KEY);
+  localStorage.removeItem(sessKey());
   state.session = null;
   newSession().catch((err) => toast(err.message, 'error'));
 }
@@ -715,7 +776,7 @@ function render() {
   const msgs = v.messages;
   // сколько последних реплик человека ещё ждут ответа — их помечаем в ленте
   const pendingFrom = v.pendingChats > 0 ? msgs.length - v.pendingChats : msgs.length;
-  const emptyText = 'Это лента проекта. Здесь можно спрашивать помощника, писать указания к исходным данным ' +
+  const emptyText = 'Это лента сессии. Здесь можно спрашивать помощника, писать указания к исходным данным ' +
     'и согласовывать схему зон и варианты посадки — всё в одном разговоре.';
   // у каждого вида карточки живая — только последняя: после замечания приходит
   // новая, а на прежней оставались рабочие кнопки со старыми цифрами
@@ -1706,12 +1767,22 @@ function updateCompareButton() {
   let label = `Запустить сравнение (моделей: ${n})`;
   if (n < 2) label = 'Запустить сравнение — выберите 2–4 модели';
   else if (n > 4) label = `Слишком много моделей (${n}) — максимум 4`;
-  else if (noFiles) label = 'Сначала загрузите исходные данные в проект';
+  else if (noFiles) label = 'Сначала загрузите исходные данные в сессию';
   else if (busy) label = 'Дождитесь завершения текущей задачи…';
   $('btn-compare').textContent = label;
 }
 
+/** Разделы «Этапы», «Нейросеть», «База знаний», «Сравнение» принадлежат сессии
+ *  посадки: на платформенном экране настроек (без проекта) их не к чему
+ *  применять — говорим об этом, а не роняем обработчик на state.session.id. */
+function requireSession() {
+  if (state.session) return true;
+  toast('Эти настройки принадлежат сессии — откройте её в модуле «Посадка здания»', 'error');
+  return false;
+}
+
 async function saveSettings(patch) {
+  if (!requireSession()) return;
   try {
     await api(`/sessions/${state.session.id}/settings`, { method: 'POST', json: patch });
     toast('Настройки сохранены');
@@ -2074,7 +2145,7 @@ const SETTINGS_INFO = {
            строго по вашим шагам и по ним же собирает разделы отчёта. Не меняются при этом
            ни формат ответа, ни геометрический движок — координаты зон, площади и пятна застройки
            считает код, а не список шагов.</p>
-        <p class="hint">Настройка принадлежит проекту, а не платформе: в соседнем проекте порядок
+        <p class="hint">Настройка принадлежит сессии, а не платформе: в соседней сессии порядок
            останется стандартным. Кнопка возврата (круговая стрелка) появляется, только когда
            загружен свой файл, и возвращает стандартные шаги, ничего больше не трогая.</p>`;
     },
@@ -2105,8 +2176,8 @@ const SETTINGS_INFO = {
         <p>${p && p.local
           ? 'Это локальная модель: запросы бесплатны, но нужен запущенный сервер LM Studio на той же машине.'
           : 'Это облачная модель: запросы платные, по API-ключу на сервере. Расход за сессию — в карточке «Статус».'}</p>
-        ${v ? `<p class="hint">Настройка сохраняется у проекта «${esc(v.title || 'без названия')}», а не глобально:
-          разные проекты могут работать на разных моделях.</p>` : ''}`;
+        ${v ? `<p class="hint">Настройка сохраняется у сессии «${esc(v.title || 'без названия')}», а не глобально:
+          разные сессии могут работать на разных моделях.</p>` : ''}`;
     },
   },
   kb: {
@@ -2157,7 +2228,7 @@ function compareInfoHtml() {
     <ul>
       ${check(files > 0, files > 0
         ? `Исходные данные загружены (файлов: ${files})`
-        : 'Загрузите исходные данные в активный проект (карточка «Исходные данные» на экране «Этап 1») — сравнение выполняет полный анализ этих файлов')}
+        : 'Загрузите исходные данные в активную сессию (карточка «Исходные данные» в модуле «Посадка здания») — сравнение выполняет полный анализ этих файлов')}
       ${check(n >= 2 && n <= 4, `Отметьте галочками 2–4 модели (сейчас выбрано: ${n})`)}
       ${check(true, 'Модели должны быть доступны: облачным нужен API-ключ на сервере, локальным — запущенный LM Studio. Недоступные показаны серым и недоступны для выбора')}
       ${check(!busy, busy
@@ -2410,11 +2481,11 @@ function renderStats() {
         <div class="sub">${fmtNum(t.mainRequests)} основных · ${fmtNum(t.internalRequests)} служебных</div></div>
       <div class="stat-tile"><div class="val">${fmtTokens(t.inputTokens + t.outputTokens)}</div><div class="lbl">Токенов всего</div>
         <div class="sub">↑ ${fmtTokens(t.inputTokens)} · ↓ ${fmtTokens(t.outputTokens)}</div></div>
-      <div class="stat-tile"><div class="val">${fmtNum(t.projects)}</div><div class="lbl">Проектов задействовано</div>
+      <div class="stat-tile"><div class="val">${fmtNum(t.projects)}</div><div class="lbl">Сессий задействовано</div>
         <div class="sub">${fmtNum(t.avgTokensPerRequest)} токенов на запрос</div></div>
       <div class="stat-tile"><div class="val">${fmtTokens(t.cacheReadTokens)}</div><div class="lbl">Прочитано из кэша</div>
         <div class="sub">записано ${fmtTokens(t.cacheWriteTokens)}</div></div>
-      <div class="stat-tile"><div class="val">${fmtNum(d.limits.maxAiRequestsPerSession)}</div><div class="lbl">Потолок запросов на проект</div>
+      <div class="stat-tile"><div class="val">${fmtNum(d.limits.maxAiRequestsPerSession)}</div><div class="lbl">Потолок запросов на сессию</div>
         <div class="sub">токенов: ${fmtTokens(d.limits.maxTokensPerSession)}</div></div>
     </div>
   </div>`;
@@ -2433,7 +2504,7 @@ function renderStats() {
       fmtNum(m.requests), fmtTokens(m.inputTokens), fmtTokens(m.outputTokens), fmtMoney(m.costUsd),
     ]))}</div>`;
 
-  const projects = `<div class="card"><h2>Проекты</h2>
+  const projects = `<div class="card"><h2>Сессии</h2>
     ${tableHtml(['Проект', 'Запросов', 'Токенов', 'Расход', 'Последний'],
     d.byProject.map((p) => [
       esc(p.title), fmtNum(p.requests), fmtTokens(p.tokens), fmtMoney(p.costUsd),
@@ -2543,6 +2614,8 @@ async function init() {
   window.Auth.init();
   await window.Auth.start();
   renderUserBox();
+  // общий каркас: список проектов со сводкой, навигация по модулям, заголовок
+  if (window.EnsoShell) window.EnsoShell.start().catch(() => {});
   $('btn-sign-out').addEventListener('click', signOut);
 
   // чисто клиентские обработчики — работают даже при недоступном сервере
@@ -2694,11 +2767,19 @@ async function init() {
   // периодическое обновление доступности провайдеров (LM Studio мог включиться/выключиться)
   setInterval(() => { if (!state.offline) loadHealth().catch(() => {}); }, 60000);
   await restoreOrCreate().catch((err) => toast(err.message, 'error'));
+  // без сессии разделы её настроек не показываем: экран настроек — платформенный
+  for (const g of document.querySelectorAll('.set-group[data-group="workplan"], .set-group[data-group="ai"], .set-group[data-group="kb"], .set-group[data-group="compare"]')) {
+    g.hidden = !state.session;
+  }
+  if ($('settings-no-session')) $('settings-no-session').hidden = !!state.session;
 
   $('btn-new-session-side').addEventListener('click', startNewSession);
 
   initSessionsList();
-  setInterval(() => loadDeviceSessions().catch(() => {}), 30000);
+  // список сессий живёт только в модуле «Посадка здания» — на других экранах опрос ни к чему
+  setInterval(() => {
+    if (window.EnsoShell && window.EnsoShell.module === 'site') loadDeviceSessions().catch(() => {});
+  }, 30000);
   $('btn-cancel-job').addEventListener('click', cancelJob);
 
   const dz = $('dropzone');
@@ -2734,12 +2815,14 @@ async function init() {
     const fd = new FormData();
     fd.append('file', f);
     try {
+      if (!requireSession()) return;
       const res = await api(`/sessions/${state.session.id}/workplan`, { method: 'POST', body: fd });
       toast(`Порядок работы загружен: шагов — ${res.steps.length}`);
       await refresh();
     } catch (err) { toast(err.message, 'error'); }
   });
   $('btn-workplan-reset').addEventListener('click', async () => {
+    if (!requireSession()) return;
     try {
       await api(`/sessions/${state.session.id}/workplan`, { method: 'DELETE' });
       toast('Возвращён стандартный порядок работы');
@@ -2748,6 +2831,7 @@ async function init() {
   });
 
   $('btn-compare').addEventListener('click', async () => {
+    if (!requireSession()) return;
     const models = selectedCompareModels();
     try {
       await api(`/sessions/${state.session.id}/compare`, { method: 'POST', json: { models } });

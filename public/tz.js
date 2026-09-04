@@ -13,6 +13,10 @@
  */
 (function () {
   const $ = (id) => document.getElementById(id);
+  // контекст проекта платформы: ?project=<id> в адресе, читает общий каркас
+  const projectId = () => (window.EnsoShell && window.EnsoShell.projectId) || '';
+  const projectQuery = () => (projectId() ? `?project=${encodeURIComponent(projectId())}` : '');
+
 
   const SEV_ORDER = ['БЛОКЕР', 'СУЩЕСТВЕННО', 'ЗАМЕЧАНИЕ', 'РЕКОМЕНДАЦИЯ'];
   const RUN_LABEL = { queued: 'в очереди', running: 'идёт', done: 'готово', failed: 'ошибка' };
@@ -223,7 +227,7 @@
     const errBox = $('tz-projects-error');
     errBox.hidden = true;
     try {
-      const data = await api('/projects');
+      const data = await api(`/projects${projectQuery()}`);
       box.innerHTML = '';
       const list = data.projects || [];
       $('tz-projects-empty').hidden = !!list.length;
@@ -261,8 +265,14 @@
     errBox.hidden = true;
     let data;
     try {
-      data = await api(`/projects/${id}`);
+      data = await api(`/projects/${encodeURIComponent(id)}`);
     } catch (err) {
+      if (err.status === 404) {
+        // задания нет (удалено или адрес выдуман) — на список, а не пустой экран
+        toast('Задание не найдено — возможно, удалено', 'error');
+        location.hash = '#/';
+        return;
+      }
       errBox.textContent = err.message;
       errBox.hidden = false;
       return;
@@ -270,7 +280,7 @@
     state.project = data.project;
     state.runs = data.runs || [];
     const p = state.project;
-    crumbs([{ label: 'Проекты', href: '#/' }, { label: p.name }]);
+    crumbs([{ label: 'Задания', href: '#/' }, { label: p.name }]);
     $('pj-name').textContent = p.name;
     $('pj-sub').textContent = `создан ${fmtDateTime(p.created_at)}${p.created_by_name ? ` · ${p.created_by_name}` : ''}`;
 
@@ -284,7 +294,7 @@
     if (state.runs.some((r) => ['queued', 'running'].includes(r.status))) {
       pollTimer = setInterval(async () => {
         try {
-          const fresh = await api(`/projects/${id}`);
+          const fresh = await api(`/projects/${encodeURIComponent(id)}`);
           state.runs = fresh.runs || [];
           renderRuns();
           if (!state.runs.some((r) => ['queued', 'running'].includes(r.status))) {
@@ -333,7 +343,7 @@
       const object = { ...(state.project.object || {}) };
       const funding = $('pj-funding').value;
       if (funding) object.funding = funding; else delete object.funding;
-      const data = await api(`/projects/${state.project.id}`, {
+      const data = await api(`/projects/${encodeURIComponent(state.project.id)}`, {
         method: 'PATCH',
         json: {
           checklist: $('pj-checklist').value,
@@ -354,7 +364,7 @@
     const text = $('pj-text').value.trim();
     if (!text) { toast('Текст пуст', 'error'); return; }
     try {
-      const data = await api(`/projects/${state.project.id}/document`, {
+      const data = await api(`/projects/${encodeURIComponent(state.project.id)}/document`, {
         method: 'PUT', json: { text, name: 'вставленный текст' },
       });
       state.project.document_chars = data.document.chars;
@@ -369,7 +379,7 @@
     const fd = new FormData();
     fd.append('file', file, file.name);
     try {
-      const data = await api(`/projects/${state.project.id}/document/file`, { method: 'POST', body: fd });
+      const data = await api(`/projects/${encodeURIComponent(state.project.id)}/document/file`, { method: 'POST', body: fd });
       state.project.document_chars = data.document.chars;
       state.project.document_name = data.document.name;
       state.project.document_note = data.document.note || '';
@@ -383,7 +393,7 @@
     const btn = $('pj-analyze');
     btn.disabled = true;
     try {
-      const data = await api(`/projects/${state.project.id}/analyze`, { method: 'POST', json: {} });
+      const data = await api(`/projects/${encodeURIComponent(state.project.id)}/analyze`, { method: 'POST', json: {} });
       location.hash = `#/r/${data.runId}`;
     } catch (err) {
       // на 409 сервер называет уже идущий прогон — ведём человека к нему
@@ -392,10 +402,15 @@
   }
 
   async function deleteProject() {
-    if (!window.confirm(`Удалить проект «${state.project.name}»? Прогоны останутся в базе, но из списка проект исчезнет.`)) return;
+    const ok = await window.EnsoShell.confirm({
+      title: `Удалить задание «${state.project.name}»?`,
+      message: 'Прогоны останутся в базе, но из списка задание исчезнет.',
+      confirmText: 'Удалить', danger: true,
+    });
+    if (!ok) return;
     try {
-      await api(`/projects/${state.project.id}`, { method: 'DELETE' });
-      toast('Проект удалён');
+      await api(`/projects/${encodeURIComponent(state.project.id)}`, { method: 'DELETE' });
+      toast('Задание удалено');
       location.hash = '#/';
     } catch (err) { toast(err.message, 'error'); }
   }
@@ -415,7 +430,7 @@
     }
     state.run = data.run;
     const run = state.run;
-    crumbs([{ label: 'Проекты', href: '#/' }, { label: 'Проект', href: `#/p/${run.project_id}` }, { label: 'Прогон' }]);
+    crumbs([{ label: 'Задания', href: '#/' }, { label: 'Задание', href: `#/p/${run.project_id}` }, { label: 'Прогон' }]);
     $('r-title').textContent = 'Проверка ТЗ';
     $('r-sub').textContent = `${fmtDateTime(run.created_at)} · ${run.provider}${run.model ? ` (${run.model})` : ''}${run.started_by_name ? ` · запустил: ${run.started_by_name}` : ''}`;
 
@@ -572,12 +587,13 @@
     const errBox = $('np-error');
     errBox.hidden = true;
     const name = $('np-name').value.trim();
-    if (!name) { errBox.textContent = 'Нужно название проекта.'; errBox.hidden = false; return; }
+    if (!name) { errBox.textContent = 'Нужно название задания.'; errBox.hidden = false; return; }
     try {
       const data = await api('/projects', {
         method: 'POST',
         json: {
           name,
+          projectId: projectId(),
           checklist: $('np-checklist').value,
           provider: $('np-provider').value,
           model: $('np-model').value,
@@ -594,14 +610,8 @@
   /* ---------------- кто вошёл ---------------- */
 
   function renderUserBox() {
-    const box = $('tz-user');
-    const u = (window.Auth && window.Auth.user) || null;
-    if (!u || !window.Auth.requireLogin) { box.hidden = true; return; }
-    const last = String(u.lastName || '').trim();
-    const first = String(u.firstName || '').trim();
-    box.hidden = false;
-    $('tz-user-name').textContent = `${last} ${first}`.trim();
-    $('tz-user-initials').textContent = `${last.slice(0, 1)}${first.slice(0, 1)}`.toUpperCase();
+    // блок человека теперь рисует общий каркас (shell.js)
+    if (window.EnsoShell) window.EnsoShell.renderUser();
   }
 
   /* ---------------- запуск ---------------- */
@@ -635,11 +645,10 @@
     $('rf-severity').addEventListener('change', () => { state.filters.severity = $('rf-severity').value; renderFindings(); });
     $('rf-category').addEventListener('change', () => { state.filters.category = $('rf-category').value; renderFindings(); });
     $('r-export-xlsx').addEventListener('click', () =>
-      apiBlob(`/runs/${state.run.id}/export.xlsx`, 'Реестр замечаний ТЗ.xlsx').catch((err) => toast(err.message, 'error')));
+      apiBlob(`/runs/${encodeURIComponent(state.run.id)}/export.xlsx`, 'Реестр замечаний ТЗ.xlsx').catch((err) => toast(err.message, 'error')));
     $('r-export-docx').addEventListener('click', () =>
-      apiBlob(`/runs/${state.run.id}/export.docx`, 'Заключение по проверке ТЗ.docx').catch((err) => toast(err.message, 'error')));
+      apiBlob(`/runs/${encodeURIComponent(state.run.id)}/export.docx`, 'Заключение по проверке ТЗ.docx').catch((err) => toast(err.message, 'error')));
 
-    $('tz-sign-out').addEventListener('click', () => window.Auth.signOut());
     window.addEventListener('hashchange', route);
   }
 
@@ -647,6 +656,7 @@
     window.Auth.init();
     await window.Auth.start();
     renderUserBox();
+    if (window.EnsoShell) await window.EnsoShell.start();
     wireStatic();
     await Promise.all([loadHealth(), loadMeta()]);
     await route();

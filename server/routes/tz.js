@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
+const platformProjects = require('../services/projects');
 const multer = require('multer');
 const config = require('../config');
 const { rateLimit, userAuth } = require('../middleware');
@@ -30,6 +31,8 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 
 // текст ЗнП больше общего лимита JSON платформы (256 КБ) — свой разбор тела
 const bigJson = express.json({ limit: '2mb' });
+// общий парсер приложения этот роутер обходит — JSON разбирается здесь, до 2 МБ
+router.use(bigJson);
 
 // multer отдаёт originalname в latin1 — кириллица без перекодировки превращается
 // в кракозябры (тот же приём, что в routes/api.js платформы)
@@ -58,7 +61,7 @@ router.get('/meta', (req, res) => {
 /* ---------------- проекты ---------------- */
 
 router.post('/projects', bigJson, wrap(async (req, res) => {
-  const { name, checklist, provider, model, object } = req.body || {};
+  const { name, checklist, provider, model, object, projectId } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Нужно имя проекта (name)' });
   const checklistId = checklist || 'production';
   if (!checklists.CHECKLISTS[checklistId]) {
@@ -76,13 +79,16 @@ router.post('/projects', bigJson, wrap(async (req, res) => {
     model: model ? String(model) : '',
     object: object && typeof object === 'object' ? object : {},
     user: req.user,
+    // пусто — «Ранние работы», чужой или удалённый проект — 404 (общее правило модулей)
+    projectId: platformProjects.resolveProjectId(projectId, req.user).id,
   });
+  platformProjects.touch(project.project_id);
   res.status(201).json({ project });
 }));
 
-router.get('/projects', (req, res) => {
-  res.json({ projects: store.listProjects() });
-});
+router.get('/projects', wrap(async (req, res) => {
+  res.json({ projects: store.listProjects({ projectId: platformProjects.filterId(req.query.project, req.user) }) });
+}));
 
 router.get('/projects/:id', wrap(async (req, res) => {
   const project = store.projectById(req.params.id);
@@ -101,6 +107,13 @@ router.get('/projects/:id/document', wrap(async (req, res) => {
 
 router.patch('/projects/:id', bigJson, wrap(async (req, res) => {
   const { name, checklist, provider, model, object } = req.body || {};
+  if (object && typeof object === 'object' && JSON.stringify(object).length > 20000) {
+    return res.status(400).json({ error: 'Описание объекта слишком большое (предел 20 000 символов)' });
+  }
+  // проверка ПОСЛЕ trim: null раньше становился именем «null», пробелы — пустым именем
+  if (name !== undefined && !String(name ?? '').trim()) {
+    return res.status(400).json({ error: 'Название не может быть пустым' });
+  }
   if (checklist !== undefined && !checklists.CHECKLISTS[checklist]) {
     return res.status(400).json({ error: `Неизвестный чек-лист: ${checklist}` });
   }
@@ -130,6 +143,8 @@ router.delete('/projects/:id', wrap(async (req, res) => {
 router.put('/projects/:id/document', bigJson, wrap(async (req, res) => {
   const text = String((req.body || {}).text || '').trim();
   if (!text) return res.status(400).json({ error: 'Пустой текст ЗнП' });
+  const tooBig = require('../services/validation').docSizeError(text);
+  if (tooBig) return res.status(422).json({ error: tooBig });
   const project = store.setDocument(req.params.id, {
     text,
     name: String((req.body || {}).name || 'вставленный текст').slice(0, 200),
@@ -152,6 +167,12 @@ router.post('/projects/:id/document/file',
     const ext = path.extname(name).toLowerCase().replace('.', '');
     if (!['docx', 'pdf', 'txt', 'md'].includes(ext)) {
       return res.status(422).json({ error: `Формат .${ext || '?'} не принимается: нужен DOCX, PDF с текстовым слоем, TXT или MD` });
+    }
+    // подделка под PDF/DOCX ловится по magic-байтам ДО разбора: иначе она
+    // выглядела как «скан без текстового слоя» — и совет был не тот
+    if (ext === 'pdf' || ext === 'docx') {
+      const magic = require('../services/validation').checkMagic(ext, req.file.buffer);
+      if (!magic.ok) return res.status(422).json({ error: magic.reason });
     }
     // файл сохраняется рядом с данными модуля — происхождение текста должно прослеживаться
     const dir = path.join(config.dataDir, 'tz', project.id);
@@ -176,6 +197,8 @@ router.post('/projects/:id/document/file',
           : 'Не удалось извлечь текст из файла',
       });
     }
+    const tooBig = require('../services/validation').docSizeError(text);
+    if (tooBig) return res.status(422).json({ error: tooBig });
     const updated = store.setDocument(project.id, { text, name, note });
     res.status(201).json({
       document: { name: updated.document_name, chars: updated.document_text.length, note },

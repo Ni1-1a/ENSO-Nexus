@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const config = require('../config');
-const { db, now } = require('../db');
+const { db, now, hashToken } = require('../db');
+const projects = require('../services/projects');
 const { sanitizeFilename, validateUpload } = require('../services/validation');
 const pipeline = require('../services/pipeline');
 const stages = require('../services/stages');
@@ -142,9 +143,13 @@ function askedUser(req, scope) {
 }
 
 function askedDays(req) {
+  if (req.query.days === undefined || req.query.days === '') return 30;
   const d = Number(req.query.days);
-  if (!Number.isFinite(d)) return 30;
-  return Math.min(365, Math.max(0, Math.round(d)));   // 0 — за всё время
+  // отрицательное и не число раньше молча становились нулём — «за всё время»
+  if (!Number.isInteger(d) || d < 0) {
+    const err = new Error('days: целое от 0'); err.status = 400; throw err;
+  }
+  return Math.min(365, d);   // 0 — за всё время
 }
 
 router.get('/stats/overview', userAuth, (req, res, next) => {
@@ -212,8 +217,13 @@ router.post('/sessions', expensiveLimit, userAuth, express.json(), (req, res) =>
   // Имя платформы, на котором проект завели: от него зависит доступ к облаку.
   // Дальше оно обновляется в sessionAuth на каждом обращении к проекту.
   const originHost = String(req.hostname || '').toLowerCase().split(':')[0].trim();
-  db.prepare('INSERT INTO sessions (id, token, device_id, user_id, prompt_version, origin_host, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)')
-    .run(id, token, deviceId, (req.user && req.user.id) || '', config.promptVersion, originHost, now(), now());
+  // проект платформы, в котором заведена сессия: список сессий фильтруется по нему;
+  // пусто — «Ранние работы», чужой или удалённый — 404 (общее правило модулей)
+  const projectId = projects.resolveProjectId(req.body?.projectId, req.user).id;
+  // в базу — только хеш; сам токен уходит человеку один раз, здесь
+  db.prepare('INSERT INTO sessions (id, token, token_hash, device_id, user_id, prompt_version, origin_host, project_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, '', hashToken(token), deviceId, (req.user && req.user.id) || '', config.promptVersion, originHost, projectId, now(), now());
+  projects.touch(projectId);
   pipeline.logEvent(id, 'Сессия создана');
   res.status(201).json({ id, token });
 });
@@ -228,18 +238,43 @@ router.get('/devices/:deviceId/sessions', userAuth, (req, res) => {
   const deviceId = normDeviceId(req.params.deviceId);
   if (!deviceId) return res.status(400).json({ error: 'Некорректный ID устройства' });
   const userId = (req.user && req.user.id) || '';
+  // ?project=<id> — только сессии этого проекта платформы; без параметра — все (старый клиент)
+  const projectId = projects.filterId(req.query.project, req.user);
   // Ответ содержит токены проектов, поэтому маршрут закрыт входом. Отдаём
   // СВОИ проекты плюс «ничьи» проекты этого же устройства — те, что заведены
   // до появления входа: они подхватятся и закрепятся при первом открытии.
   const sessions = db.prepare(`
-    SELECT s.id, s.token, s.title, s.job_status AS jobStatus,
+    SELECT s.id, s.title, s.job_status AS jobStatus,
            s.created_at AS createdAt, s.updated_at AS updatedAt,
            (SELECT COUNT(*) FROM files f WHERE f.session_id = s.id) AS files
     FROM sessions s
     WHERE s.status = 'active'
       AND ((? <> '' AND s.user_id = ?) OR (s.user_id = '' AND s.device_id = ?))
-    ORDER BY s.updated_at DESC LIMIT 50`).all(userId, userId, deviceId);
+      AND (? = '' OR s.project_id = ?)
+    ORDER BY s.updated_at DESC LIMIT 50`).all(userId, userId, deviceId, projectId, projectId);
   res.json({ sessions });
+});
+
+/*
+ * Токен своей сессии — по запросу, а не в списке. Список раньше отдавал токены
+ * всех сессий разом; теперь в базе лежит только хеш, вернуть прежний токен
+ * нельзя — выдаётся новый (старый перестаёт действовать). Своя сессия — та,
+ * что заведена этим человеком, либо «ничья» сессия того же устройства.
+ */
+router.post('/sessions/:id/token', userAuth, express.json(), (req, res) => {
+  const id = req.params.id;
+  if (!/^[0-9a-f-]{36}$/.test(id || '')) return res.status(400).json({ error: 'Некорректный идентификатор сессии' });
+  const session = db.prepare("SELECT * FROM sessions WHERE id = ? AND status = 'active'").get(id);
+  if (!session) return res.status(404).json({ error: 'Сессия не найдена' });
+  const userId = (req.user && req.user.id) || '';
+  const deviceId = normDeviceId(req.body?.deviceId);
+  const mine = !!userId && session.user_id === userId;
+  const orphanOfDevice = !session.user_id && !!deviceId && session.device_id === deviceId;
+  if (!mine && !orphanOfDevice) return res.status(403).json({ error: 'Это чужая сессия' });
+  const token = crypto.randomBytes(32).toString('hex');
+  db.prepare("UPDATE sessions SET token_hash = ?, token = '', user_id = CASE WHEN user_id = '' THEN ? ELSE user_id END WHERE id = ?")
+    .run(hashToken(token), userId, id);
+  res.json({ id, token });
 });
 
 /* привязать существующую сессию к устройству (миграция старых сессий) */
@@ -269,6 +304,7 @@ function sessionView(session) {
   const facts = db.prepare('SELECT key, value, source FROM facts WHERE session_id = ? ORDER BY created_at').all(session.id);
   return {
     id: session.id,
+    projectId: session.project_id || '',
     title: session.title || '',
     jobStatus: session.job_status,
     comment: session.comment,
@@ -476,23 +512,31 @@ router.get('/sessions/:id/plan', sessionAuth, async (req, res, next) => {
  * Полигон, порядок осей и сверку с заявленной площадью считает КОД
  * (services/geometry/parcel-source.js), а не модель.
  */
-router.post('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, express.json(), async (req, res, next) => {
+router.post('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, expensiveLimit, express.json(), async (req, res, next) => {
   try {
     const parcelSource = require('../services/geometry/parcel-source');
+    const { db } = require('../db');
     const body = req.body || {};
+    const hasPoints = Array.isArray(body.points) && body.points.length >= 3;
+    // без точек и без единого документа модели искать не в чем — это 400, а не
+    // прогон впустую, который в демо-режиме заканчивался 500-кой
+    if (!hasPoints) {
+      const docs = db.prepare('SELECT COUNT(*) AS c FROM files WHERE session_id = ?').get(req.session.id).c;
+      if (!docs) return res.status(400).json({ error: 'Нужны поворотные точки (points) или документ ГПЗУ' });
+    }
 
-    if (Array.isArray(body.points) && body.points.length >= 3) {
+    if (hasPoints) {
       // точки набраны человеком — модель не нужна
       const saved = parcelSource.save(req.session.id, {
         points: body.points,
         meta: { ...(body.meta || {}), sourceDocument: (body.meta && body.meta.sourceDocument) || 'введено вручную' },
-        author: String(body.author || ''),
+        // подпись — по вошедшему; значение из тела только когда входа нет
+        author: req.user ? `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim() : String(body.author || ''),
       });
       pipeline.logEvent(req.session.id, 'Границы участка заданы координатами', `${saved.points.length} точек`);
       return res.json({ ok: true, source: saved, by: 'user' });
     }
 
-    const { db } = require('../db');
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(req.session.id);
     const route = require('../services/claude/adapter').effectiveProvider(session);
     const planSvc = require('../services/geometry/plan');
@@ -531,7 +575,7 @@ router.post('/sessions/:id/plan/objects/:objectId', sessionAuth, sessionOwner, e
       layer: found.layer,
       object: found.obj,
       patch: req.body || {},
-      author: String((req.body && req.body.author) || ''),
+      author: req.user ? `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim() : String((req.body && req.body.author) || ''),
     });
     const p = saved.patch;
     pipeline.logEvent(req.session.id, 'Свойства объекта плана исправлены',
@@ -847,7 +891,9 @@ router.post('/sessions/:id/settings', sessionAuth, sessionOwner, express.json(),
 
 /* ---------- comment / messages ---------- */
 router.post('/sessions/:id/comment', sessionAuth, sessionOwner, express.json(), (req, res) => {
-  const text = String(req.body?.comment ?? '').slice(0, config.maxMessageLength);
+  const raw = req.body?.comment ?? '';
+  if (typeof raw !== 'string') return res.status(400).json({ error: 'Комментарий должен быть строкой' });
+  const text = raw.slice(0, config.maxMessageLength);
   db.prepare('UPDATE sessions SET comment = ?, updated_at = ? WHERE id = ?').run(text, now(), req.session.id);
   if (text) pipeline.addMessage(req.session.id, 'user', 'comment', text);
   res.json({ ok: true });
@@ -1157,7 +1203,8 @@ router.post('/sessions/:id/stages/variants/approve', sessionAuth, sessionOwner, 
 });
 
 /** Доступность выгрузки DWG: показывается в карточке чертежа честно, до запуска. */
-router.get('/cad/status', async (req, res) => {
+// состояние AutoCAD на машине — только вошедшим (аудит 02.09.2026)
+router.get('/cad/status', userAuth, async (req, res) => {
   const probe = await require('../services/cad/acad-bridge').probe();
   res.json({
     dwg: probe.available,
@@ -1169,7 +1216,8 @@ router.get('/cad/status', async (req, res) => {
 
 /* ---------- база критической инфраструктуры (ТЗ, п. 45) ---------- */
 
-router.get('/critical-objects', (req, res) => {
+// база с ФИО подтвердивших — только вошедшим (аудит 02.09.2026)
+router.get('/critical-objects', userAuth, (req, res) => {
   res.json({ objects: require('../services/geometry/critical-objects').list() });
 });
 
@@ -1187,12 +1235,13 @@ router.post('/critical-objects', userAuth, express.json(), (req, res, next) => {
       label: req.body?.label,
       classification: req.body?.classification,
       basis: req.body?.basis,
-      validatedBy: req.body?.validatedBy,
+      // подпись «кто подтвердил» ставит сервер по вошедшему; значение из тела не принимается
+      validatedBy: req.user ? `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim() : '',
       note: req.body?.note,
     });
     res.status(201).json(saved);
   } catch (err) {
-    if (/Нужно указать|Неизвестная классификация|Пустое имя/.test(err.message)) {
+    if (/Нужно указать|Не указана классификация|Неизвестная классификация|Пустое имя/.test(err.message)) {
       return res.status(400).json({ error: err.message });
     }
     next(err);

@@ -7,10 +7,17 @@
 const express = require('express');
 const multer = require('multer');
 const config = require('../config');
-const { rateLimit, userAuth } = require('../middleware');
+const { rateLimit, userAuth, requestSizeLimit } = require('../middleware');
 const xlsxRead = require('../services/akty/xlsx-read');
 const generate = require('../services/akty/generate');
 const dates = require('../services/akty/dates');
+const projects = require('../services/projects');
+
+/** ?project=<id> — проект платформы помнит дату и итог последнего прогона. */
+function markProject(req, note) {
+  const pid = projects.normId(req.query.project);
+  if (pid) projects.mark(pid, 'akty', note, req.user);
+}
 
 const router = express.Router();
 router.use(rateLimit(config.rateLimitGeneral, 'akty'));
@@ -28,7 +35,7 @@ function fileByField(req, field) {
 }
 
 /** Разбор реестра: показать человеку колонки и первые строки ДО генерации. */
-router.post('/registry/preview', upload.any(), wrap(async (req, res) => {
+router.post('/registry/preview', requestSizeLimit(config.uploadTotalBytes), upload.any(), wrap(async (req, res) => {
   const reg = fileByField(req, 'registry');
   if (!reg) return res.status(400).json({ error: 'Нужен файл реестра (multipart-поле registry, XLSX)' });
   let table;
@@ -43,7 +50,7 @@ router.post('/registry/preview', upload.any(), wrap(async (req, res) => {
 }));
 
 /** Плейсхолдеры шаблона: сверка с колонками до генерации. */
-router.post('/template/preview', upload.any(), wrap(async (req, res) => {
+router.post('/template/preview', requestSizeLimit(config.uploadTotalBytes), upload.any(), wrap(async (req, res) => {
   const tpl = fileByField(req, 'template');
   if (!tpl) return res.status(400).json({ error: 'Нужен файл шаблона (multipart-поле template, DOCX)' });
   try {
@@ -55,7 +62,7 @@ router.post('/template/preview', upload.any(), wrap(async (req, res) => {
 
 /** Пачка актов: реестр + шаблон → zip черновиков + отчёт о пропусках. */
 router.post('/generate',
-  rateLimit(config.rateLimitExpensive, 'akty-generate'), upload.any(),
+  rateLimit(config.rateLimitExpensive, 'akty-generate'), requestSizeLimit(config.uploadTotalBytes), upload.any(),
   wrap(async (req, res) => {
     const reg = fileByField(req, 'registry');
     const tpl = fileByField(req, 'template');
@@ -70,6 +77,7 @@ router.post('/generate',
     try { out = generate.generateBatch(tpl.buffer, table); } catch (err) {
       return res.status(422).json({ error: err.message });
     }
+    markProject(req, `черновиков: ${table.rowCount}`);
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('Черновики актов.zip')}`);
     res.setHeader('X-Akty-Report', encodeURIComponent(JSON.stringify(out.report)));
@@ -78,7 +86,7 @@ router.post('/generate',
 
 /** Сверка дат: реестр актов + журнал → таблица конфликтов (JSON). */
 router.post('/dates',
-  rateLimit(config.rateLimitExpensive, 'akty-dates'), upload.any(),
+  rateLimit(config.rateLimitExpensive, 'akty-dates'), requestSizeLimit(config.uploadTotalBytes), upload.any(),
   wrap(async (req, res) => {
     const acts = fileByField(req, 'acts');
     const journal = fileByField(req, 'journal');
@@ -94,7 +102,9 @@ router.post('/dates',
       return res.status(422).json({ error: `Журнал не разобран: ${err.message}` });
     }
     try {
-      res.json(dates.compare(actsTable, journalTable));
+      const result = dates.compare(actsTable, journalTable);
+      markProject(req, 'сверка дат акт↔журнал');
+      res.json(result);
     } catch (err) {
       res.status(422).json({ error: err.message });
     }

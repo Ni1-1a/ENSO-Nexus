@@ -8,8 +8,9 @@ const path = require('path');
 const express = require('express');
 const multer = require('multer');
 const config = require('../config');
-const { rateLimit, userAuth } = require('../middleware');
+const { rateLimit, userAuth, requestSizeLimit } = require('../middleware');
 const check = require('../services/gge/check');
+const projects = require('../services/projects');
 
 const router = express.Router();
 router.use(rateLimit(config.rateLimitGeneral, 'gge'));
@@ -38,7 +39,7 @@ router.post('/forks', express.json(), (req, res) => {
  * JSON-строка {«Название объекта»: «…», …}) + даты развилок.
  */
 router.post('/check',
-  rateLimit(config.rateLimitExpensive, 'gge-check'), upload.any(),
+  rateLimit(config.rateLimitExpensive, 'gge-check'), requestSizeLimit(config.uploadTotalBytes), upload.any(),
   wrap(async (req, res) => {
     const files = (req.files || []).map((f) => ({
       name: decodeName(f),
@@ -49,6 +50,10 @@ router.post('/check',
 
     let fields = {};
     try { fields = req.body.fields ? JSON.parse(req.body.fields) : {}; } catch {
+      return res.status(400).json({ error: 'Поле fields должно быть JSON-объектом «реквизит → эталонное значение»' });
+    }
+    // массив, null и число — валидный JSON, но не карта реквизитов
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
       return res.status(400).json({ error: 'Поле fields должно быть JSON-объектом «реквизит → эталонное значение»' });
     }
 
@@ -65,9 +70,11 @@ router.post('/check',
       if (ext === '.docx') {
         const os = require('os');
         const fs = require('fs');
-        const tmp = path.join(os.tmpdir(), `gge-${process.pid}-${Math.random().toString(36).slice(2)}.docx`);
+        // своя временная папка: в общем /tmp предсказуемое имя — гонка с символической ссылкой
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gge-'));
+        const tmp = path.join(dir, 'doc.docx');
         fs.writeFileSync(tmp, f.buffer);
-        try { docs.push({ name: f.name, text: memory.extractDocxText(tmp) || '' }); } finally { fs.rmSync(tmp, { force: true }); }
+        try { docs.push({ name: f.name, text: memory.extractDocxText(tmp) || '' }); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
       } else if (['.txt', '.md'].includes(ext)) {
         docs.push({ name: f.name, text: f.buffer.toString('utf8') });
       }
@@ -75,6 +82,10 @@ router.post('/check',
     const requisites = Object.keys(fields).length ? check.checkRequisites(fields, docs) : [];
 
     const forks = check.dateForks({ taskDate: req.body.taskDate, fgisDate: req.body.fgisDate });
+
+    // ?project=<id> — проект платформы помнит дату и размер последнего прогона
+    const pid = projects.normId(req.query.project);
+    if (pid) projects.mark(pid, 'gge', `файлов: ${files.length}`, req.user);
 
     // текст в ответ не возвращается — только вердикты
     for (const t of textLayers) delete t.text;

@@ -228,3 +228,9 @@ CREATE INDEX IF NOT EXISTS ntd_chunks_vec ON ntd_chunks USING hnsw (embedding ve
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS service_session_id TEXT;
 -- Комплексные находки уровня проекта (состав разделов) не привязаны к версии
 ALTER TABLE findings ALTER COLUMN version_id DROP NOT NULL;
+
+-- Проект платформы (services/projects.js, 2026-09-02): всё, что было без него,
+-- живёт в «Ранних работах» (id 'legacy'); UPDATE идемпотентен.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS platform_project_id TEXT;
+UPDATE projects SET platform_project_id = 'legacy' WHERE platform_project_id IS NULL;
+CREATE INDEX IF NOT EXISTS projects_platform_idx ON projects(platform_project_id);

@@ -1,0 +1,567 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Общий каркас всех страниц платформы (2026-09-02): «сначала проект, потом модуль».
+
+   Подключается ПОСЛЕ styles.css и css модуля. Всё, что здесь, — про каркас:
+   шапка, панель проектов, навигация по модулям, экраны «Проекты» и «Стол
+   проекта», воздух. Содержимое модулей не трогается.
+
+   Четыре варианта отображения переключаются атрибутом html[data-view]:
+     a — «Досье»: панель проектов слева, полоса стадий над содержимым;
+     b — «Стол проекта» (по умолчанию): капсула сверху, стол из шести модулей;
+     c — «Лента»: узкая колонка, вертикальная лента модулей, рейка слева;
+     d — «Штамп»: лист с рамкой, закладки модулей, основная надпись.
+   DOM один и тот же (его строит shell.js), различается только раскладка.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --content-w: 1200px;
+  --page-pad: 48px;
+  --sidebar-w: 252px;   /* одно значение и для ширины, и для сдвига (styles.css брал 236) */
+}
+
+/* ---------- воздух: поверх styles.css и css модулей ---------- */
+body { line-height: 1.55; }
+.content { padding: 36px var(--page-pad) 72px; }
+.card:not(.card-fold) { padding: 28px; }
+.card { border-radius: 18px; }
+.card + .card { margin-top: 24px; }
+.card h2 { margin-bottom: 16px; }
+.columns { gap: 24px; }
+.toolbar { margin-bottom: 32px; }
+.toolbar h1 { font-size: 36px; line-height: 1.15; text-wrap: balance; }
+.toolbar-sub { margin-top: 8px; }
+.tz-cols, .mod-cols, .nm-cols { gap: 24px; }
+.tz-projects-grid, .mod-grid, .nm-projects-grid { gap: 24px; }
+.tz-project-card, .mod-card-btn, .nm-proj-card { padding: 24px 26px; border-radius: 18px; }
+.tz-bar, .mod-bar, .nm-bar { margin: 18px 0 22px; }
+.empty-state { padding: 18px 4px; font-size: 13.5px; }
+
+/* ---------- скелет ---------- */
+.shell { display: block; min-height: 100vh; }
+#chrome { display: contents; }
+.content { max-width: var(--content-w); margin: 0 auto; }
+[hidden] { display: none !important; }
+
+/* app.js хранит состояние панели и вешает .sidebar-collapsed на оболочку —
+   в вариантах без панели это не должно двигать содержимое (styles.css даёт 58px) */
+html:not([data-view="a"]) .shell.sidebar-collapsed .content { padding-left: var(--page-pad); }
+
+/* всё каркасное по умолчанию спрятано; вариант включает своё */
+.sidebar, .sidebar-toggle, .mobile-bar, .sidebar-scrim, .sheet-stamp { display: none; }
+
+/* ---------- капсула (b, c, d) ---------- */
+.topbar {
+  width: min(var(--content-w), calc(100% - 24px));
+  margin: 12px auto 0; padding: 8px 18px; gap: 12px;
+  top: calc(10px + var(--banners-h, 0px)); /* под стопкой плашек, а не под ней */
+}
+.tb-brand {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text); text-decoration: none; white-space: nowrap;
+  padding: 4px 8px; margin-left: -8px; border-radius: var(--radius-sm);
+  transition: background .15s ease;
+}
+.tb-brand:hover { background: var(--fill); }
+.tb-brand svg { width: 16px; height: 16px; color: var(--text-2); }
+.tb-brand .brand-name { font-size: 15px; }
+.tb-sep { color: var(--stroke); font-size: 15px; }
+.tb-project { position: relative; min-width: 0; }
+.tb-switch {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: transparent; cursor: pointer;
+  padding: 5px 8px; border-radius: var(--radius-sm);
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+  max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background .15s ease;
+}
+.tb-switch:hover { background: var(--fill); }
+.tb-switch svg { width: 14px; height: 14px; color: var(--text-2); flex-shrink: 0; }
+.tb-menu {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 120;
+  min-width: 260px; max-width: 360px; max-height: 60vh; overflow-y: auto;
+  padding: 6px; border-radius: 14px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  box-shadow: var(--glass-glow), var(--shadow-pop);
+  border: 1px solid var(--stroke-soft);
+}
+.tb-menu a, .tb-menu button {
+  display: flex; flex-direction: column; gap: 2px; width: 100%;
+  padding: 8px 10px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--text); text-decoration: none;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.tb-menu a:hover, .tb-menu button:hover { background: var(--fill); }
+.tb-menu .tm-name { font-size: 13.5px; }
+.tb-menu .tm-meta { font-size: 11.5px; color: var(--text-3); }
+.tb-menu .tm-active .tm-name { font-weight: 600; color: var(--accent); }
+.tb-menu .tm-sep { height: 1px; margin: 5px 4px; background: var(--stroke-soft); }
+.module-pill {
+  font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+}
+.module-pill:empty, .tb-sep-module:has(+ .module-pill:empty) { display: none; }
+.tb-spacer { flex: 1; }
+.tb-platform, .sb-platform { display: flex; align-items: center; gap: 4px; }
+.tb-platform a, .sb-platform a {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 9px; border-radius: 999px;
+  color: var(--text-2); text-decoration: none; font-size: 12.5px;
+  transition: background .15s ease, color .15s ease;
+}
+.tb-platform a:hover, .sb-platform a:hover { background: var(--fill); color: var(--text); }
+.tb-platform a.active, .sb-platform a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tb-platform svg, .sb-platform svg { width: 15px; height: 15px; }
+.topbar .ai-badge { max-width: 260px; }
+.topbar .user-box { border-top: 0; padding: 0; }
+
+/* ---------- навигация по модулям: один DOM, четыре раскладки ---------- */
+.module-nav { display: flex; }
+.module-nav:empty { display: none; }
+.mn-item {
+  position: relative; display: flex; text-decoration: none; color: var(--text);
+  border-radius: var(--radius-sm); transition: background .15s ease, color .15s ease;
+}
+.mn-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+}
+.mn-item[data-state="ok"] .mn-dot { background: var(--green); }
+.mn-item[data-state="warn"] .mn-dot, .mn-item[data-state="run"] .mn-dot { background: var(--orange); }
+.mn-item[data-state="bad"] .mn-dot { background: var(--red); }
+.mn-item[data-state="off"] .mn-dot { background: var(--text-3); }
+.mn-item[data-state="run"] .mn-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 22%, transparent); animation: sess-pulse 2.6s ease-in-out infinite; }
+.mn-num { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
+.mn-name { font-size: 14px; font-weight: 500; }
+.mn-line { font-size: 12px; color: var(--text-3); line-height: 1.4; }
+.mn-item.active .mn-name, .mn-item.active .mn-num { color: var(--accent); }
+.mn-item.active .mn-name { font-weight: 600; }
+.mn-item:hover .mn-name { color: var(--accent); }
+
+/* ---------- заголовок проекта ---------- */
+.project-head { display: flex; flex-direction: column; gap: 28px; margin-bottom: 32px; }
+.project-head:empty { display: none; }
+.ph-text { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.ph-text:empty { display: none; }
+.ph-eyebrow {
+  color: var(--text-3); font-size: 11px; font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: .07em;
+}
+.ph-name {
+  font-family: var(--font-display); font-size: 36px; font-weight: 600;
+  letter-spacing: .005em; line-height: 1.15; margin: 8px 0 0; text-wrap: balance;
+}
+.ph-full { color: var(--text-2); font-size: 17px; margin-top: 6px; }
+.ph-actions { display: flex; gap: 10px; align-items: center; padding-bottom: 6px; }
+.ph-line {
+  color: var(--text-3); font-size: 11px; font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: .07em; margin-bottom: -20px;
+}
+.btn-ghost { background: transparent; color: var(--text-2); border: 1px solid var(--stroke); }
+.btn-ghost:not(:disabled):hover { background: var(--fill); color: var(--text); }
+
+/* ---------- экран «Проекты» ---------- */
+.ph-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.ph-toolbar h1 { margin-top: 8px; }
+.goto-note {
+  margin: -8px 0 22px; padding: 12px 16px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text);
+  font-size: 13.5px;
+}
+.projects-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.proj-card {
+  display: flex; flex-direction: column; gap: 16px; min-height: 236px;
+  padding: 28px 30px; border-radius: 18px; text-decoration: none; color: var(--text);
+  background: var(--panel); border: 1px solid var(--stroke-soft); box-shadow: var(--shadow);
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+  cursor: pointer; position: relative;
+}
+.proj-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: var(--shadow-pop); transform: translateY(-1px); }
+.proj-card .pc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.proj-card .pc-name { font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2; }
+.proj-card .pc-full { color: var(--text-2); margin-top: 4px; font-size: 13.5px; }
+.proj-card .pc-meta { color: var(--text-3); font-size: 12.5px; }
+.proj-card .pc-stage { flex-shrink: 0; }
+.proj-card .pc-foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.pc-bar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+.pc-bar span { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--text) 12%, transparent); }
+.pc-bar span[data-state="ok"] { background: var(--green); }
+.pc-bar span[data-state="warn"], .pc-bar span[data-state="run"] { background: var(--orange); }
+.pc-bar span[data-state="bad"] { background: var(--red); }
+.proj-card .pc-line { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; color: var(--text-2); }
+.proj-card .pc-open { color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
+.proj-card .pc-open svg { width: 15px; height: 15px; }
+.proj-card .pc-more {
+  position: absolute; top: 14px; right: 14px; opacity: 0;
+  width: 28px; height: 28px; border-radius: 50%;
+}
+.proj-card:hover .pc-more, .proj-card .pc-more:focus-visible { opacity: 1; }
+.proj-card.pc-legacy { border-style: dashed; }
+.proj-new {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  min-height: 236px; padding: 28px; border-radius: 18px; cursor: pointer;
+  border: 1.5px dashed var(--stroke); background: transparent; color: var(--text-3); font: inherit;
+  transition: border-color .15s ease, color .15s ease;
+}
+.proj-new:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--text); }
+.proj-new .pn-plus {
+  width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--fill);
+}
+.proj-new svg { width: 20px; height: 20px; }
+.proj-new .pn-title { font-size: 14px; color: var(--text-2); }
+.proj-new .pn-sub { font-size: 12.5px; text-align: center; max-width: 220px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
+}
+.pill-acc { color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.pill-soft { color: var(--text-2); background: var(--fill); }
+
+/* ---------- экран «Стол проекта» ---------- */
+.hub-modules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.hub-tile {
+  display: flex; flex-direction: column; gap: 16px; min-height: 176px;
+  padding: 26px 28px; border-radius: 18px; text-decoration: none; color: var(--text);
+  background: var(--panel); border: 1px solid var(--stroke-soft); box-shadow: var(--shadow);
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.hub-tile:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: var(--shadow-pop); transform: translateY(-1px); }
+.hub-tile .ht-head { display: flex; align-items: center; gap: 14px; }
+.hub-tile .ht-num { font-family: var(--font-display); font-size: 28px; font-weight: 600; color: var(--accent); width: 28px; }
+.hub-tile .ht-head svg { width: 22px; height: 22px; color: var(--text-2); flex-shrink: 0; }
+.hub-tile .ht-name { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: .005em; }
+.hub-tile .ht-arrow { margin-left: auto; color: var(--text-3); }
+.hub-tile .ht-arrow svg { width: 18px; height: 18px; }
+.hub-tile .ht-sub { color: var(--text-2); font-size: 13px; }
+.hub-tile .ht-line { margin-top: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+.hub-tile[data-state="none"] .ht-line { color: var(--text-3); }
+.hub-tile .mn-dot { margin-top: 1px; }
+.hub-note { margin-top: 24px; display: flex; align-items: center; gap: 10px; }
+
+/* ---------- сессии посадки: полоса внутри модуля 2 ---------- */
+.sessions-strip {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: -8px 0 24px; padding: 12px 16px; border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 60%, transparent); border: 1px solid var(--stroke-soft);
+}
+.sessions-strip .sessions-head { margin: 0 6px 0 0; }
+.sessions-strip .sessions-list {
+  flex: 1; flex-direction: row; flex-wrap: wrap; gap: 8px; padding: 0; overflow: visible;
+}
+.sessions-strip .sess-item {
+  padding: 7px 34px 7px 12px; border-radius: 999px; max-width: 260px;
+  border: 1px solid var(--stroke-soft); background: var(--panel-solid);
+}
+.sessions-strip .sess-item.active { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--panel-solid)); }
+.sessions-strip .sess-more { right: 6px; }
+
+/* ---------- окно проекта ---------- */
+.proj-form { display: flex; flex-direction: column; gap: 16px; color: var(--text); }
+.proj-form label { display: flex; flex-direction: column; gap: 6px; }
+.proj-form label > span { font-size: 11px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--text-3); }
+.proj-form input, .proj-form select {
+  font: inherit; font-size: 14.5px; color: var(--text);
+  padding: 11px 13px; border-radius: 12px; border: 1px solid var(--stroke);
+  background: var(--panel-solid); width: 100%;
+}
+.proj-form input:focus, .proj-form select:focus { outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 1px; }
+.proj-form .pf-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.proj-form .pf-foot { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }
+.proj-form .pf-error { color: var(--red); font-size: 13px; }
+#proj-modal .modal { width: min(640px, 100%); border-radius: 18px; }
+#proj-modal .modal-body { padding: 20px 24px 24px; }
+#proj-modal .modal-head { padding: 18px 24px 12px; }
+
+/* ---------- настройки: вид ---------- */
+.view-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.view-option {
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+  padding: 12px 14px; border-radius: 12px; cursor: pointer; font: inherit; color: var(--text);
+  border: 1px solid var(--stroke-soft); background: var(--panel-solid);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.view-option:hover { border-color: var(--stroke); }
+.view-option[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.view-option .vo-name { font-weight: 600; font-size: 13.5px; }
+.view-option .vo-key { font-family: var(--font-mono); font-size: 11px; color: var(--accent); margin-right: 6px; }
+.view-option .vo-sub { font-size: 12px; color: var(--text-2); line-height: 1.45; }
+
+/* ═══════════════════ вариант a — «Досье» ═══════════════════ */
+html[data-view="a"] .shell { display: flex; }
+html[data-view="a"] .topbar { display: none; }
+html[data-view="a"] .sidebar { display: flex; width: var(--sidebar-w, 252px); }
+html[data-view="a"] .sidebar-toggle { display: grid; }
+html[data-view="a"] .content { max-width: none; margin: 0; padding: 44px 56px 72px 48px; }
+html[data-view="a"] .shell.sidebar-collapsed .content { padding-left: 64px; }
+html[data-view="a"] .sb-new { justify-content: flex-start; margin: 0 4px; }
+html[data-view="a"] .sb-projects { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 6px; }
+html[data-view="a"] .sb-list { list-style: none; margin: 0; padding: 0 2px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.sb-item {
+  display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 12px;
+  text-decoration: none; color: var(--text); transition: background .15s ease;
+}
+.sb-item:hover { background: var(--fill); }
+.sb-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sb-item .sb-name { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-item.active .sb-name { font-weight: 600; }
+.sb-item .sb-meta { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-item .pc-bar { gap: 4px; margin-top: 5px; }
+.sb-item .pc-bar span { height: 4px; }
+html[data-view="a"] .sb-platform { flex-direction: column; align-items: stretch; gap: 2px; margin-bottom: 4px; }
+html[data-view="a"] .sb-platform a { border-radius: var(--radius-sm); padding: 7px 10px; font-size: 13px; }
+/* полоса стадий над содержимым */
+html[data-view="a"] .project-head .module-nav { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; }
+html[data-view="a"] .project-head .mn-item {
+  flex-direction: column; gap: 8px; padding: 12px 0 0;
+  border-top: 3px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: 2px;
+}
+html[data-view="a"] .project-head .mn-item[data-state="ok"] { border-top-color: var(--green); }
+html[data-view="a"] .project-head .mn-item[data-state="warn"], html[data-view="a"] .project-head .mn-item[data-state="run"] { border-top-color: var(--orange); }
+html[data-view="a"] .project-head .mn-item[data-state="bad"] { border-top-color: var(--red); }
+html[data-view="a"] .project-head .mn-item.active { border-top-color: var(--accent); }
+html[data-view="a"] .project-head .mn-item:hover { background: transparent; }
+html[data-view="a"] .project-head .mn-head { display: flex; align-items: center; gap: 8px; }
+html[data-view="a"] .project-head .mn-body { display: flex; gap: 7px; align-items: flex-start; }
+html[data-view="a"] .project-head .mn-body .mn-dot { margin-top: 5px; }
+html[data-view="a"] .ph-line { display: none; }
+html[data-view="a"] .ph-text:empty + .module-nav { margin-top: 0; }
+
+/* ═══════════════════ вариант b — «Стол проекта» ═══════════════════ */
+html[data-view="b"] .topbar .module-nav {
+  gap: 6px; align-items: center; padding: 6px 10px; border-radius: 999px; background: var(--fill);
+}
+html[data-view="b"] .topbar .mn-item {
+  width: 24px; height: 24px; border-radius: 50%; align-items: center; justify-content: center;
+  background: var(--panel-solid); border: 1.5px solid color-mix(in srgb, var(--text) 18%, transparent);
+}
+html[data-view="b"] .topbar .mn-item[data-state="ok"] { border-color: var(--green); }
+html[data-view="b"] .topbar .mn-item[data-state="warn"], html[data-view="b"] .topbar .mn-item[data-state="run"] { border-color: var(--orange); }
+html[data-view="b"] .topbar .mn-item[data-state="bad"] { border-color: var(--red); }
+html[data-view="b"] .topbar .mn-item.active { background: var(--accent); border-color: var(--accent); }
+html[data-view="b"] .topbar .mn-item.active .mn-num { color: var(--accent-contrast); }
+html[data-view="b"] .topbar .mn-num { font-size: 11px; font-weight: 600; color: var(--text-2); }
+html[data-view="b"] .topbar .mn-dot, html[data-view="b"] .topbar .mn-name, html[data-view="b"] .topbar .mn-line { display: none; }
+html[data-view="b"] .topbar .mn-item:hover { background: var(--fill-hover); }
+
+/* ═══════════════════ вариант c — «Лента» ═══════════════════ */
+html[data-view="c"] { --content-w: 960px; }
+html[data-view="c"] .content {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 0;
+  max-width: calc(var(--content-w) - 32px);
+}
+html[data-view="c"] .content > * { grid-column: 2; min-width: 0; }
+html[data-view="c"] .project-head { display: contents; }
+html[data-view="c"] .ph-text, html[data-view="c"] .ph-line { grid-column: 2; margin-bottom: 32px; }
+html[data-view="c"] .project-head .module-nav {
+  grid-column: 1; grid-row: 1 / span 40; align-self: start; position: sticky; top: 90px;
+  flex-direction: column; gap: 10px; align-items: center; padding-top: 6px;
+}
+html[data-view="c"] .project-head .mn-item {
+  width: 36px; height: 36px; border-radius: 50%; align-items: center; justify-content: center;
+  border: 1.5px solid var(--stroke); background: var(--panel-solid);
+}
+html[data-view="c"] .project-head .mn-item .mn-num { font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--text-2); }
+html[data-view="c"] .project-head .mn-item[data-state="none"] .mn-num { color: var(--text-3); }
+html[data-view="c"] .project-head .mn-item.active { background: var(--accent); border-color: var(--accent); }
+html[data-view="c"] .project-head .mn-item.active .mn-num { color: var(--accent-contrast); }
+html[data-view="c"] .project-head .mn-item .mn-dot { position: absolute; right: -2px; top: -2px; width: 9px; height: 9px; border: 2px solid var(--bg); }
+html[data-view="c"] .project-head .mn-item .mn-name, html[data-view="c"] .project-head .mn-item .mn-line { display: none; }
+html[data-view="c"] .topbar .module-nav { display: none; }
+/* на столе проекта лента сама и есть навигация — рейка была бы дублем */
+html[data-view="c"] .content:has(#screen-hub.active) .project-head .module-nav { display: none; }
+html[data-view="c"] .ph-name { font-size: 40px; }
+/* лента модулей на столе проекта */
+html[data-view="c"] .hub-modules { display: flex; flex-direction: column; gap: 6px; }
+html[data-view="c"] .hub-tile {
+  display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 24px;
+  min-height: 0; padding: 14px 0; background: transparent; border: 0; box-shadow: none;
+}
+html[data-view="c"] .hub-tile:hover { transform: none; }
+html[data-view="c"] .hub-tile .ht-head { display: contents; }
+html[data-view="c"] .hub-tile .ht-num {
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 17px; background: var(--fill); color: var(--text);
+}
+html[data-view="c"] .hub-tile[data-state="none"] .ht-num { background: transparent; border: 1.5px solid var(--stroke); color: var(--text-3); }
+html[data-view="c"] .hub-tile .ht-head svg { display: none; }
+html[data-view="c"] .hub-tile .ht-name { font-size: 18px; }
+html[data-view="c"] .hub-tile .ht-arrow { display: none; }
+html[data-view="c"] .hub-tile .ht-sub { display: none; }
+html[data-view="c"] .hub-tile .ht-line { margin: 0; justify-self: end; color: var(--text-2); }
+html[data-view="c"] .hub-tile .ht-text { display: flex; align-items: center; gap: 14px; }
+html[data-view="c"] .projects-list { display: flex; flex-direction: column; }
+html[data-view="c"] .proj-card {
+  display: grid; grid-template-columns: 1fr 260px 40px; align-items: center; gap: 32px;
+  min-height: 0; padding: 30px 0; border-radius: 0; border: 0; border-top: 1px solid var(--stroke);
+  background: transparent; box-shadow: none;
+}
+html[data-view="c"] .proj-card:hover { transform: none; }
+html[data-view="c"] .proj-card .pc-head { display: contents; }
+html[data-view="c"] .proj-card .pc-name { font-size: 26px; }
+html[data-view="c"] .proj-card .pc-stage { display: none; }
+html[data-view="c"] .proj-card .pc-meta { grid-column: 1; margin-top: -8px; font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+html[data-view="c"] .proj-card .pc-foot { grid-column: 2; grid-row: 1 / span 2; }
+html[data-view="c"] .proj-card .pc-open { grid-column: 3; grid-row: 1 / span 2; }
+html[data-view="c"] .proj-card .pc-open span { display: none; }
+html[data-view="c"] .proj-card .pc-open svg { width: 20px; height: 20px; }
+html[data-view="c"] .proj-new { min-height: 0; padding: 22px; flex-direction: row; border-top: 1px solid var(--stroke); border-left: 0; border-right: 0; border-bottom: 0; border-radius: 0; }
+html[data-view="c"] .proj-new .pn-sub { display: none; }
+html[data-view="c"] .sessions-strip { grid-column: 2; }
+
+/* ═══════════════════ вариант d — «Штамп» ═══════════════════ */
+html[data-view="d"] { --content-w: 1344px; --page-pad: 56px; }
+html[data-view="d"] .topbar { width: min(var(--content-w), calc(100% - 24px)); }
+html[data-view="d"] .content {
+  position: relative; margin: 0 auto 36px; padding: 44px var(--page-pad) 190px;
+  background: var(--panel-solid); border: 1.5px solid var(--text); border-radius: 0 2px 2px 2px;
+  box-shadow: 0 1px 2px rgba(70, 55, 35, .05), 0 12px 36px rgba(70, 55, 35, .09);
+  min-height: calc(100vh - 160px);
+}
+html[data-view="d"] .content::before {
+  content: ''; position: absolute; inset: 10px; pointer-events: none;
+  border: .5px solid color-mix(in srgb, var(--text) 55%, transparent);
+}
+html[data-view="d"] #chrome .module-nav {
+  width: min(var(--content-w), calc(100% - 24px)); margin: 28px auto 0; gap: 4px; align-items: flex-end;
+}
+html[data-view="d"] #chrome .mn-item {
+  padding: 7px 14px 8px; border: 1.5px solid color-mix(in srgb, var(--text) 35%, transparent); border-bottom: 0;
+  border-radius: 6px 6px 0 0; background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  gap: 6px; align-items: center; margin-bottom: -1.5px;
+}
+html[data-view="d"] #chrome .mn-item .mn-num, html[data-view="d"] #chrome .mn-item .mn-name {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; font-weight: 500; color: var(--text-2);
+}
+html[data-view="d"] #chrome .mn-item .mn-line { display: none; }
+html[data-view="d"] #chrome .mn-head { display: flex; align-items: center; gap: 6px; }
+html[data-view="d"] #chrome .mn-body { display: none; }
+html[data-view="d"] #chrome .mn-item.active { border-color: var(--text); background: var(--panel-solid); padding-bottom: 10px; }
+html[data-view="d"] #chrome .mn-item.active .mn-num, html[data-view="d"] #chrome .mn-item.active .mn-name { color: var(--accent); font-weight: 600; }
+html[data-view="d"] #chrome .mn-item:hover { background: var(--panel-solid); }
+html[data-view="d"] #chrome .module-nav:empty { display: none; }
+html[data-view="d"] .card, html[data-view="d"] .hub-tile, html[data-view="d"] .proj-card, html[data-view="d"] .tz-project-card, html[data-view="d"] .mod-card-btn, html[data-view="d"] .nm-proj-card {
+  border-radius: 4px; box-shadow: none; border: 1px solid var(--stroke); background: var(--panel-solid);
+}
+html[data-view="d"] .btn { border-radius: 6px; }
+html[data-view="d"] .dropzone, html[data-view="d"] .mod-dz-mini { border-radius: 4px; }
+html[data-view="d"] .proj-new { border-radius: 4px; }
+html[data-view="d"] .sheet-stamp {
+  display: block; position: absolute; right: 10px; bottom: 10px; width: min(560px, calc(100% - 20px));
+  border: 1px solid var(--text); background: var(--panel-solid);
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.3;
+}
+html[data-view="d"] .sheet-stamp .st-grid { display: grid; grid-template-columns: 130px 1fr 96px 96px; }
+html[data-view="d"] .sheet-stamp .st-grid > div { padding: 6px 8px; border-right: 1px solid var(--text); border-top: 1px solid var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(-n+4) { border-top: 0; }
+html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(4n) { border-right: 0; }
+html[data-view="d"] .sheet-stamp .st-k { color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; font-size: 9.5px; }
+html[data-view="d"] .sheet-stamp .st-v { font-family: var(--font-text); font-size: 12px; }
+html[data-view="d"] .ph-line { display: none; }
+html[data-view="d"] .projects-list { display: flex; flex-direction: column; }
+html[data-view="d"] .proj-card {
+  display: grid; grid-template-columns: 40px 1.4fr 1fr .6fr 150px auto 24px; align-items: center; gap: 20px;
+  min-height: 0; padding: 16px 0; border: 0; border-bottom: 1px solid var(--stroke-soft); border-radius: 0; background: transparent;
+}
+html[data-view="d"] .proj-card:hover { transform: none; }
+html[data-view="d"] .proj-card::before { content: attr(data-n); font-family: var(--font-mono); color: var(--text-2); }
+html[data-view="d"] .proj-card .pc-head { display: contents; }
+html[data-view="d"] .proj-card .pc-name { font-family: var(--font-text); font-size: 14.5px; }
+html[data-view="d"] .proj-card .pc-full { font-size: 12.5px; }
+html[data-view="d"] .proj-card .pc-stage { order: 3; }
+html[data-view="d"] .proj-card .pc-meta { order: 2; font-size: 13px; color: var(--text-2); }
+html[data-view="d"] .proj-card .pc-foot { order: 4; gap: 6px; }
+html[data-view="d"] .proj-card .pc-line span:first-child { display: none; }
+html[data-view="d"] .proj-card .pc-open span { display: none; }
+html[data-view="d"] .proj-card .pc-more { position: static; opacity: 1; order: 6; }
+html[data-view="d"] .proj-new { min-height: 0; flex-direction: row; padding: 18px; }
+html[data-view="d"] .proj-new .pn-sub { display: none; }
+
+/* ═══════════════════ телефон ═══════════════════ */
+@media (max-width: 800px) {
+  :root { --page-pad: 16px; }
+  .content { padding: 20px var(--page-pad) 56px; }
+  .card { padding: 18px; }
+  .topbar { margin-top: 8px; padding: 6px 12px; gap: 8px; flex-wrap: wrap; }
+  .topbar .module-nav, .tb-sep-module, .module-pill, .topbar .ai-badge, .tb-platform a span { display: none !important; }
+  .topbar .user-name { display: none; }
+  .projects-list, .hub-modules { grid-template-columns: 1fr; }
+  .proj-card, .hub-tile, .proj-new { min-height: 0; }
+  .ph-name { font-size: 28px; }
+  html[data-view="a"] .content { padding: 62px 14px 40px; }
+  html[data-view="a"] .mobile-bar { display: flex; }
+  html[data-view="a"] .project-head .module-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html[data-view="c"] .content { grid-template-columns: 44px minmax(0, 1fr); }
+  html[data-view="c"] .project-head .mn-item { width: 30px; height: 30px; }
+  html[data-view="c"] .hub-tile { grid-template-columns: 44px 1fr; }
+  html[data-view="c"] .hub-tile .ht-line { justify-self: start; grid-column: 2; }
+  html[data-view="c"] .proj-card { grid-template-columns: 1fr; gap: 12px; }
+  html[data-view="c"] .proj-card .pc-foot, html[data-view="c"] .proj-card .pc-open { grid-column: 1; grid-row: auto; }
+  html[data-view="d"] { --page-pad: 18px; }
+  html[data-view="d"] .content { padding-bottom: 200px; }
+  html[data-view="d"] #chrome .module-nav { flex-wrap: wrap; }
+  html[data-view="d"] .proj-card { grid-template-columns: 1fr; gap: 8px; }
+  html[data-view="d"] .proj-card::before { display: none; }
+  html[data-view="d"] .sheet-stamp .st-grid { grid-template-columns: 90px 1fr; }
+  html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(4n) { border-right: 1px solid var(--text); }
+  html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(2n) { border-right: 0; }
+  html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(-n+4) { border-top: 1px solid var(--text); }
+  html[data-view="d"] .sheet-stamp .st-grid > div:nth-child(-n+2) { border-top: 0; }
+  .view-options { grid-template-columns: 1fr; }
+  .proj-form .pf-row { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-item[data-state="run"] .mn-dot { animation: none; }
+  .proj-card, .hub-tile, .proj-new, .mn-item { transition: none; }
+}
+
+
+/* ═══════════════════ исправления по аудиту 02.09.2026 ═══════════════════ */
+/* диалог подтверждения (app.js) и диалог каркаса — поверх окна свойств проекта:
+   все бэкдропы в styles.css на одном z-index, побеждал тот, что позже в DOM */
+#dialog-modal, #shell-dialog { z-index: 115; }
+/* карточка проекта: ссылка растянута на всю карточку, кнопка «⋯» — сосед, а не потомок */
+.proj-card { position: relative; }
+.proj-card .pc-link { position: absolute; inset: 0; border-radius: inherit; z-index: 0; }
+.proj-card .pc-link:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.proj-card > :not(.pc-link) { position: relative; z-index: 1; pointer-events: none; }
+.proj-card .pc-more { pointer-events: auto; z-index: 2; }
+.proj-card .pc-open { white-space: nowrap; }
+.proj-card .pc-full { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+@media (hover: none) { .proj-card .pc-more { opacity: 1; } }
+/* вид C: три колонки посадки не влезают в 864px — две колонки, диалог во всю ширину */
+html[data-view="c"] .columns { grid-template-columns: 1fr 1fr; }
+html[data-view="c"] .col-dialog { grid-column: 1 / -1; order: 3; }
+/* цвет точки по состоянию и на плитках стола (не только внутри .mn-item) */
+.mn-dot[data-state="ok"] { background: var(--green); }
+.mn-dot[data-state="warn"], .mn-dot[data-state="run"] { background: var(--orange); }
+.mn-dot[data-state="bad"] { background: var(--red); }
+.mn-dot[data-state="off"] { background: var(--text-3); }
+/* переключатель вида — кнопки с aria-pressed */
+.view-option[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* ошибка списка проектов в заголовке */
+.ph-line.ph-error { color: var(--red); }
+/* модалка нормоконтроля на ноутбуке: шесть полей не помещались в 640px */
+#np-modal .modal { max-height: 90vh; }
+@media (max-width: 800px) {
+  /* вид A на телефоне: затемнение под выехавшей панелью (общее правило выше его гасило) */
+  html[data-view="a"] .sidebar-scrim { display: block; }
+  /* вид A на телефоне: полоса стадий — одна строка кружков, а не шесть плиток на весь экран */
+  html[data-view="a"] .project-head .module-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+  html[data-view="a"] .project-head .mn-item { border-top: 0; padding: 0; width: 32px; height: 32px; border-radius: 50%; align-items: center; justify-content: center; border: 1.5px solid var(--stroke); background: var(--panel-solid); }
+  html[data-view="a"] .project-head .mn-item.active { background: var(--accent); border-color: var(--accent); }
+  html[data-view="a"] .project-head .mn-item.active .mn-num { color: var(--accent-contrast); }
+  html[data-view="a"] .project-head .mn-head { gap: 0; }
+  html[data-view="a"] .project-head .mn-num { font-size: 13px; font-weight: 600; color: var(--text-2); }
+  html[data-view="a"] .project-head .mn-name, html[data-view="a"] .project-head .mn-body { display: none; }
+  /* вид B на телефоне: модули строкой кружков под капсулой, а не спрятаны */
+  html[data-view="b"] .topbar .module-nav { display: flex !important; order: 10; width: 100%; justify-content: center; padding: 4px 0 2px; background: transparent; }
+  html[data-view="b"] .topbar .mn-item { width: 32px; height: 32px; }
+  /* ссылки платформы — цель не меньше 40px */
+  .tb-platform a, .sb-platform a { min-width: 40px; min-height: 36px; justify-content: center; }
+}

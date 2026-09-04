@@ -5,32 +5,9 @@
    minor — серый, remark — бледный. */
 
 /* ---------- каркас страницы ---------- */
-.nm-shell { display: block; min-height: 100vh; }
 
-/* шапка — плавающая стеклянная капсула: материал и геометрия у .glass-bar
-   в styles.css, здесь только содержимое */
-.nm-back {
-  display: flex; align-items: center; gap: 7px;
-  color: var(--text); text-decoration: none;
-  padding: 4px 8px; margin-left: -8px; border-radius: var(--radius-sm);
-  transition: background .15s ease;
-}
-.nm-back:hover { background: var(--fill); }
-.nm-back svg { width: 16px; height: 16px; color: var(--text-2); }
-.nm-module {
-  font-family: var(--font-mono); font-size: 11px;
-  text-transform: uppercase; letter-spacing: .08em;
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-radius: 999px; padding: 3px 10px;
-}
 .nm-spacer { flex: 1; }
-.nm-user { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
-.nm-main {
-  max-width: 1080px; margin: 0 auto;
-  padding: 26px 30px 60px;
-}
 
 /* ---------- экраны и путь ---------- */
 .nm-screen { display: none; }
@@ -233,9 +210,7 @@ tr.nm-row-link:hover { background: var(--fill); }
 
 /* ---------- телефон ---------- */
 @media (max-width: 720px) {
-  .nm-main { padding: 18px 14px 48px; }
   .nm-cols { grid-template-columns: 1fr; }
-  .nm-module { display: none; }
   .nm-findings-head { align-items: flex-start; flex-direction: column; }
   .nm-findings-head .nm-spacer { display: none; }
 }

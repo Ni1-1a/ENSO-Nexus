@@ -6,6 +6,10 @@
  */
 (function () {
   const $ = (id) => document.getElementById(id);
+  // контекст проекта платформы: ?project=<id> в адресе, читает общий каркас
+  const projectId = () => (window.EnsoShell && window.EnsoShell.projectId) || '';
+  const projectQuery = () => (projectId() ? `?project=${encodeURIComponent(projectId())}` : '');
+
 
   const DEFAULT_FIELDS = ['Название объекта', 'Застройщик', 'ИНН застройщика', 'Кадастровый номер участка', 'Шифр проекта'];
   const state = { files: [] };
@@ -93,7 +97,7 @@
       fd.append('fgisDate', $('dt-fgis').value.trim());
       let res;
       try {
-        res = await fetch('/api/gge/check', { method: 'POST', headers: userHeaders(), body: fd });
+        res = await fetch(`/api/gge/check${projectQuery()}`, { method: 'POST', headers: userHeaders(), body: fd });
       } catch {
         throw new Error('Сервер сейчас недоступен — попробуйте чуть позже');
       }
@@ -176,14 +180,8 @@
   /* ---------------- кто вошёл ---------------- */
 
   function renderUserBox() {
-    const box = $('gg-user');
-    const u = (window.Auth && window.Auth.user) || null;
-    if (!u || !window.Auth.requireLogin) { box.hidden = true; return; }
-    const last = String(u.lastName || '').trim();
-    const first = String(u.firstName || '').trim();
-    box.hidden = false;
-    $('gg-user-name').textContent = `${last} ${first}`.trim();
-    $('gg-user-initials').textContent = `${last.slice(0, 1)}${first.slice(0, 1)}`.toUpperCase();
+    // блок человека теперь рисует общий каркас (shell.js)
+    if (window.EnsoShell) window.EnsoShell.renderUser();
   }
 
   /* ---------------- запуск ---------------- */
@@ -192,6 +190,7 @@
     window.Auth.init();
     await window.Auth.start();
     renderUserBox();
+    if (window.EnsoShell) await window.EnsoShell.start();
 
     const dz = $('f-dz');
     const input = $('f-input');
@@ -209,7 +208,6 @@
     for (const f of DEFAULT_FIELDS) addKvRow(f, '');
     $('kv-add').addEventListener('click', () => addKvRow('', ''));
     $('gg-run').addEventListener('click', runCheck);
-    $('gg-sign-out').addEventListener('click', () => window.Auth.signOut());
   }
 
   document.addEventListener('DOMContentLoaded', init);

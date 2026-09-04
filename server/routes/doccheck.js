@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
+const platformProjects = require('../services/projects');
 const multer = require('multer');
 const config = require('../config');
 const { rateLimit, userAuth } = require('../middleware');
@@ -30,6 +31,8 @@ const upload = multer({
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const bigJson = express.json({ limit: '2mb' });
+// общий парсер приложения этот роутер обходит — JSON разбирается здесь, до 2 МБ
+router.use(bigJson);
 
 function decodeName(file) {
   const { sanitizeFilename } = require('../services/validation');
@@ -62,6 +65,12 @@ async function extractUpload(req, res) {
     res.status(422).json({ error: `Формат .${ext || '?'} не принимается: нужен DOCX, PDF с текстовым слоем, TXT, MD или XML (график MS Project)` });
     return null;
   }
+  // подделка под PDF/DOCX ловится по magic-байтам ДО разбора: иначе она
+  // выглядела как «скан без текстового слоя» — и совет был не тот
+  if (ext === 'pdf' || ext === 'docx') {
+    const magic = require('../services/validation').checkMagic(ext, req.file.buffer);
+    if (!magic.ok) { res.status(422).json({ error: magic.reason }); return null; }
+  }
   const dir = path.join(config.dataDir, 'doccheck');
   fs.mkdirSync(dir, { recursive: true });
   const storedPath = path.join(dir, `${crypto.randomUUID()}_${name}`);
@@ -85,13 +94,15 @@ async function extractUpload(req, res) {
     });
     return null;
   }
+  const tooBig = require('../services/validation').docSizeError(text);
+  if (tooBig) { res.status(422).json({ error: tooBig }); return null; }
   return { name, text, note };
 }
 
 /* ---------------- проверки документов ---------------- */
 
 router.post('/checks', bigJson, wrap(async (req, res) => {
-  const { name, provider, model } = req.body || {};
+  const { name, provider, model, projectId } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Нужно имя проверки (name)' });
   if (provider) {
     const check = await require('../services/providers')
@@ -103,13 +114,16 @@ router.post('/checks', bigJson, wrap(async (req, res) => {
     provider: provider ? String(provider) : '',
     model: model ? String(model) : '',
     user: req.user,
+    // пусто — «Ранние работы», чужой или удалённый проект — 404 (общее правило модулей)
+    projectId: platformProjects.resolveProjectId(projectId, req.user).id,
   });
+  platformProjects.touch(check.project_id);
   res.status(201).json({ check });
 }));
 
-router.get('/checks', (req, res) => {
-  res.json({ checks: store.listChecks() });
-});
+router.get('/checks', wrap(async (req, res) => {
+  res.json({ checks: store.listChecks({ projectId: platformProjects.filterId(req.query.project, req.user) }) });
+}));
 
 router.get('/checks/:id', wrap(async (req, res) => {
   const check = store.checkById(req.params.id);
@@ -122,6 +136,12 @@ router.get('/checks/:id', wrap(async (req, res) => {
 
 router.patch('/checks/:id', bigJson, wrap(async (req, res) => {
   const { name, provider, model, chosen_type: chosenType, chosen_prompt_id: chosenPromptId } = req.body || {};
+  const found = store.checkById(req.params.id);
+  if (!found) return res.status(404).json({ error: 'Проверка не найдена' });
+  // проверка ПОСЛЕ trim: null раньше становился именем «null», пробелы — пустым именем
+  if (name !== undefined && !String(name ?? '').trim()) {
+    return res.status(400).json({ error: 'Название не может быть пустым' });
+  }
   if (provider !== undefined && provider !== '') {
     const check = await require('../services/providers')
       .validateChoice(String(provider), model ? String(model) : '', req.user, req.hostname);
@@ -129,6 +149,19 @@ router.patch('/checks/:id', bigJson, wrap(async (req, res) => {
   }
   if (chosenType !== undefined && chosenType !== '' && !doclib.DOC_TYPES.includes(chosenType)) {
     return res.status(400).json({ error: `Неизвестный тип документа: ${chosenType}` });
+  }
+  // ТЗ здесь не прогоняется — у него свой модуль с чек-листами и вердиктом
+  if (chosenType === 'tz') return res.status(400).json({ error: 'ТЗ проверяется в модуле „Анализ ТЗ“' });
+  // промпт — только из маршрута своего типа (карта ROUTES + альтернативы): прогон
+  // всё равно взял бы умолчание, а человек думал бы, что выбрал другую проверку
+  if (chosenPromptId !== undefined && chosenPromptId !== '' && chosenPromptId !== null) {
+    const type = (chosenType !== undefined ? chosenType : found.chosen_type) || found.detected_type;
+    const route = doclib.ROUTES[type];
+    if (!route) return res.status(400).json({ error: 'Сначала укажите тип документа (chosen_type) — промпт выбирается по нему' });
+    const allowed = [route.promptId, ...route.alternatives];
+    if (!allowed.includes(String(chosenPromptId))) {
+      return res.status(400).json({ error: `Промпт «${chosenPromptId}» не относится к типу «${route.label}»; допустимо: ${allowed.join(', ')}` });
+    }
   }
   const check = store.updateCheck(req.params.id, {
     name: name !== undefined ? String(name).trim().slice(0, 200) : undefined,
@@ -171,6 +204,8 @@ function startRun(check, req) {
 router.put('/checks/:id/document', bigJson, wrap(async (req, res) => {
   const text = String((req.body || {}).text || '').trim();
   if (!text) return res.status(400).json({ error: 'Пустой текст документа' });
+  const tooBig = require('../services/validation').docSizeError(text);
+  if (tooBig) return res.status(422).json({ error: tooBig });
   const check = store.setDocument(req.params.id, {
     text,
     name: String((req.body || {}).name || 'вставленный текст').slice(0, 200),
@@ -241,7 +276,7 @@ router.get('/runs/:rid/export.xlsx', wrap(async (req, res) => {
 /* ---------------- замена оборудования A → B ---------------- */
 
 router.post('/ab', bigJson, wrap(async (req, res) => {
-  const { name, provider, model } = req.body || {};
+  const { name, provider, model, projectId } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Нужно имя сравнения (name)' });
   if (provider) {
     const check = await require('../services/providers')
@@ -253,13 +288,16 @@ router.post('/ab', bigJson, wrap(async (req, res) => {
     provider: provider ? String(provider) : '',
     model: model ? String(model) : '',
     user: req.user,
+    // пусто — «Ранние работы», чужой или удалённый проект — 404 (общее правило модулей)
+    projectId: platformProjects.resolveProjectId(projectId, req.user).id,
   });
+  platformProjects.touch(row.project_id);
   res.status(201).json({ ab: row });
 }));
 
-router.get('/ab', (req, res) => {
-  res.json({ list: ab.listAb() });
-});
+router.get('/ab', wrap(async (req, res) => {
+  res.json({ list: ab.listAb({ projectId: platformProjects.filterId(req.query.project, req.user) }) });
+}));
 
 router.get('/ab/:id', wrap(async (req, res) => {
   const row = ab.abById(req.params.id);
@@ -271,6 +309,10 @@ router.patch('/ab/:id', bigJson, wrap(async (req, res) => {
   const row = ab.abById(req.params.id);
   if (!row) return res.status(404).json({ error: 'Сравнение не найдено' });
   const { name, provider, model } = req.body || {};
+  // проверка ПОСЛЕ trim: null раньше становился именем «null», пробелы — пустым именем
+  if (name !== undefined && !String(name ?? '').trim()) {
+    return res.status(400).json({ error: 'Название не может быть пустым' });
+  }
   if (provider !== undefined && provider !== '') {
     const check = await require('../services/providers')
       .validateChoice(String(provider), model ? String(model) : '', req.user, req.hostname);
@@ -326,6 +368,10 @@ router.post('/ab/:id/run',
     const row = ab.abById(req.params.id);
     if (!row) return res.status(404).json({ error: 'Сравнение не найдено' });
     if (row.status === 'running') return res.status(409).json({ error: 'Сравнение уже идёт' });
+    // чего не хватает — говорим сразу (422), как в «Анализе ТЗ», а не роняем
+    // сравнение в failed через опрос
+    const notReady = ab.runPrecheck(row);
+    if (notReady) return res.status(422).json({ error: notReady });
     const host = String(req.hostname || '').toLowerCase();
     ab.setStatus(row.id, 'running', { progress: 'подготовка…', error: '' });
     setImmediate(async () => {

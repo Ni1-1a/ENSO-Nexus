@@ -9,9 +9,10 @@
 const express = require('express');
 const multer = require('multer');
 const config = require('../config');
-const { rateLimit, userAuth } = require('../middleware');
+const { rateLimit, userAuth, requestSizeLimit } = require('../middleware');
 const db = require('../services/normo/db');
 const store = require('../services/normo/store');
+const platformProjects = require('../services/projects');
 const rules = require('../services/normo/rules');
 const checks = require('../services/normo/checks/run');
 
@@ -25,6 +26,53 @@ const upload = multer({
 });
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/*
+ * Все идентификаторы модуля — BIGINT-ключи PostgreSQL. Нечисловое или
+ * переполненное значение раньше уезжало в запрос как есть и оборачивалось
+ * 500-кой («invalid input syntax for type bigint», «out of range»).
+ * Допустимо целое 1…2^53 — дальше JavaScript теряет точность.
+ */
+const ID_MAX = 2 ** 53;
+function validId(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!/^\d{1,16}$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= ID_MAX ? s : null;
+}
+for (const name of ['id', 'sid', 'vid', 'rid', 'fid', 'did', 'iid']) {
+  router.param(name, (req, res, next, value) => {
+    if (validId(value) === null) return res.status(400).json({ error: 'Некорректный идентификатор' });
+    next();
+  });
+}
+
+const STAGES = ['П', 'Р', 'П+Р'];
+const OBJECT_KINDS = ['производственный', 'непроизводственный', 'линейный'];
+/** YYYY-MM-DD и настоящая дата: «2026-02-30» раньше падало в PostgreSQL DateTimeParseError. */
+function isoDate(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+// файлы, которым в комплекте проектной документации делать нечего
+const BLOCKED_EXT = new Set(['exe', 'dll', 'bat', 'sh', 'cmd', 'js', 'msi', 'dmg', 'pkg', 'app', 'scr', 'jar', 'com']);
+/** Ошибка по составу файлов версии или null: исполняемые и подделки под PDF/DOCX. */
+function uploadsError(uploads) {
+  const { extOf, checkMagic } = require('../services/validation');
+  for (const f of uploads) {
+    const ext = extOf(f.originalname);
+    if (BLOCKED_EXT.has(ext)) {
+      return `Файл «${f.originalname}» не принимается: исполняемые файлы (.${ext}) в комплект не входят`;
+    }
+    if (ext === 'pdf' || ext === 'docx') {
+      const magic = checkMagic(ext, f.buffer);
+      if (!magic.ok) return `${f.originalname}: ${magic.reason}`;
+    }
+  }
+  return null;
+}
 
 // multer отдаёт originalname в latin1 — кириллица без перекодировки превращается
 // в кракозябры (тот же приём, что в routes/api.js платформы)
@@ -41,7 +89,12 @@ function decodeUploads(files) {
 let recovered = false;
 router.use(wrap(async (req, res, next) => {
   await db.migrate();
-  if (!recovered) { recovered = true; await checks.recoverInterrupted(); }
+  if (!recovered) {
+    recovered = true;
+    await checks.recoverInterrupted();
+    // проекты, заведённые до проектов платформы, видны через «Ранние работы»
+    if (await store.hasLegacy()) platformProjects.ensureLegacy();
+  }
   next();
 }));
 
@@ -69,19 +122,32 @@ router.get('/catalog/rules', wrap(async (req, res) => {
 /* ---------------- проекты (сценарий 1) ---------------- */
 
 router.post('/projects', wrap(async (req, res) => {
-  const { name, customer, stage, objectKind, dateStarted, localOnly } = req.body || {};
+  const { name, customer, stage, objectKind, dateStarted, localOnly, platformProjectId } = req.body || {};
   if (!name || !stage || !dateStarted) {
     return res.status(400).json({ error: 'Нужны name, stage (П/Р/П+Р) и dateStarted (дата начала разработки)' });
   }
+  // Проверки на границе HTTP: раньше всё это ловили CHECK-ограничения и разбор
+  // даты в PostgreSQL — и человек получал 500 без объяснения
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name должно быть непустой строкой' });
+  if (customer != null && typeof customer !== 'string') return res.status(400).json({ error: 'customer должно быть строкой' });
+  if (!STAGES.includes(stage)) return res.status(400).json({ error: `stage: допустимо ${STAGES.join(', ')}` });
+  if (objectKind != null && objectKind !== '' && !OBJECT_KINDS.includes(objectKind)) {
+    return res.status(400).json({ error: `objectKind: допустимо ${OBJECT_KINDS.join(', ')}` });
+  }
+  if (!isoDate(dateStarted)) return res.status(400).json({ error: 'dateStarted: дата в формате YYYY-MM-DD' });
+  if (localOnly != null && typeof localOnly !== 'boolean') return res.status(400).json({ error: 'localOnly: true или false' });
   const project = await store.createProject({
-    name, customer, stage, objectKind, dateStarted, localOnly,
+    name: name.trim(), customer, stage, objectKind: objectKind || undefined, dateStarted, localOnly,
     owner: req.user ? req.user.id : null,
+    // пусто — «Ранние работы», чужой или удалённый проект платформы — 404
+    platformProjectId: platformProjects.resolveProjectId(platformProjectId, req.user).id,
   });
+  platformProjects.touch(project.platform_project_id);
   res.status(201).json({ project: await store.getProject(project.id) });
 }));
 
 router.get('/projects', wrap(async (req, res) => {
-  res.json({ projects: await store.listProjects() });
+  res.json({ projects: await store.listProjects({ platformProjectId: platformProjects.filterId(req.query.project, req.user) }) });
 }));
 
 router.get('/projects/:id', wrap(async (req, res) => {
@@ -95,13 +161,17 @@ router.put('/projects/:id/sections', wrap(async (req, res) => {
   if (!Array.isArray(list) || !list.length) {
     return res.status(400).json({ error: 'Нужен непустой массив sections [{code, name, …}]' });
   }
+  const bad = list.find((s) => !s || typeof s !== 'object'
+    || typeof s.code !== 'string' || !s.code.trim() || typeof s.name !== 'string' || !s.name.trim());
+  if (bad) return res.status(400).json({ error: 'У каждого раздела нужны code (шифр) и name — непустые строки' });
+  // чужой проект — 404, раздел с загруженными версиями — 409: это store
   res.json({ sections: await store.setSections(req.params.id, list) });
 }));
 
 /* ---------------- версии разделов (сценарий 3) ---------------- */
 
 router.post('/projects/:id/sections/:code/versions',
-  rateLimit(config.rateLimitExpensive, 'normo-upload'), upload.array('files', 40),
+  rateLimit(config.rateLimitExpensive, 'normo-upload'), requestSizeLimit(config.uploadTotalBytes), upload.array('files', 40),
   wrap(async (req, res) => {
     if (!req.files || !req.files.length) {
       return res.status(400).json({ error: 'Нужен хотя бы один файл (multipart-поле files)' });
@@ -110,9 +180,13 @@ router.post('/projects/:id/sections/:code/versions',
     if (!['П', 'Р'].includes(stage)) {
       return res.status(400).json({ error: 'Нужна стадия версии: П или Р (поле stage)' });
     }
+    const uploads = decodeUploads(req.files);
+    // исполняемые файлы и подделки под PDF/DOCX отвергаются ДО записи версии
+    const rejected = uploadsError(uploads);
+    if (rejected) return res.status(422).json({ error: rejected });
     const { version, files, section } = await store.addVersion(
-      req.params.id, req.params.code, decodeUploads(req.files),
-      { stage, author: req.body.author, uploadedBy: req.user ? req.user.id : null, note: req.body.note },
+      req.params.id, req.params.code, uploads,
+      { stage, author: String(req.body.author || '').slice(0, 200), uploadedBy: req.user ? req.user.id : null, note: String(req.body.note || '').slice(0, 2000) },
     );
     // Загрузка запускает анализ сама (сценарий 3) — но ошибка анализа не отменяет
     // загрузку: версия уже создана, прогон можно повторить отдельным запросом.
@@ -178,7 +252,7 @@ router.get('/versions/:vid/findings', wrap(async (req, res) => {
 /* ---------------- исходные данные и требования (сценарий 2) ---------------- */
 
 router.post('/projects/:id/input-data',
-  rateLimit(config.rateLimitExpensive, 'normo-input'), upload.array('files', 20),
+  rateLimit(config.rateLimitExpensive, 'normo-input'), requestSizeLimit(config.uploadTotalBytes), upload.array('files', 20),
   wrap(async (req, res) => {
     if (!req.files || !req.files.length) {
       return res.status(400).json({ error: 'Нужен хотя бы один файл (multipart-поле files)' });
@@ -253,6 +327,9 @@ router.get('/projects/:id/findings', wrap(async (req, res) => {
 router.get('/sections/:sid/diff', wrap(async (req, res) => {
   const { from, to } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'Нужны параметры from и to (id версий)' });
+  if (validId(from) === null || validId(to) === null) {
+    return res.status(400).json({ error: 'Некорректный идентификатор версии (from/to)' });
+  }
   const diffSvc = require('../services/normo/diff');
   const diff = await diffSvc.buildDiff(from, to);
   if (String(diff.section_id) !== String(req.params.sid)) {
@@ -282,7 +359,7 @@ router.patch('/impact/:iid', wrap(async (req, res) => {
   const r = await db.query(
     `UPDATE impact_links SET status = $1, note = coalesce($2, note), updated_by = $3, updated_at = now()
      WHERE id = $4 RETURNING *`,
-    [status, note || null, req.user ? req.user.id : null, req.params.iid]);
+    [status, note ? String(note).slice(0, 2000) : null, req.user ? req.user.id : null, req.params.iid]);
   if (!r.rows.length) return res.status(404).json({ error: 'Impact-связь не найдена' });
   res.json({ link: r.rows[0] });
 }));
@@ -293,7 +370,7 @@ router.post('/versions/:vid/reports',
   rateLimit(config.rateLimitExpensive, 'normo-report'),
   wrap(async (req, res) => {
     const body = req.body || {};
-    const reviewer = (body.reviewer || (req.user && `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim())) || 'нормоконтролёр';
+    const reviewer = (String(body.reviewer || '').slice(0, 200) || (req.user && `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim())) || 'нормоконтролёр';
     // Итоговые вердикты модуль не выставляет сам (П41) — только из решения человека
     const toBool = (x) => (x === true || x === false ? x : null);
     const { project, version, lastRun, payload } = await require('../services/normo/report-payload')

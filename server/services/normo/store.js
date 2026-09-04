@@ -149,12 +149,13 @@ function sectionDefaults() {
   return sectionDefaultsCache;
 }
 
-async function createProject({ name, customer, stage, objectKind, dateStarted, localOnly, owner }) {
+async function createProject({ name, customer, stage, objectKind, dateStarted, localOnly, owner, platformProjectId }) {
   return db.tx(async (client) => {
     const p = await client.query(
-      `INSERT INTO projects (name, customer, stage, object_kind, date_started, local_only, owner_user)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [name, customer || null, stage, objectKind || 'непроизводственный', dateStarted, !!localOnly, owner || null],
+      `INSERT INTO projects (name, customer, stage, object_kind, date_started, local_only, owner_user, platform_project_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [name, customer || null, stage, objectKind || 'непроизводственный', dateStarted, !!localOnly, owner || null,
+        platformProjectId || 'legacy'],
     );
     const project = p.rows[0];
     for (const s of sectionDefaults()) {
@@ -168,7 +169,8 @@ async function createProject({ name, customer, stage, objectKind, dateStarted, l
   });
 }
 
-async function listProjects() {
+/** platformProjectId — только проекты этого проекта платформы; пусто — все. */
+async function listProjects({ platformProjectId = '' } = {}) {
   const r = await db.query(
     `SELECT p.*,
        (SELECT count(*) FROM sections s WHERE s.project_id = p.id) AS sections_count,
@@ -176,8 +178,35 @@ async function listProjects() {
           JOIN section_versions v ON v.id = f.version_id AND v.is_current
           JOIN sections s ON s.id = v.section_id
         WHERE s.project_id = p.id AND f.status = 'open') AS open_findings
-     FROM projects p WHERE archived_at IS NULL ORDER BY p.id DESC`);
+     FROM projects p WHERE archived_at IS NULL AND ($1 = '' OR p.platform_project_id = $1)
+     ORDER BY p.id DESC`, [platformProjectId || '']);
   return r.rows;
+}
+
+/** Сводка для проектов платформы: сколько проектов нормоконтроля, разделов и открытых замечаний. */
+async function summaryByPlatform(ids) {
+  if (!ids.length) return {};
+  // сводку зовут с маршрута проектов — схема модуля к этому моменту могла ещё не развернуться
+  await db.migrate();
+  const r = await db.query(
+    `SELECT p.platform_project_id AS pid, count(*)::int AS projects,
+       coalesce(sum((SELECT count(*) FROM sections s WHERE s.project_id = p.id)), 0)::int AS sections,
+       coalesce(sum((SELECT count(*) FROM findings f
+          JOIN section_versions v ON v.id = f.version_id AND v.is_current
+          JOIN sections s ON s.id = v.section_id
+        WHERE s.project_id = p.id AND f.status = 'open')), 0)::int AS open_findings
+     FROM projects p WHERE p.archived_at IS NULL AND p.platform_project_id = ANY($1)
+     GROUP BY p.platform_project_id`, [ids]);
+  const out = {};
+  for (const row of r.rows) out[row.pid] = row;
+  return out;
+}
+
+/** Есть ли проекты, доставшиеся «Ранним работам»: тогда этот проект должен существовать на платформе. */
+async function hasLegacy() {
+  await db.migrate();
+  const r = await db.query("SELECT 1 FROM projects WHERE platform_project_id = 'legacy' AND archived_at IS NULL LIMIT 1");
+  return r.rows.length > 0;
 }
 
 async function getProject(id) {
@@ -195,8 +224,21 @@ async function getProject(id) {
 
 async function setSections(projectId, list) {
   return db.tx(async (client) => {
-    const have = await client.query('SELECT code FROM sections WHERE project_id = $1', [projectId]);
+    const project = await client.query('SELECT 1 FROM projects WHERE id = $1', [projectId]);
+    if (!project.rows.length) {
+      const err = new Error('Проект не найден'); err.status = 404; throw err;
+    }
+    const have = await client.query(
+      `SELECT s.code, EXISTS (SELECT 1 FROM section_versions v WHERE v.section_id = s.id) AS has_versions
+       FROM sections s WHERE s.project_id = $1 ORDER BY s.sort_order, s.code`, [projectId]);
     const keep = new Set(list.map((s) => s.code));
+    // Раздел с загруженными версиями из состава не выкидывается: каскад унёс бы
+    // версии, замечания и заключения. Сначала человеку показывается, что мешает.
+    const blocked = have.rows.filter((row) => !keep.has(row.code) && row.has_versions).map((row) => row.code);
+    if (blocked.length) {
+      const err = new Error(`Нельзя убрать разделы с загруженными версиями: ${blocked.join(', ')}`);
+      err.status = 409; throw err;
+    }
     for (const row of have.rows) {
       if (!keep.has(row.code)) {
         await client.query('DELETE FROM sections WHERE project_id = $1 AND code = $2', [projectId, row.code]);
@@ -282,6 +324,6 @@ async function listVersions(sectionId) {
 
 module.exports = {
   dataDir, saveFile, filePath, extractText, docxStampData, sectionDefaults,
-  createProject, listProjects, getProject, setSections,
+  createProject, listProjects, getProject, setSections, summaryByPlatform, hasLegacy,
   addVersion, getVersion, listVersions,
 };

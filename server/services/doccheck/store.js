@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS doccheck_decisions (
   PRIMARY KEY (run_id, finding_id)
 );
 `);
+// проект платформы, в котором живёт проверка (services/projects.js, 2026-09-02)
+try { db.exec("ALTER TABLE doccheck_checks ADD COLUMN project_id TEXT NOT NULL DEFAULT ''"); } catch { /* колонка уже есть */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_doccheck_checks_project ON doccheck_checks(project_id, updated_at)'); } catch { /* уже есть */ }
 
 function httpError(status, message) {
   const err = new Error(message);
@@ -87,12 +90,12 @@ const sha256 = (text) => crypto.createHash('sha256').update(String(text), 'utf8'
 
 /* ---------------- проверки ---------------- */
 
-function createCheck({ name, provider, model, user }) {
+function createCheck({ name, provider, model, user, projectId }) {
   const id = crypto.randomUUID();
   db.prepare(`INSERT INTO doccheck_checks
-      (id, name, ai_provider, ai_model, created_by, created_by_name, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?)`)
-    .run(id, name, provider || '', model || '', (user && user.id) || '', userName(user), now(), now());
+      (id, name, ai_provider, ai_model, project_id, created_by, created_by_name, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(id, name, provider || '', model || '', projectId || 'legacy', (user && user.id) || '', userName(user), now(), now());
   return checkById(id);
 }
 
@@ -100,14 +103,16 @@ function checkById(id) {
   return db.prepare('SELECT * FROM doccheck_checks WHERE id = ? AND deleted_at IS NULL').get(id) || null;
 }
 
-function listChecks() {
-  return db.prepare(`SELECT c.id, c.name, c.ai_provider, c.ai_model, c.document_name,
+/** ?project=<id платформы> — только проверки этого проекта; пусто — все. */
+function listChecks({ projectId = '' } = {}) {
+  return db.prepare(`SELECT c.id, c.name, c.ai_provider, c.ai_model, c.document_name, c.project_id,
       c.document_sha256 != '' AS has_document, length(c.document_text) AS document_chars,
       c.detected_type, c.detected_via, c.chosen_type, c.created_by_name, c.created_at, c.updated_at,
       (SELECT count(*) FROM doccheck_runs r WHERE r.check_id = c.id) AS run_count,
       (SELECT r.status FROM doccheck_runs r WHERE r.check_id = c.id ORDER BY r.created_at DESC LIMIT 1) AS last_run_status,
       (SELECT r.id FROM doccheck_runs r WHERE r.check_id = c.id ORDER BY r.created_at DESC LIMIT 1) AS last_run_id
-      FROM doccheck_checks c WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC`).all();
+      FROM doccheck_checks c WHERE c.deleted_at IS NULL AND (? = '' OR c.project_id = ?)
+      ORDER BY c.updated_at DESC`).all(projectId, projectId);
 }
 
 function updateCheck(id, fields) {
@@ -162,9 +167,9 @@ function ensureServiceSession(check, user, host = '') {
     }
   }
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO sessions (id, token, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-    id, crypto.randomBytes(32).toString('hex'), 'service', '',
+  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     (user && user.id) || check.created_by || '', config.promptVersion, host,
     `Проверка документа: ${check.name}`.slice(0, 60), now(), now());
   db.prepare('UPDATE doccheck_checks SET service_session_id = ? WHERE id = ?').run(id, check.id);

@@ -18,6 +18,7 @@ const read = (name) => fs.readFileSync(path.join(PUBLIC, name), 'utf8');
 const html = read('index.html');
 const css = read('styles.css');
 const appJs = read('app.js');
+const shellJs = read('shell.js'); // общий каркас: хром страниц строит он, а не index.html
 const authJs = read('auth.js');
 const viewerJs = read('viewer.js');
 const ZoneStyle = require(path.join(PUBLIC, 'zone-style.js'));
@@ -212,10 +213,11 @@ test('меню провайдеров полное, и порядок совпа
   assert.match(appJs, /const CLOUD_PROVIDERS = \[[^\]]*'yandexgpt'/, 'YandexGPT — облачный провайдер');
 });
 
-test('пустое название проекта не уходит на сервер молча', () => {
+test('пустое название сессии не уходит на сервер молча', () => {
   const fn = /async function renameSession\([\s\S]*?\n\}/.exec(appJs)[0];
   assert.match(fn, /if \(!String\(res\.title \|\| ''\)\.trim\(\)\)/);
-  assert.match(fn, /Название проекта не может быть пустым/);
+  // «проект» теперь — сущность платформы, сессия посадки зовётся сессией (аудит 02.09.2026)
+  assert.match(fn, /Название сессии не может быть пустым/);
   assert.match(fn, /toast\(err\.message, 'error'\)/, 'ошибку сервера тоже показываем, а не глотаем');
 });
 
@@ -258,9 +260,10 @@ test('пустой запуск вариантов не застревает н�
 
 /* ================= 8. текст справки ================= */
 
-test('в справке «Сравнение моделей» экран называется «Этап 1»', () => {
+test('в справке «Сравнение моделей» модуль называется «Посадка здания» (бывший «Этап 1»)', () => {
   assert.ok(!/на экране «Анализ»/.test(appJs), 'удалённого экрана «Анализ» в текстах быть не должно');
-  assert.match(appJs, /на экране «Этап 1»/);
+  assert.match(appJs, /в модуле «Посадка здания»/);
+  assert.ok(!/на экране «Этап 1»/.test(appJs), 'старое имя «Этап 1» в подсказках');
 });
 
 /* ================= 9. deviceId при первом входе ================= */
@@ -398,14 +401,17 @@ test('версии изменённых ассетов подняты', () => {
 /* ================= просьбы владельца из прошлых кругов ================= */
 
 test('значок «Настройки» — шестерёнка, а заголовок страницы полный', () => {
-  const nav = /<button class="nav-item" data-screen="settings"[\s\S]*?<\/button>/.exec(html)[0];
-  assert.match(nav, /<circle cx="12" cy="12" r="3\.1"\/>/, 'у шестерёнки должна быть втулка');
+  // ссылки платформы (Датасет / Статистика / Настройки) рисует общий каркас
+  const gear = /settings: '[^']*<circle cx="12" cy="12" r="3\.1"\/>/.exec(shellJs);
+  assert.ok(gear, 'у шестерёнки должна быть втулка');
   assert.match(html, /<title>Enso-nexus — платформа автоматического проектирования<\/title>/);
 });
 
 test('«Извлечённые факты» — раскрывающийся список, а сайдбар убирается значком', () => {
   assert.match(html, /<details id="facts-card"[^>]*class="card card-fold"/);
-  assert.match(html, /id="sidebar-toggle"/);
+  // панель проектов и её переключатель строит общий каркас (вид «Досье»)
+  assert.match(shellJs, /id="sidebar-toggle"/);
+  assert.match(html, /<div id="chrome"><\/div>/, 'место под хром каркаса обязательно');
   assert.match(appJs, /\$\('sidebar-toggle'\)\.addEventListener\('click', toggleSidebar\)/);
 });
 

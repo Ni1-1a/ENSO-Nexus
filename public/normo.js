@@ -15,6 +15,10 @@
  */
 (function () {
   const $ = (id) => document.getElementById(id);
+  // контекст проекта платформы: ?project=<id> в адресе, читает общий каркас
+  const projectId = () => (window.EnsoShell && window.EnsoShell.projectId) || '';
+  const projectQuery = () => (projectId() ? `?project=${encodeURIComponent(projectId())}` : '');
+
 
   /* ---------------- словари ---------------- */
 
@@ -214,16 +218,16 @@
     const errBox = $('nm-projects-error');
     errBox.hidden = true;
     grid.innerHTML = '';
-    grid.append(h('p', { class: 'hint' }, 'Загрузка проектов…'));
+    grid.append(h('p', { class: 'hint' }, 'Загрузка комплектов…'));
     let projects;
     try {
-      ({ projects } = await api('/projects'));
+      ({ projects } = await api(`/projects${projectQuery()}`));
     } catch (err) {
       grid.innerHTML = '';
       $('nm-projects-empty').hidden = true;
       errBox.textContent = err.offline
-        ? 'Сервер сейчас недоступен. Список проектов появится, как только связь восстановится.'
-        : `Не удалось получить список проектов: ${err.message}`;
+        ? 'Сервер сейчас недоступен. Список комплектов появится, как только связь восстановится.'
+        : `Не удалось получить список комплектов: ${err.message}`;
       errBox.hidden = false;
       return;
     }
@@ -254,7 +258,7 @@
   /* ---------------- экран: карточка проекта ---------------- */
 
   async function fetchProject(id) {
-    const { project } = await api(`/projects/${id}`);
+    const { project } = await api(`/projects/${encodeURIComponent(id)}`);
     return project;
   }
 
@@ -266,19 +270,19 @@
     $('pj-sub').textContent = '';
     $('pj-meta').innerHTML = '';
     $('pj-sections').innerHTML = '';
-    setCrumbs([{ text: 'Проекты', href: '#/' }, { text: '…' }]);
+    setCrumbs([{ text: 'Комплекты', href: '#/' }, { text: '…' }]);
     let project;
     try {
       project = state.project = await fetchProject(id);
     } catch (err) {
-      $('pj-name').textContent = 'Проект не открылся';
+      $('pj-name').textContent = 'Комплект не открылся';
       errBox.textContent = err.status === 404
-        ? 'Такого проекта нет — возможно, он удалён.'
-        : `Не удалось открыть проект: ${err.message}`;
+        ? 'Такого комплекта нет — возможно, он удалён.'
+        : `Не удалось открыть комплект: ${err.message}`;
       errBox.hidden = false;
       return;
     }
-    setCrumbs([{ text: 'Проекты', href: '#/' }, { text: project.name }]);
+    setCrumbs([{ text: 'Комплекты', href: '#/' }, { text: project.name }]);
     $('pj-name').textContent = project.name;
     $('pj-sub').textContent = project.customer ? `Заказчик: ${project.customer}` : 'Состав и версии разделов';
 
@@ -288,7 +292,7 @@
       h('span', { class: 'nm-chip' }, 'объект ', h('b', {}, project.object_kind || '—')),
       h('span', { class: 'nm-chip' }, 'начат ', h('b', {}, fmtDate(project.date_started))));
     if (project.local_only) {
-      meta.append(h('span', { class: 'nm-chip', title: 'Документы проекта не уходят в облачные модели' },
+      meta.append(h('span', { class: 'nm-chip', title: 'Документы комплекта не уходят в облачные модели' },
         h('b', {}, 'только локальные модели')));
     }
 
@@ -328,14 +332,14 @@
     $('sec-versions').innerHTML = '';
     $('sec-diff').hidden = true;
     $('sec-diff-controls').hidden = true;
-    setCrumbs([{ text: 'Проекты', href: '#/' }, { text: '…' }]);
+    setCrumbs([{ text: 'Комплекты', href: '#/' }, { text: '…' }]);
 
     let project;
     let versions;
     try {
       project = state.project = (state.project && String(state.project.id) === String(projectId))
         ? state.project : await fetchProject(projectId);
-      ({ versions } = await api(`/sections/${sectionId}/versions`));
+      ({ versions } = await api(`/sections/${encodeURIComponent(sectionId)}/versions`));
     } catch (err) {
       $('sec-title').textContent = 'Раздел не открылся';
       errBox.textContent = `Не удалось открыть раздел: ${err.message}`;
@@ -345,17 +349,17 @@
     const section = (project.sections || []).find((s) => String(s.id) === String(sectionId));
     if (!section) {
       $('sec-title').textContent = 'Раздел не найден';
-      errBox.textContent = 'Такого раздела в составе проекта нет — возможно, состав меняли.';
+      errBox.textContent = 'Такого раздела в составе комплекта нет — возможно, состав меняли.';
       errBox.hidden = false;
       return;
     }
     setCrumbs([
-      { text: 'Проекты', href: '#/' },
+      { text: 'Комплекты', href: '#/' },
       { text: project.name, href: `#/p/${project.id}` },
       { text: `Раздел ${section.code}` },
     ]);
     $('sec-title').textContent = `${section.code} — ${section.name}`;
-    $('sec-sub').textContent = `История версий · проект «${project.name}»`;
+    $('sec-sub').textContent = `История версий · комплект «${project.name}»`;
     $('sec-upload').onclick = () => openUpload(project, section);
 
     const tbody = $('sec-versions');
@@ -398,7 +402,7 @@
     const box = $('sec-diff');
     const body = $('sec-diff-body');
     try {
-      const data = await api(`/sections/${sectionId}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      const data = await api(`/sections/${encodeURIComponent(sectionId)}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
       body.innerHTML = '';
       const items = (data && data.diff && data.diff.items) || [];
       if (!items.length) {
@@ -441,11 +445,11 @@
     $('v-counts').innerHTML = '';
     setRunBadge('…', 'muted');
     $('v-run-note').textContent = 'Загрузка…';
-    setCrumbs([{ text: 'Проекты', href: '#/' }, { text: '…' }]);
+    setCrumbs([{ text: 'Комплекты', href: '#/' }, { text: '…' }]);
 
     let version;
     try {
-      ({ version } = await api(`/versions/${versionId}`));
+      ({ version } = await api(`/versions/${encodeURIComponent(versionId)}`));
     } catch (err) {
       $('v-title').textContent = 'Версия не открылась';
       errBox.textContent = err.status === 404
@@ -464,8 +468,8 @@
       state.project = project;
     } catch { /* путь соберём без имени проекта */ }
     setCrumbs([
-      { text: 'Проекты', href: '#/' },
-      project ? { text: project.name, href: `#/p/${version.project_id}` } : { text: 'Проект', href: `#/p/${version.project_id}` },
+      { text: 'Комплекты', href: '#/' },
+      project ? { text: project.name, href: `#/p/${version.project_id}` } : { text: 'Комплект', href: `#/p/${version.project_id}` },
       { text: `Раздел ${version.section_code}`, href: `#/p/${version.project_id}/s/${version.section_id}` },
       { text: `Версия № ${version.version_no}` },
     ]);
@@ -513,7 +517,7 @@
     setRunBadge('выполняется…', 'warn');
     $('v-run-note').textContent = force ? 'Проверка запущена заново…' : 'Загрузка прогона…';
     try {
-      const started = await api(`/versions/${versionId}/check`, { method: 'POST', json: force ? { force: true } : {} });
+      const started = await api(`/versions/${encodeURIComponent(versionId)}/check`, { method: 'POST', json: force ? { force: true } : {} });
       const { run } = await api(`/runs/${started.runId}`);
       state.run = run;
       renderRun(run, started.cached);
@@ -587,7 +591,7 @@
     if (status) q.set('status', status);
     if (severity) q.set('severity', severity);
     try {
-      const { findings } = await api(`/versions/${versionId}/findings${q.toString() ? `?${q}` : ''}`);
+      const { findings } = await api(`/versions/${encodeURIComponent(versionId)}/findings${q.toString() ? `?${q}` : ''}`);
       state.findings = findings;
       renderFindings();
     } catch (err) {
@@ -737,6 +741,13 @@
     $('np-error').hidden = true;
     $('np-form').reset();
     $('np-date').value = new Date().toISOString().slice(0, 10);
+    // проект платформы уже знает объект, заказчика и стадию — подставляем
+    const pp = window.EnsoShell && window.EnsoShell.project;
+    if (pp) {
+      $('np-name').value = pp.full_name || pp.name || '';
+      $('np-customer').value = pp.client || '';
+      if (['П', 'Р', 'П+Р'].includes(pp.stage)) $('np-stage').value = pp.stage;
+    }
     $('np-modal').hidden = false;
     setTimeout(() => $('np-name').focus(), 40);
   }
@@ -748,7 +759,7 @@
     errBox.hidden = true;
     const name = $('np-name').value.trim();
     const dateStarted = $('np-date').value;
-    if (!name) { errBox.textContent = 'Дайте проекту название.'; errBox.hidden = false; $('np-name').focus(); return; }
+    if (!name) { errBox.textContent = 'Дайте комплекту название.'; errBox.hidden = false; $('np-name').focus(); return; }
     if (!dateStarted) { errBox.textContent = 'Укажите дату начала разработки.'; errBox.hidden = false; $('np-date').focus(); return; }
     const btn = $('np-submit');
     btn.disabled = true;
@@ -757,6 +768,7 @@
         method: 'POST',
         json: {
           name,
+          platformProjectId: projectId(),
           customer: $('np-customer').value.trim() || undefined,
           stage: $('np-stage').value,
           objectKind: $('np-kind').value,
@@ -765,7 +777,7 @@
         },
       });
       closeNewProject();
-      toast(`Проект «${project.name}» создан — разделов в составе: ${(project.sections || []).length}`);
+      toast(`Комплект «${project.name}» создан — разделов в составе: ${(project.sections || []).length}`);
       location.hash = `#/p/${project.id}`;
     } catch (err) {
       errBox.textContent = err.message;
@@ -841,7 +853,7 @@
       fd.append('stage', $('up-stage').value);
       if ($('up-author').value.trim()) fd.append('author', $('up-author').value.trim());
       if ($('up-note').value.trim()) fd.append('note', $('up-note').value.trim());
-      const data = await api(`/projects/${projectId}/sections/${encodeURIComponent(section.code)}/versions`, {
+      const data = await api(`/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(section.code)}/versions`, {
         method: 'POST',
         body: fd,
       });
@@ -867,14 +879,8 @@
   /* ---------------- кто вошёл ---------------- */
 
   function renderUserBox() {
-    const box = $('nm-user');
-    const u = (window.Auth && window.Auth.user) || null;
-    if (!u || !window.Auth.requireLogin) { box.hidden = true; return; }
-    const last = String(u.lastName || '').trim();
-    const first = String(u.firstName || '').trim();
-    box.hidden = false;
-    $('nm-user-name').textContent = `${last} ${first}`.trim();
-    $('nm-user-initials').textContent = `${last.slice(0, 1)}${first.slice(0, 1)}`.toUpperCase();
+    // блок человека теперь рисует общий каркас (shell.js)
+    if (window.EnsoShell) window.EnsoShell.renderUser();
   }
 
   /* ---------------- запуск ---------------- */
@@ -910,7 +916,6 @@
       else if (!$('up-modal').hidden) closeUpload();
     });
 
-    $('nm-sign-out').addEventListener('click', () => window.Auth.signOut());
     window.addEventListener('hashchange', route);
   }
 
@@ -918,6 +923,7 @@
     window.Auth.init();
     await window.Auth.start();
     renderUserBox();
+    if (window.EnsoShell) await window.EnsoShell.start();
     wireStatic();
     // /health идёт ПЕРВЫМ и дожидается ответа: схема БД модуля разворачивается
     // лениво при первом запросе, и два параллельных первых запроса устраивают

@@ -23,4 +23,16 @@
   var theme = null;
   try { theme = localStorage.getItem('enso-pilot1-theme'); } catch (e) { theme = null; }
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  // полоса браузера на телефоне — под тему (раньше это делал только app.js на главной)
+  try {
+    var dark = theme === 'dark' || (theme !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = dark ? '#201c17' : '#f3efe6';
+  } catch (e) { /* без meta — не страшно */ }
+
+  // Вариант отображения каркаса (a «Досье» / b «Стол проекта» / c «Лента» /
+  // d «Штамп») — тоже до отрисовки: иначе панель мигает капсулой и наоборот.
+  var view = null;
+  try { view = localStorage.getItem('enso-pilot1-view'); } catch (e) { view = null; }
+  document.documentElement.dataset.view = (view === 'a' || view === 'c' || view === 'd') ? view : 'b';
 })();

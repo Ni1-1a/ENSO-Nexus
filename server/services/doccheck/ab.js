@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS doccheck_ab_decisions (
   PRIMARY KEY (ab_id, row_id)
 );
 `);
+// проект платформы, в котором живёт сравнение (services/projects.js, 2026-09-02)
+try { db.exec("ALTER TABLE doccheck_ab ADD COLUMN project_id TEXT NOT NULL DEFAULT ''"); } catch { /* колонка уже есть */ }
 
 const { httpError, userName } = storeCommon;
 
@@ -96,11 +98,11 @@ const AB_SCHEMA = {
 
 /* ---------------- хранение ---------------- */
 
-function createAb({ name, provider, model, user }) {
+function createAb({ name, provider, model, user, projectId }) {
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO doccheck_ab (id, name, ai_provider, ai_model, created_by, created_by_name, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?)`)
-    .run(id, name, provider || '', model || '', (user && user.id) || '', userName(user), now(), now());
+  db.prepare(`INSERT INTO doccheck_ab (id, name, ai_provider, ai_model, project_id, created_by, created_by_name, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(id, name, provider || '', model || '', projectId || 'legacy', (user && user.id) || '', userName(user), now(), now());
   return abById(id);
 }
 
@@ -122,12 +124,14 @@ function abById(id, { withText = false } = {}) {
   return out;
 }
 
-function listAb() {
-  return db.prepare(`SELECT id, name, ai_provider, ai_model, status, error_text,
+/** ?project=<id платформы> — только сравнения этого проекта; пусто — все. */
+function listAb({ projectId = '' } = {}) {
+  return db.prepare(`SELECT id, name, ai_provider, ai_model, status, error_text, project_id,
       length(req_text) AS req_chars, length(a_text) AS a_chars, length(b_text) AS b_chars,
       req_names, a_names, b_names, created_by_name, created_at, updated_at, finished_at,
       json_extract(nullif(result_json, ''), '$.summary') AS summary_json
-      FROM doccheck_ab WHERE deleted_at IS NULL ORDER BY updated_at DESC`).all()
+      FROM doccheck_ab WHERE deleted_at IS NULL AND (? = '' OR project_id = ?)
+      ORDER BY updated_at DESC`).all(projectId, projectId)
     .map((r) => {
       let summary = null;
       try { summary = r.summary_json ? JSON.parse(r.summary_json) : null; } catch { summary = null; }
@@ -146,6 +150,9 @@ function appendDoc(id, kind, { name, text }) {
   const joined = row[textCol]
     ? `${row[textCol]}\n\n===== Документ: ${name} =====\n\n${text}`
     : `===== Документ: ${name} =====\n\n${text}`;
+  // потолок — на блок целиком: документы дописываются друг к другу
+  const tooBig = require('../validation').docSizeError(joined);
+  if (tooBig) throw httpError(422, tooBig);
   const names = row[namesCol] ? `${row[namesCol]}; ${name}` : name;
   db.prepare(`UPDATE doccheck_ab SET ${textCol} = ?, ${namesCol} = ?, updated_at = ? WHERE id = ?`)
     .run(joined, names, now(), id);
@@ -154,8 +161,9 @@ function appendDoc(id, kind, { name, text }) {
 
 function clearDocs(id, kind) {
   if (!DOC_KINDS[kind]) throw httpError(400, 'kind должен быть req, a или b');
-  db.prepare(`UPDATE doccheck_ab SET ${kind}_text = '', ${kind}_names = '', updated_at = ? WHERE id = ? AND deleted_at IS NULL`)
+  const r = db.prepare(`UPDATE doccheck_ab SET ${kind}_text = '', ${kind}_names = '', updated_at = ? WHERE id = ? AND deleted_at IS NULL`)
     .run(now(), id);
+  if (!r.changes) throw httpError(404, 'Сравнение не найдено');
   return abById(id);
 }
 
@@ -232,16 +240,27 @@ function _setCallFn(fn) { overrideCallFn = fn; }
 
 const TRANSPORT_RE = /terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout|socket hang up|network|обрыв|aborted|fetch failed/i;
 
+/**
+ * Чего не хватает для запуска: текст ошибки или null. Зовётся и маршрутом ДО
+ * постановки в фон (честный 422), и самим прогоном — правило одно на двоих.
+ * Достаточно строки списка: a_chars/b_chars считаются по length, как и trim
+ * непустого текста (документ дописывается с заголовком, пустым он не бывает).
+ */
+function runPrecheck(ab) {
+  const has = (kind) => (typeof ab[`${kind}_text`] === 'string' ? ab[`${kind}_text`].trim().length > 0 : ab[`${kind}_chars`] > 0);
+  if (!has('a') || !has('b')) return 'Нужны документы обеих моделей: A (проектная) и B (предлагаемая)';
+  if (!ab.ai_provider) return 'Не выбрана модель — укажите её в карточке сравнения';
+  return null;
+}
+
 async function runCompare(abId, { callFn = null, host = '' } = {}) {
   const adapter = require('../claude/adapter');
   const call = callFn || overrideCallFn || adapter.structuredCall;
 
   const ab = abById(abId, { withText: true });
   if (!ab) throw httpError(404, 'Сравнение не найдено');
-  if (!ab.a_text.trim() || !ab.b_text.trim()) {
-    throw httpError(422, 'Нужны документы обеих моделей: A (проектная) и B (предлагаемая)');
-  }
-  if (!ab.ai_provider) throw httpError(422, 'Не выбрана модель — укажите её в карточке сравнения');
+  const notReady = runPrecheck(ab);
+  if (notReady) throw httpError(422, notReady);
 
   const route = { provider: ab.ai_provider, model: ab.ai_model };
   const sessionId = ensureServiceSession(ab, null, host);
@@ -418,5 +437,5 @@ function protocolXlsx(ab) {
 module.exports = {
   AB_STATUSES, AB_CATEGORIES, AB_SCHEMA, AB_CHAR_LIMIT,
   createAb, abById, listAb, appendDoc, clearDocs, deleteAb, setStatus, recoverInterrupted,
-  setRowDecision, runCompare, protocolXlsx, _setCallFn,
+  setRowDecision, runCompare, runPrecheck, protocolXlsx, _setCallFn,
 };

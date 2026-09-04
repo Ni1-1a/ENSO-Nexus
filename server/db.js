@@ -9,6 +9,12 @@ fs.mkdirSync(path.join(config.dataDir, 'uploads'), { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, 'outputs'), { recursive: true });
 
 const db = new DatabaseSync(path.join(config.dataDir, 'app.db'));
+// База и папка данных — только владельцу процесса (аудит 02.09.2026: было 644,
+// файл читал любой локальный аккаунт). На Windows chmod ничего не делает.
+try {
+  fs.chmodSync(config.dataDir, 0o700);
+  fs.chmodSync(path.join(config.dataDir, 'app.db'), 0o600);
+} catch { /* чужая файловая система — не повод не стартовать */ }
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
@@ -350,6 +356,11 @@ for (const sql of [
      created_at TEXT NOT NULL
    )`,
   'CREATE INDEX IF NOT EXISTS idx_topups_provider ON credit_topups(provider, happened_at)',
+  // проект платформы, в котором живёт сессия посадки (services/projects.js, 2026-09-02)
+  "ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+  'CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_at)',
+  // токен сессии хранится хешем (аудит безопасности 02.09.2026); token остаётся пустым
+  "ALTER TABLE sessions ADD COLUMN token_hash TEXT NOT NULL DEFAULT ''",
 ]) {
   try { db.exec(sql); } catch { /* колонка уже есть */ }
 }
@@ -372,4 +383,27 @@ try {
 
 const now = () => new Date().toISOString();
 
-module.exports = { db, now };
+/** Хеш токена сессии: в базе лежит он, а не сам токен — утечка app.db не даёт сессий. */
+function hashToken(token) {
+  return require('node:crypto').createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+/*
+ * Токены сессий, записанные открытым текстом до 02.09.2026, переводятся на
+ * хеш один раз при старте: у людей ничего не меняется — токен в браузере тот
+ * же, сравнение теперь идёт по хешу. Идемпотентно: обработанные строки имеют
+ * пустой token.
+ */
+function migrateSessionTokens() {
+  let moved = 0;
+  try {
+    const rows = db.prepare("SELECT id, token FROM sessions WHERE token <> '' AND token_hash = ''").all();
+    const up = db.prepare("UPDATE sessions SET token_hash = ?, token = '' WHERE id = ?");
+    for (const r of rows) { up.run(hashToken(r.token), r.id); moved++; }
+    if (moved) console.log(`[sessions] токенов переведено на хеш: ${moved}`);
+  } catch { /* колонки ещё нет — свежая база */ }
+  return moved;
+}
+migrateSessionTokens();
+
+module.exports = { db, now, hashToken, migrateSessionTokens };

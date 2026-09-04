@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS tz_decisions (
   PRIMARY KEY (run_id, finding_id)
 );
 `);
+// проект платформы, в котором живёт проверка ТЗ (services/projects.js, 2026-09-02)
+try { db.exec("ALTER TABLE tz_projects ADD COLUMN project_id TEXT NOT NULL DEFAULT ''"); } catch { /* колонка уже есть */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_tz_projects_project ON tz_projects(project_id, updated_at)'); } catch { /* уже есть */ }
 
 function httpError(status, message) {
   const err = new Error(message);
@@ -80,12 +83,12 @@ const sha256 = (text) => crypto.createHash('sha256').update(String(text), 'utf8'
 
 /* ---------------- проекты ---------------- */
 
-function createProject({ name, checklist, provider, model, object, user }) {
+function createProject({ name, checklist, provider, model, object, user, projectId }) {
   const id = crypto.randomUUID();
   db.prepare(`INSERT INTO tz_projects
-      (id, name, checklist, ai_provider, ai_model, object_json, created_by, created_by_name, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, name, checklist, provider || '', model || '', JSON.stringify(object || {}),
+      (id, name, checklist, ai_provider, ai_model, object_json, project_id, created_by, created_by_name, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, name, checklist, provider || '', model || '', JSON.stringify(object || {}), projectId || 'legacy',
       (user && user.id) || '', userName(user), now(), now());
   return projectById(id);
 }
@@ -98,14 +101,16 @@ function projectById(id) {
   return { ...row, object };
 }
 
-function listProjects() {
-  return db.prepare(`SELECT p.id, p.name, p.checklist, p.ai_provider, p.ai_model, p.document_name,
+/** ?project=<id платформы> — только проверки этого проекта; пусто — все. */
+function listProjects({ projectId = '' } = {}) {
+  return db.prepare(`SELECT p.id, p.name, p.checklist, p.ai_provider, p.ai_model, p.document_name, p.project_id,
       p.document_sha256 != '' AS has_document, length(p.document_text) AS document_chars,
       p.created_by_name, p.created_at, p.updated_at,
       (SELECT count(*) FROM tz_runs r WHERE r.project_id = p.id) AS run_count,
       (SELECT r.status FROM tz_runs r WHERE r.project_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS last_run_status,
       (SELECT r.id FROM tz_runs r WHERE r.project_id = p.id ORDER BY r.created_at DESC LIMIT 1) AS last_run_id
-      FROM tz_projects p WHERE p.deleted_at IS NULL ORDER BY p.updated_at DESC`).all();
+      FROM tz_projects p WHERE p.deleted_at IS NULL AND (? = '' OR p.project_id = ?)
+      ORDER BY p.updated_at DESC`).all(projectId, projectId);
 }
 
 function updateProject(id, { name, checklist, provider, model, object }) {
@@ -157,9 +162,9 @@ function ensureServiceSession(project, user, host = '') {
     }
   }
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO sessions (id, token, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-    id, crypto.randomBytes(32).toString('hex'), 'service', '',
+  db.prepare(`INSERT INTO sessions (id, token, token_hash, status, device_id, user_id, prompt_version, origin_host, title, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, '', crypto.createHash('sha256').update(crypto.randomBytes(32)).digest('hex'), 'service', '',
     (user && user.id) || project.created_by || '', config.promptVersion, host,
     `Анализ ТЗ: ${project.name}`.slice(0, 60), now(), now());
   db.prepare('UPDATE tz_projects SET service_session_id = ? WHERE id = ?').run(id, project.id);

@@ -6,6 +6,10 @@
  */
 (function () {
   const $ = (id) => document.getElementById(id);
+  // контекст проекта платформы: ?project=<id> в адресе, читает общий каркас
+  const projectId = () => (window.EnsoShell && window.EnsoShell.projectId) || '';
+  const projectQuery = () => (projectId() ? `?project=${encodeURIComponent(projectId())}` : '');
+
 
   const state = {
     registry: null,   // { file, headers, rowCount }
@@ -48,7 +52,7 @@
   async function apiForm(path, fd) {
     let res;
     try {
-      res = await fetch(`/api/akty${path}`, { method: 'POST', headers: userHeaders(), body: fd });
+      res = await fetch(`/api/akty${path}${projectQuery()}`, { method: 'POST', headers: userHeaders(), body: fd });
     } catch {
       throw new Error('Сервер сейчас недоступен — попробуйте чуть позже');
     }
@@ -220,14 +224,8 @@
   /* ---------------- кто вошёл ---------------- */
 
   function renderUserBox() {
-    const box = $('ak-user');
-    const u = (window.Auth && window.Auth.user) || null;
-    if (!u || !window.Auth.requireLogin) { box.hidden = true; return; }
-    const last = String(u.lastName || '').trim();
-    const first = String(u.firstName || '').trim();
-    box.hidden = false;
-    $('ak-user-name').textContent = `${last} ${first}`.trim();
-    $('ak-user-initials').textContent = `${last.slice(0, 1)}${first.slice(0, 1)}`.toUpperCase();
+    // блок человека теперь рисует общий каркас (shell.js)
+    if (window.EnsoShell) window.EnsoShell.renderUser();
   }
 
   /* ---------------- запуск ---------------- */
@@ -236,6 +234,7 @@
     window.Auth.init();
     await window.Auth.start();
     renderUserBox();
+    if (window.EnsoShell) await window.EnsoShell.start();
 
     wireDropzone('g-reg-dz', 'g-reg-file', (f) => onRegistry(f).catch((e) => toast(e.message, 'error')));
     wireDropzone('g-tpl-dz', 'g-tpl-file', (f) => onTemplate(f).catch((e) => toast(e.message, 'error')));
@@ -253,7 +252,6 @@
     });
     $('d-run').addEventListener('click', () => runDates().catch((e) => toast(e.message, 'error')));
 
-    $('ak-sign-out').addEventListener('click', () => window.Auth.signOut());
   }
 
   document.addEventListener('DOMContentLoaded', init);

@@ -7,63 +7,42 @@
   <meta name="description" content="Модуль нормоконтроля: проекты, версии разделов, автоматические проверки и замечания с привязкой к НТД">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="normo.css?v=3">
+  <link rel="stylesheet" href="normo.css?v=4">
+  <link rel="stylesheet" href="shell.css?v=2">
   <!-- boot.js решает, что показать первым — вход или модуль; общий с платформой -->
-  <script src="boot.js?v=2"></script>
+  <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
 </head>
-<body>
-  <div class="shell nm-shell" id="shell">
-    <!-- ══════════ Шапка модуля ══════════
-         Отдельная страница, поэтому вместо сайдбара — узкая полоса:
-         бренд ведёт назад на платформу, рядом имя модуля. -->
-    <header class="nm-top glass-bar">
-      <a class="nm-back" href="/" title="Вернуться на платформу">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-          <path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="brand-name">Enso-nexus</span>
-      </a>
-      <span class="nm-module">Нормоконтроль</span>
-      <span class="nm-spacer"></span>
-      <div id="nm-user" class="nm-user" hidden>
-        <span class="user-avatar" id="nm-user-initials" aria-hidden="true"></span>
-        <span class="user-name" id="nm-user-name"></span>
-        <button id="nm-sign-out" class="icon-btn user-out" type="button"
-                aria-label="Выйти из записи" title="Выйти из записи">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-            <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M10 12h10m0 0l-3-3m3 3l-3 3" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
-      </div>
-    </header>
-
-    <main class="nm-main">
+<body data-page="module" data-module="normo">
+  <div class="shell" id="shell">
+    <!-- Хром платформы (капсула или панель проектов, навигация по модулям,
+         человек, нейросеть) строит общий shell.js -->
+    <div id="chrome"></div>
+    <main class="content" id="content">
       <nav id="nm-crumbs" class="nm-crumbs" aria-label="Путь по модулю" hidden></nav>
 
       <!-- ══════════ Экран: список проектов ══════════ -->
-      <section id="nm-s-projects" class="nm-screen active" aria-label="Проекты нормоконтроля">
+      <section id="nm-s-projects" class="nm-screen active" aria-label="Комплекты документации">
         <header class="toolbar">
           <h1>Нормоконтроль</h1>
           <p class="toolbar-sub">Проверка комплекта документации на соответствие нормативным требованиям</p>
         </header>
         <div class="nm-bar">
-          <button id="nm-new-project" class="btn btn-primary" type="button">Новый проект</button>
+          <button id="nm-new-project" class="btn btn-primary" type="button">Новый комплект</button>
           <span id="nm-health" class="hint"></span>
         </div>
         <div id="nm-projects" class="nm-projects-grid" aria-live="polite"></div>
         <p id="nm-projects-empty" class="empty-state" hidden>
-          Проектов пока нет. Нажмите «Новый проект» — состав разделов по ГОСТ Р 21.101
+          Комплектов пока нет. Нажмите «Новый комплект» — состав разделов по ГОСТ Р 21.101
           заведётся автоматически, останется загружать версии на проверку.
         </p>
         <p id="nm-projects-error" class="nm-error" role="alert" hidden></p>
       </section>
 
       <!-- ══════════ Экран: карточка проекта ══════════ -->
-      <section id="nm-s-project" class="nm-screen" aria-label="Карточка проекта">
+      <section id="nm-s-project" class="nm-screen" aria-label="Карточка комплекта">
         <header class="toolbar">
-          <h1 id="pj-name">Проект</h1>
+          <h1 id="pj-name">Комплект</h1>
           <p id="pj-sub" class="toolbar-sub"></p>
         </header>
         <div id="pj-meta" class="nm-meta"></div>
@@ -205,14 +184,14 @@
   <div id="np-modal" class="modal-backdrop" hidden>
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="np-title">
       <div class="modal-head">
-        <h3 id="np-title">Новый проект</h3>
+        <h3 id="np-title">Новый комплект</h3>
         <button id="np-close" class="icon-btn" type="button" aria-label="Закрыть">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
         </button>
       </div>
       <form id="np-form" class="modal-body nm-form" novalidate>
         <div class="field">
-          <label for="np-name">Название проекта</label>
+          <label for="np-name">Название комплекта</label>
           <input id="np-name" type="text" maxlength="300" required placeholder="Например: Цех вакцин, Горбунки">
         </div>
         <div class="field">
@@ -244,7 +223,7 @@
           <input id="np-local" type="checkbox">
           <span>
             <span class="nm-check-title">Только локальные модели (local_only)</span>
-            <span class="hint">Документы этого проекта не уходят в облачные нейросети:
+            <span class="hint">Документы этого комплекта не уходят в облачные нейросети:
             смысловые проверки выполняются только моделями на машине владельца.
             Детерминированные проверки работают в любом случае.</span>
           </span>
@@ -252,7 +231,7 @@
         <p id="np-error" class="nm-error" role="alert" hidden></p>
         <div class="nm-modal-foot">
           <button id="np-cancel" class="btn btn-quiet" type="button">Отмена</button>
-          <button id="np-submit" class="btn btn-primary" type="submit">Создать проект</button>
+          <button id="np-submit" class="btn btn-primary" type="submit">Создать комплект</button>
         </div>
       </form>
     </div>
@@ -357,6 +336,7 @@
   <div id="toast" class="toast" role="alert" hidden></div>
 
   <script src="auth.js?v=4"></script>
-  <script src="normo.js?v=2"></script>
+  <script src="shell.js?v=2"></script>
+  <script src="normo.js?v=4"></script>
 </body>
 </html>

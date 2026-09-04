@@ -45,7 +45,11 @@ function createApp() {
   app.disable('x-powered-by');
   app.use(securityHeaders);
   app.use(cors);
-  app.use(express.json({ limit: '256kb' }));
+  // Общий разбор JSON — 256 КБ. У «Анализа ТЗ» и «Проверки документа» свой парсер
+  // до 2 МБ (текст документа в теле): раньше общий стоял первым и молча делал их
+  // потолок недостижимым — JSON больше 256 КБ получал 413 (аудит 02.09.2026).
+  const jsonBody = express.json({ limit: '256kb' });
+  app.use((req, res, next) => (/^\/api\/(tz|doccheck)(\/|$)/.test(req.path) ? next() : jsonBody(req, res, next)));
   // модуль «Датасет» — отдельный роутер: свои таблицы, свой доступ, вне сессий
   app.use('/api/dataset', logErrorResponses, require('./routes/dataset').router);
   // модуль «Нормоконтроль» — свой роутер и СВОЯ БД (PostgreSQL + pgvector, порт 5433)
@@ -57,7 +61,11 @@ function createApp() {
   // «Акты (АОСР)» и «Входной контроль ГГЭ» — детерминированные конвейеры без хранения
   app.use('/api/akty', logErrorResponses, require('./routes/akty').router);
   app.use('/api/gge', logErrorResponses, require('./routes/gge').router);
+  // проекты платформы: единица работы, внутри которой живут модули (2026-09-02)
+  app.use('/api/projects', logErrorResponses, require('./routes/projects').router);
   app.use('/api', logErrorResponses, apiRouter);
+  // всё, что заведено до проектов, переезжает в «Ранние работы» — таблицы модулей уже созданы
+  require('./services/projects').migrateLegacy();
   // Cache-Control: no-cache — браузер ОБЯЗАН ревалидировать по ETag (304); без
   // заголовка вступает в силу эвристическое кэширование и правки фронта доходят с опозданием
   app.use(express.static(path.join(__dirname, '..', 'public'), {
