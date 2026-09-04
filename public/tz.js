@@ -244,17 +244,15 @@
           onclick: () => { location.hash = `#/p/${p.id}`; },
         },
         h('span', { class: 'list-card-name' }, p.name),
-        h('span', { class: 'meta' }, cl ? cl.label : p.checklist),
-        h('span', { class: 'meta' }, p.ai_provider
-          ? `модель: ${p.ai_provider}${p.ai_model ? ` (${p.ai_model})` : ''}` : 'модель не выбрана'),
-        h('span', { class: 'meta' }, p.has_document
-          ? `документ: ${p.document_name || 'текст'} · ${fmtChars(p.document_chars)}`
-          : 'документ не загружен'),
-        h('span', { class: 'meta' },
+        h('span', { class: 'list-card-sub' }, cl ? cl.label : p.checklist),
+        h('span', { class: 'list-card-meta' },
+          h('span', {}, p.ai_provider ? `модель: ${p.ai_provider}${p.ai_model ? ` (${p.ai_model})` : ''}` : 'модель не выбрана'),
+          h('span', {}, p.has_document ? `${p.document_name || 'текст'} · ${fmtChars(p.document_chars)}` : 'документ не загружен')),
+        h('span', { class: 'list-card-foot' },
           p.run_count
-            ? ['прогонов: ', String(p.run_count), ' · последний: ',
-              h('span', { class: 'tz-badge', 'data-run': p.last_run_status || '' }, RUN_LABEL[p.last_run_status] || p.last_run_status || '—')]
-            : 'прогонов ещё не было'),
+            ? [h('span', { class: 'tz-badge', 'data-run': p.last_run_status || '' }, RUN_LABEL[p.last_run_status] || p.last_run_status || '—'),
+              h('span', { class: 'tz-badge' }, `прогонов: ${p.run_count}`)]
+            : h('span', { class: 'tz-badge' }, 'прогонов ещё не было')),
         ));
       }
     } catch (err) {
@@ -536,12 +534,14 @@
       (!state.filters.severity || f.severity === state.filters.severity)
       && (!state.filters.category || f.category === state.filters.category));
 
-    const counts = SEV_ORDER
+    // чипы по серьёзности — как счётчики замечаний в нормоконтроле
+    const countsBox = $('r-counts');
+    countsBox.innerHTML = '';
+    const chips = SEV_ORDER
       .map((s) => [s, findings.filter((f) => f.severity === s).length])
       .filter(([, n]) => n)
-      .map(([s, n]) => `${s}: ${n}`)
-      .join(' · ');
-    $('r-counts').textContent = counts || 'находок нет';
+      .map(([s, n]) => h('span', { class: 'tz-badge', 'data-sev': s }, `${s}: ${n}`));
+    if (chips.length) countsBox.append(...chips); else countsBox.textContent = 'находок нет';
 
     const box = $('r-findings');
     box.innerHTML = '';
@@ -603,8 +603,7 @@
     const pp = window.EnsoShell && window.EnsoShell.project;
     if (pp) $('np-name').value = pp.full_name || pp.name || '';
     $('np-modal').hidden = false;
-    $('np-name').focus();
-    $('np-name').select();
+    setTimeout(() => { $('np-name').focus(); $('np-name').select(); }, 0);
   }
   let modalOpener = null;
   function closeNewProject() {

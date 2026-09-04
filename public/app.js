@@ -2042,9 +2042,8 @@ function initSettingsGroups() {
   const stack = $('settings-stack');
   const groups = [...stack.querySelectorAll('.set-group')];
   const saved = localStorage.getItem(SET_OPEN_KEY);
-  if (saved !== null) {
-    for (const g of groups) g.open = g.dataset.group === saved;
-  }
+  // без сохранённого выбора открыт «Вид» — первый раздел, который есть у всех
+  for (const g of groups) g.open = g.dataset.group === (saved !== null ? saved : 'view');
   for (const g of groups) {
     g.addEventListener('toggle', () => {
       if (!g.open) {

@@ -696,3 +696,24 @@ test('Kimi помечает конечного человека полем user'
     assert.ok(!/Меткин|Олег/.test(JSON.stringify(тело)), 'ФИО в запрос попадать не должно');
   });
 });
+
+test('выключенный провайдер (AI_DISABLED_PROVIDERS) не существует ни для кого: пикер, выбор, адаптер', async () => {
+  const config = require('../server/config');
+  config.aiDisabledProviders.add('chatgpt');
+  try {
+    const list = await providers.listProvidersFor(null, '');
+    assert.ok(!list.some((p) => p.id === 'chatgpt'), 'выключенного провайдера нет в списке');
+    assert.ok(list.some((p) => p.id === 'kimi'), 'остальные на месте');
+    const v = await providers.validateChoice('chatgpt', 'gpt-5.6-terra', null, '');
+    assert.strictEqual(v.ok, false);
+    assert.match(v.error, /отключён/);
+    // сохранённый в сессии выбор тоже упирается в гейт на дне адаптера
+    const sid = makeSession(makeUser('Выключенный', 'Тест', true));
+    await assert.rejects(adapter.plainCall({
+      system: 'с', sessionId: sid, route: { provider: 'chatgpt', model: 'gpt-5.6-terra' },
+      messages: [{ role: 'user', content: 'привет' }],
+    }), /отключён/);
+  } finally {
+    config.aiDisabledProviders.delete('chatgpt');
+  }
+});

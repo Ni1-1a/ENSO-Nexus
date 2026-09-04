@@ -15,7 +15,7 @@ router.use(userAuth);
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 async function withSummary(rows, user) {
-  const summary = await projects.summarize(rows.map((p) => p.id));
+  const summary = await projects.summarize(rows.map((p) => p.id), user);
   // can_edit — клиенту: у чужого (общего) проекта нет кнопок правки и удаления
   return rows.map((p) => ({ ...p, summary: summary[p.id], can_edit: projects.canEdit(p, user) }));
 }

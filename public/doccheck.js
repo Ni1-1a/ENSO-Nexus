@@ -237,15 +237,15 @@
           onclick: () => { location.hash = `#/c/${c.id}`; },
         },
         h('span', { class: 'list-card-name' }, c.name),
-        h('span', { class: 'meta' }, c.has_document
-          ? `${c.document_name || 'текст'} · ${fmtChars(c.document_chars)}` : 'документ не загружен'),
-        h('span', { class: 'meta' }, type ? `тип: ${type.label}${c.chosen_type ? ' (выбран человеком)' : ''}` : 'тип ещё не определён'),
-        h('span', { class: 'meta' }, c.ai_provider ? `модель: ${c.ai_provider}${c.ai_model ? ` (${c.ai_model})` : ''}` : 'модель не выбрана'),
-        h('span', { class: 'meta' },
+        h('span', { class: 'list-card-sub' }, type ? `${type.label}${c.chosen_type ? ' (выбран человеком)' : ''}` : 'тип ещё не определён'),
+        h('span', { class: 'list-card-meta' },
+          h('span', {}, c.ai_provider ? `модель: ${c.ai_provider}${c.ai_model ? ` (${c.ai_model})` : ''}` : 'модель не выбрана'),
+          h('span', {}, c.has_document ? `${c.document_name || 'текст'} · ${fmtChars(c.document_chars)}` : 'документ не загружен')),
+        h('span', { class: 'list-card-foot' },
           c.run_count
-            ? ['прогонов: ', String(c.run_count), ' · последний: ',
-              h('span', { class: 'mod-badge', 'data-run': c.last_run_status || '' }, RUN_LABEL[c.last_run_status] || c.last_run_status || '—')]
-            : 'прогонов не было'),
+            ? [h('span', { class: 'mod-badge', 'data-run': c.last_run_status || '' }, RUN_LABEL[c.last_run_status] || c.last_run_status || '—'),
+              h('span', { class: 'mod-badge' }, `прогонов: ${c.run_count}`)]
+            : h('span', { class: 'mod-badge' }, 'прогонов ещё не было')),
         ));
       }
 
@@ -260,13 +260,17 @@
           onclick: () => { location.hash = `#/ab/${a.id}`; },
         },
         h('span', { class: 'list-card-name' }, a.name),
-        h('span', { class: 'meta' }, `A: ${a.a_names || '—'}`),
-        h('span', { class: 'meta' }, `B: ${a.b_names || '—'}`),
-        h('span', { class: 'meta' },
+        h('span', { class: 'list-card-sub' }, 'Замена оборудования A → B'),
+        h('span', { class: 'list-card-meta' },
+          h('span', {}, `A: ${a.a_names || '—'}`),
+          h('span', {}, `B: ${a.b_names || '—'}`)),
+        h('span', { class: 'list-card-foot' },
           h('span', { class: 'mod-badge', 'data-run': a.status }, RUN_LABEL[a.status] || a.status),
           a.status === 'done' && s.rows_count
-            ? ` строк: ${s.rows_count} · не соответствует: ${s['НЕ СООТВЕТСТВУЕТ'] || 0} · нет данных: ${s['НЕТ ДАННЫХ'] || 0}`
-            : ''),
+            ? [h('span', { class: 'mod-badge' }, `строк: ${s.rows_count}`),
+              h('span', { class: 'mod-badge', 'data-st': s['НЕ СООТВЕТСТВУЕТ'] ? 'НЕ СООТВЕТСТВУЕТ' : '' }, `не соответствует: ${s['НЕ СООТВЕТСТВУЕТ'] || 0}`),
+              h('span', { class: 'mod-badge' }, `нет данных: ${s['НЕТ ДАННЫХ'] || 0}`)]
+            : null),
         ));
       }
     } catch (err) {
@@ -543,9 +547,14 @@
     if (cls.kind_note) box.append(h('p', { class: 'note' }, cls.kind_note));
 
     const findings = result.findings || [];
-    $('r-counts').textContent = findings.length
-      ? `исправить: ${findings.filter((f) => f.action === 'исправить').length} · проверить: ${findings.filter((f) => f.action === 'проверить').length} · нет данных: ${findings.filter((f) => f.action === 'нет данных').length}`
-      : '';
+    // чипы по действию (Д1) — как счётчики замечаний в нормоконтроле
+    const countsBox = $('r-counts');
+    countsBox.innerHTML = '';
+    for (const act of ['исправить', 'проверить', 'нет данных']) {
+      const n = findings.filter((f) => f.action === act).length;
+      if (n) countsBox.append(h('span', { class: 'mod-badge', 'data-act': act }, `${act}: ${n}`));
+    }
+    if (!findings.length) countsBox.textContent = 'находок нет';
     const fbox = $('r-findings');
     fbox.innerHTML = '';
     $('r-findings-empty').hidden = !!findings.length;
@@ -826,8 +835,7 @@
     const pp = window.EnsoShell && window.EnsoShell.project;
     if (pp) $('nc-name').value = pp.full_name || pp.name || '';
     $('nc-modal').hidden = false;
-    $('nc-name').focus();
-    $('nc-name').select();
+    setTimeout(() => { $('nc-name').focus(); $('nc-name').select(); }, 0);
   }
   let modalOpener = null;
   function closeNew() {

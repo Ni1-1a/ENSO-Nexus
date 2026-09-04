@@ -170,7 +170,7 @@ async function forProviders(days = 30) {
     cached(`anthropic:${days}`, () => anthropicSpend(days)),
   ]);
 
-  return PAID.map((p) => {
+  return PAID.filter((p) => !config.aiDisabledProviders.has(p.id)).map((p) => {
     const own = ownSpend(p.id);
     const paid = list.filter((t) => t.provider === p.id);
     const toppedUp = paid.reduce((s, t) => s + t.amountUsd, 0);

@@ -202,7 +202,7 @@
     // «Ранние работы» — приёмник всего, что было до проектов: его не удаляют
     $('pm-delete').hidden = !project || project.id === 'legacy';
     m.hidden = false;
-    setTimeout(() => $('pm-name').focus(), 30);
+    setTimeout(() => $('pm-name').focus(), 0);
   }
   function closeProjectModal() {
     $('proj-modal').hidden = true;

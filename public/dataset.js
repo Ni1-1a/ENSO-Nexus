@@ -147,7 +147,7 @@
       if (res.duplicate) {
         window.appToast(`Такой файл уже загружен: «${res.document.filename}» — открыт существующий`, 'info');
       } else {
-        window.appToast(`Файл принят: ${res.document.filename}. Нарезка и черновики идут в фоне.`, 'success');
+        window.appToast(`Файл принят: ${res.document.filename}. Нарезка и черновики идут в фоне.`, 'info');
       }
       loadDocs(true);
     } catch (err) {
@@ -356,7 +356,7 @@
       return true;
     });
     if (done) {
-      window.appToast('Пара подтверждена', 'success');
+      window.appToast('Пара подтверждена', 'info');
       await afterPairChange();
     }
   }
@@ -378,7 +378,7 @@
     conflictPairId = pairId;
     const done = await withConflictDialog(() => ensureSaved(pairId));
     if (done) {
-      window.appToast('Правка сохранена — пара ждёт валидации', 'success');
+      window.appToast('Правка сохранена — пара ждёт валидации', 'info');
       await afterPairChange();
     }
   }
@@ -404,7 +404,7 @@
       await api(`/elements/${state.currentElementId}/pairs`, { method: 'POST', ...json({ question, answer }) });
       const el = state.drafts.get(state.currentElementId);
       if (el) delete el.__new;
-      window.appToast('Пара создана и ждёт валидации', 'success');
+      window.appToast('Пара создана и ждёт валидации', 'info');
       await afterPairChange();
     } catch (err) {
       window.appToast(err.message, 'error');
@@ -528,7 +528,7 @@
           expectedUpdatedAt: tr.dataset.updated,
         }),
       });
-      window.appToast('Правка сохранена — пара ждёт валидации', 'success');
+      window.appToast('Правка сохранена — пара ждёт валидации', 'info');
       loadHistory();
     } catch (err) {
       if (err.status === 409) {
@@ -571,7 +571,7 @@
       const m = disposition.match(/filename="([^"]+)"/);
       const blob = await res.blob();
       window.appSaveBlob(blob, (m && m[1]) || (split ? 'dataset-split.zip' : 'dataset.jsonl'));
-      window.appToast(`Экспортировано пар: ${res.headers.get('X-Dataset-Pairs') || '—'}`, 'success');
+      window.appToast(`Экспортировано пар: ${res.headers.get('X-Dataset-Pairs') || '—'}`, 'info');
     } catch (err) {
       window.appToast(err.message, 'error');
     } finally {
@@ -606,7 +606,7 @@
         }),
       });
       $('ds-set-prompt-version').textContent = settings.gen_prompt_version;
-      window.appToast(`Настройки сохранены (промпт: ${settings.gen_prompt_version})`, 'success');
+      window.appToast(`Настройки сохранены (промпт: ${settings.gen_prompt_version})`, 'info');
     } catch (err) {
       window.appToast(err.message, 'error');
     }

@@ -243,12 +243,12 @@
       onclick: () => { location.hash = `#/p/${p.id}`; },
     },
     h('span', { class: 'list-card-name' }, p.name),
-    p.customer ? h('span', { class: 'nm-proj-customer' }, p.customer) : null,
-    h('span', { class: 'nm-proj-meta' },
+    p.customer ? h('span', { class: 'list-card-sub' }, p.customer) : null,
+    h('span', { class: 'list-card-meta' },
       h('span', {}, `стадия ${p.stage}`),
       h('span', {}, p.object_kind || ''),
       h('span', {}, `начат ${fmtDate(p.date_started)}`)),
-    h('span', { class: 'nm-proj-foot' },
+    h('span', { class: 'list-card-foot' },
       h('span', { class: `nm-badge ${open ? 'bad' : 'ok'}` },
         open ? `${open} ${plural(open, 'замечание', 'замечания', 'замечаний')}` : 'открытых замечаний нет'),
       h('span', { class: 'nm-badge muted' }, `разделов: ${Number(p.sections_count) || 0}`),
@@ -755,7 +755,7 @@
     }
     npOpener = document.activeElement;
     $('np-modal').hidden = false;
-    setTimeout(() => $('np-name').focus(), 40);
+    setTimeout(() => $('np-name').focus(), 0);
   }
   let npOpener = null;
   function closeNewProject() {
@@ -820,7 +820,7 @@
     upOpener = document.activeElement;
     $('up-modal').hidden = false;
     // фокус — в окно: первое поле формы (как у окна создания комплекта)
-    setTimeout(() => { const first = $('up-modal').querySelector('select, input:not([type="file"]), [tabindex="0"]'); if (first) first.focus(); }, 40);
+    setTimeout(() => { const first = $('up-modal').querySelector('select, input:not([type="file"]), [tabindex="0"]'); if (first) first.focus(); }, 0);
   }
   let upOpener = null;
   function closeUpload() {

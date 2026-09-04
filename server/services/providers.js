@@ -174,8 +174,11 @@ async function probeLocal(baseUrl) {
   }
 }
 
+/** Выключенные владельцем (AI_DISABLED_PROVIDERS) не существуют ни для кого. */
+function enabledOnly(list) { return list.filter((p) => !config.aiDisabledProviders.has(p.id)); }
+
 async function listProviders() {
-  if (cache && Date.now() - cacheAt < 15000) return cache;
+  if (cache && Date.now() - cacheAt < 15000) return enabledOnly(cache);
   const [lm, openaiModels, kimiModels, geminiModels, gigachatModels] = await Promise.all([
     probeLocal(config.localAiBaseUrl),
     listCloudModels('chatgpt', config.openaiBaseUrl, config.openaiApiKey, OPENAI_MODELS, /^(gpt-|o\d)/),
@@ -284,7 +287,7 @@ async function listProviders() {
   for (const p of providers) p.capabilities = registry.capabilities(p.id, p.models[0] || '');
   cache = providers;
   cacheAt = Date.now();
-  return providers;
+  return enabledOnly(providers);
 }
 
 /** Пометка недоступности для того, кому облако закрыто. */
@@ -347,6 +350,9 @@ async function listProvidersFor(user, host = '') {
 async function validateChoice(providerId, model, user = null, host = '') {
   const providers = await listProvidersFor(user, host);
   const p = providers.find((x) => x.id === providerId);
+  if (!p && config.aiDisabledProviders.has(String(providerId || '').toLowerCase())) {
+    return { ok: false, error: `Провайдер «${providerId}» отключён владельцем платформы — выберите другую модель` };
+  }
   if (!p) {
     // Провайдер существует, но на этом имени платформы спрятан из списка —
     // причина отказа адрес, а не опечатка в идентификаторе: «неизвестный

@@ -110,8 +110,34 @@
 
   /* ---------------- построение хрома: синхронно, до скриптов страницы ---------------- */
 
+  /** Плашки состояния сервера (как #banners на главной): страницы модулей своих не имеют. */
+  function buildBanners() {
+    if (state.page !== 'module' || $('banners')) return;
+    document.body.insertAdjacentHTML('afterbegin', `<div id="banners" class="banners" role="status" aria-live="polite">
+      <div id="offline-banner" class="mock-banner" hidden>⚠️ Сервер сейчас недоступен — проверяю связь каждые полминуты, всё восстановится автоматически.</div>
+      <div id="mock-banner" class="mock-banner" hidden>Демонстрационный режим: AI не настроен на сервере. Ответы формируются тестовой заглушкой.</div>
+    </div>`);
+  }
+  function measureBanners() {
+    const box = $('banners');
+    if (!box) return;
+    document.documentElement.style.setProperty('--banners-h', `${Math.round(box.getBoundingClientRect().height)}px`);
+  }
+  function setBanner(id, show) {
+    const el = $(id);
+    if (!el || el.hidden === !show) return;
+    el.hidden = !show;
+    measureBanners();
+  }
+  function syncBanners() {
+    if (state.page !== 'module') return;
+    setBanner('offline-banner', !!state.projectsError);
+    setBanner('mock-banner', !!(state.health && state.health.aiMode === 'mock'));
+  }
+
   function build() {
     document.documentElement.dataset.view = state.view;
+    buildBanners();
     const chrome = $('chrome');
     if (!chrome) return;
     chrome.innerHTML = `
@@ -224,6 +250,7 @@
       health && health.aiMode, health && health.model, health && health.dataset]);
     const changed = sig !== state.sig;
     state.sig = sig;
+    syncBanners();
     if (changed) renderAll();
     document.dispatchEvent(new CustomEvent('enso:project', { detail: { project: state.project, projects: state.projects, changed } }));
     return changed;
@@ -390,8 +417,7 @@
         <div class="ph-actions" id="ph-actions"></div>`;
       document.dispatchEvent(new CustomEvent('enso:head'));
     } else if (m) {
-      box.innerHTML = `<p class="ph-line">${esc(p.name)} · модуль ${m.n} из 6</p>${state.projectsError
-        ? '<p class="ph-line ph-error">Сервер сейчас недоступен — сводка не обновляется, повторю через полминуты</p>' : ''}`;
+      box.innerHTML = `<p class="ph-line">${esc(p.name)} · модуль ${m.n} из 6</p>`;
     } else {
       box.innerHTML = '';
     }

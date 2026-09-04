@@ -120,7 +120,9 @@
     state.registry = { file, headers: data.headers, rowCount: data.rowCount };
     const box = $('g-reg-info');
     box.innerHTML = '';
-    box.append(h('div', {}, `${file.name} · строк данных: ${data.rowCount}`));
+    box.append(fileLine(`${file.name} · строк данных: ${data.rowCount}`, file.name, () => {
+      state.registry = null; box.innerHTML = ''; $('g-reg-file').value = ''; refreshGenerateState();
+    }));
     box.append(h('div', {}, `колонки: ${data.headers.join(' · ')}`));
     refreshGenerateState();
   }
@@ -135,11 +137,20 @@
     state.template = { file, keys: data.keys };
     const box = $('g-tpl-info');
     box.innerHTML = '';
-    box.append(h('div', {}, `${file.name}`));
+    box.append(fileLine(file.name, file.name, () => {
+      state.template = null; box.innerHTML = ''; $('g-tpl-file').value = ''; refreshGenerateState();
+    }));
     box.append(h('div', {}, data.keys.length
       ? `плейсхолдеры: ${data.keys.map((k) => `{{${k}}}`).join(' · ')}`
       : 'в шаблоне нет плейсхолдеров {{…}} — подставлять нечего'));
     refreshGenerateState();
+  }
+
+  /** Строка файла с кнопкой «×» — как в ГГЭ и нормоконтроле: загруженное можно убрать, а не только заменить. */
+  function fileLine(text, name, onRemove) {
+    return h('div', { class: 'file-item' },
+      h('span', {}, text),
+      h('button', { class: 'icon-btn', type: 'button', title: 'Убрать', 'aria-label': `Убрать ${name}`, onclick: onRemove }, '×'));
   }
 
   /** Ошибка живёт в постоянном блоке своей секции (конвейер — #g-error, сверка — #d-error), тост — вдобавок. */
@@ -261,12 +272,16 @@
 
     wireDropzone('d-acts-dz', 'd-acts-file', (f) => {
       state.acts = f;
-      $('d-acts-info').textContent = f.name;
+      const box = $('d-acts-info');
+      box.innerHTML = '';
+      box.append(fileLine(f.name, f.name, () => { state.acts = null; box.innerHTML = ''; $('d-acts-file').value = ''; refreshDatesState(); }));
       refreshDatesState();
     });
     wireDropzone('d-jrn-dz', 'd-jrn-file', (f) => {
       state.journal = f;
-      $('d-jrn-info').textContent = f.name;
+      const box = $('d-jrn-info');
+      box.innerHTML = '';
+      box.append(fileLine(f.name, f.name, () => { state.journal = null; box.innerHTML = ''; $('d-jrn-file').value = ''; refreshDatesState(); }));
       refreshDatesState();
     });
     $('d-run').addEventListener('click', () => runDates().catch((e) => { $('d-note').textContent = ''; showError(e.message, 'd'); }));

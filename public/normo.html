@@ -7,8 +7,8 @@
   <meta name="description" content="Модуль нормоконтроля: комплекты, версии разделов, автоматические проверки и замечания с привязкой к НТД">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="normo.css?v=7">
-  <link rel="stylesheet" href="shell.css?v=6">
+  <link rel="stylesheet" href="normo.css?v=8">
+  <link rel="stylesheet" href="shell.css?v=7">
   <!-- boot.js решает, что показать первым — вход или модуль; общий с платформой -->
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
@@ -128,7 +128,6 @@
             <div class="nm-run-actions">
               <button id="v-recheck" class="btn btn-quiet btn-sm" type="button"
                       title="Запустить проверку заново, не используя кэш прогона">Перепроверить</button>
-              <button id="v-report" class="btn btn-primary btn-sm" type="button">Заключение (.docx)</button>
             </div>
           </div>
         </div>
@@ -179,6 +178,9 @@
             </table>
           </div>
         </details>
+        <div class="nm-bar">
+          <button id="v-report" class="btn btn-primary" type="button">Заключение (.docx)</button>
+        </div>
         <p id="v-error" class="nm-error" role="alert" hidden></p>
       </section>
     </main>
@@ -340,7 +342,7 @@
   <div id="toast" class="toast" role="alert" hidden></div>
 
   <script src="auth.js?v=5"></script>
-  <script src="shell.js?v=6"></script>
-  <script src="normo.js?v=8"></script>
+  <script src="shell.js?v=7"></script>
+  <script src="normo.js?v=9"></script>
 </body>
 </html>

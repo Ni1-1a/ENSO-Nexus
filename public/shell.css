@@ -41,6 +41,10 @@ body { line-height: 1.55; }
 }
 .list-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: var(--shadow-pop); transform: translateY(-1px); }
 .list-card-name { font-family: var(--font-display); font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 2px; overflow-wrap: anywhere; }
+.list-card-sub { font-size: 12.5px; color: var(--text-2); }
+.list-card-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
+.list-card-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.findings-counts { display: inline-flex; gap: 5px; flex-wrap: wrap; }
 .empty-state { padding: 18px 4px; font-size: 13.5px; }
 
 /* ---------- скелет ---------- */

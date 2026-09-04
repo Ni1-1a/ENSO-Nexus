@@ -73,6 +73,8 @@ function validId(v) {
 }
 /** Какой объект стоит за параметром маршрута — для гейта принадлежности проекту. */
 const PARAM_KIND = { id: 'project', sid: 'section', vid: 'version', rid: null, fid: 'finding', did: 'diff', iid: 'impact' };
+// 404 называет вид объекта — как у ТЗ («Задание не найдено») и проверки документа
+const NOT_FOUND_TEXT = { project: 'Комплект не найден', section: 'Раздел не найден', version: 'Версия не найдена', finding: 'Замечание не найдено', diff: 'Сравнение не найдено', impact: 'Запись не найдена' };
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 for (const name of ['id', 'sid', 'vid', 'rid', 'fid', 'did', 'iid']) {
   router.param(name, (req, res, next, value) => {
@@ -89,7 +91,7 @@ for (const name of ['id', 'sid', 'vid', 'rid', 'fid', 'did', 'iid']) {
       if (access === undefined) return next(); // объекта нет — маршрут сам ответит своим «не найдено»
       const project = platformProjects.byIdAny(access.pid || platformProjects.LEGACY_ID)
         || (access.pid ? null : platformProjects.ensureLegacy());
-      if (!project || !platformProjects.canSee(project, req.user)) return res.status(404).json({ error: 'Не найдено' });
+      if (!project || !platformProjects.canSee(project, req.user)) return res.status(404).json({ error: NOT_FOUND_TEXT[kind] || 'Не найдено' });
       if (!READ_METHODS.has(req.method)) {
         // в мягко удалённом проекте платформы читают по прямой ссылке, но не правят:
         // всё в удалённом проекте — 404 (правило 02.09.2026, как у tz/doccheck)

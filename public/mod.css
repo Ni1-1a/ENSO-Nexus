@@ -26,7 +26,6 @@
 /* ---------- сетки карточек списков ---------- */
 .mod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); margin-top: 6px; }
 .mod-card-btn { text-align: left; cursor: pointer; }
-.mod-card-btn .meta { display: block; font-size: 12.5px; color: var(--text-2); }
 
 /* ---------- классификация в отчёте ---------- */
 .mod-class { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: baseline; }
@@ -38,8 +37,8 @@
 
 /* ---------- зоны загрузки нескольких файлов (A→B, ГГЭ) ---------- */
 .mod-dz-mini {
-  border: 1.5px dashed var(--stroke-soft); border-radius: var(--radius-sm);
-  padding: 10px 12px; cursor: pointer; font-size: 13px; color: var(--text-2);
+  border: 1.5px dashed var(--stroke); border-radius: var(--radius-sm);
+  padding: 12px 14px; cursor: pointer; font-size: 13px; color: var(--text-2);
   transition: border-color .15s ease;
 }
 .mod-dz-mini:hover, .mod-dz-mini.dragover { border-color: var(--accent); color: var(--text); }

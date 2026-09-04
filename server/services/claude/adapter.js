@@ -192,6 +192,10 @@ class AiUnavailableError extends Error {}
  * запроса клиентом. Гейт, стоящий выше, обходится одной строкой.
  */
 function assertCloudAllowed(providerId, sessionId) {
+  // выключенный владельцем провайдер (AI_DISABLED_PROVIDERS) — отказ и сохранённому выбору
+  if (config.aiDisabledProviders.has(providerId)) {
+    throw new AiUnavailableError(`Провайдер «${providerId}» отключён владельцем платформы — выберите другую модель в настройках.`);
+  }
   if (!cloudAccess.isCloud(providerId)) return;
   // Провайдер передаётся в проверку: доступ теперь бывает разным у разных
   // сервисов (владелец открыл Kimi всем, остальное оставил себе).

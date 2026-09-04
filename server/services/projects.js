@@ -331,12 +331,16 @@ function migrateLegacy() {
 
 const NONE = (line) => ({ state: 'none', count: 0, line });
 
-function summarizeSite(id) {
+function summarizeSite(id, user = null) {
+  // те же сессии, что видит полоса модуля: автору проекта и владельцу — все,
+  // остальным (общие «Ранние работы») — только свои; без входа — все
+  const all = !user || accessTo(id, user).edit ? 1 : 0;
+  const uid = user ? user.id : '';
   const row = db.prepare(`SELECT count(*) AS n, max(updated_at) AS at FROM sessions
-      WHERE project_id = ? AND status = 'active'`).get(id);
+      WHERE project_id = ? AND status = 'active' AND (? = 1 OR user_id = ?)`).get(id, all, uid);
   if (!row || !row.n) return NONE('Не запускалась');
   const last = db.prepare(`SELECT job_status AS st, title FROM sessions
-      WHERE project_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1`).get(id);
+      WHERE project_id = ? AND status = 'active' AND (? = 1 OR user_id = ?) ORDER BY updated_at DESC LIMIT 1`).get(id, all, uid);
   const n = plural(row.n, 'сессия', 'сессии', 'сессий');
   const st = last ? last.st : 'idle';
   if (st === 'queued' || st === 'running') return { state: 'run', count: row.n, line: `${n} · идёт анализ`, at: row.at };
@@ -429,7 +433,7 @@ function _resetNormoDown() { normoDownUntil = 0; }
  * список, остальное — SQLite. Строки уже по-русски: все варианты отображения
  * показывают их как есть.
  */
-async function summarize(ids) {
+async function summarize(ids, user = null) {
   const normo = await normoByProject(ids);
   const out = {};
   for (const id of ids) {
@@ -452,7 +456,7 @@ async function summarize(ids) {
         : NONE('Не запускался');
     out[id] = {
       tz: summarizeTz(id),
-      site: summarizeSite(id),
+      site: summarizeSite(id, user),
       doc: summarizeDoc(id),
       normo: nm,
       gge: summarizeMark(id, 'gge', 'Не запускался'),
