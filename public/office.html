@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Виртуальный офис — Enso-nexus</title>
+  <meta name="description" content="Диспетчерский зал платформы: агенты за работой, центральный экран проекта, стол с участком в 3D, шахматы, го и кубик Рубика">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=56">
+  <link rel="stylesheet" href="office.css?v=1">
+  <script src="boot.js?v=4"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M18 72l32-18 32 18-32 18z' fill='none' stroke='%23B95740' stroke-width='5' stroke-linejoin='round'/><path d='M34 44h32v18H34z' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M42 30h16v14H42z' fill='none' stroke='%23B95740' stroke-width='5'/></svg>">
+</head>
+<body data-page="office">
+  <canvas id="scene" aria-label="Трёхмерный зал платформы"></canvas>
+
+  <!-- Капсула управления: жидкое стекло поверх сцены -->
+  <header id="office-bar" class="glass-bar" hidden>
+    <span class="ob-brand">ENSO</span>
+    <button id="ob-project" class="ob-chip" type="button" title="Сменить проект">проект…</button>
+    <nav class="ob-views" aria-label="Куда смотреть">
+      <button data-goto="lobby" type="button">Лобби</button>
+      <button data-goto="hall" type="button" class="active">Зал</button>
+      <button data-goto="screen" type="button">Экран</button>
+      <button data-goto="table" type="button">Стол</button>
+    </nav>
+    <button id="ob-sound" class="ob-icon" type="button" aria-pressed="false" title="Звук зала">🔇</button>
+    <a id="ob-exit" class="ob-icon" href="/" title="Вернуться на платформу">✕</a>
+  </header>
+
+  <!-- Правая панель-«бумага»: информация, чат, история -->
+  <aside id="dock" hidden aria-label="Панель зала">
+    <header id="dock-head">
+      <div>
+        <h2 id="dock-title">Зал</h2>
+        <p id="dock-sub" class="dock-sub"></p>
+      </div>
+      <button id="dock-close" type="button" aria-label="Закрыть панель">✕</button>
+    </header>
+    <div id="dock-tabs" role="tablist">
+      <button role="tab" data-tab="info" aria-selected="true" type="button">Информация</button>
+      <button role="tab" data-tab="chat" aria-selected="false" type="button">Чат</button>
+      <button role="tab" data-tab="history" aria-selected="false" type="button">История</button>
+    </div>
+    <div id="dock-body">
+      <section id="dock-info" class="dock-pane active"></section>
+      <section id="dock-chat" class="dock-pane">
+        <div id="chat-log" aria-live="polite"></div>
+        <form id="chat-form">
+          <input id="chat-input" type="text" autocomplete="off" maxlength="4000" placeholder="Спросить…">
+          <button class="btn btn-primary" type="submit">→</button>
+        </form>
+      </section>
+      <section id="dock-history" class="dock-pane"></section>
+    </div>
+  </aside>
+
+  <!-- Выбор проекта (лобби): секретарь предлагает, гость выбирает -->
+  <div id="project-pick" hidden>
+    <div class="pp-card">
+      <h2>Какой проект показать залу?</h2>
+      <p class="pp-note">Секретарь откроет сводку выбранного проекта на центральном экране.</p>
+      <div id="pp-list" role="list"></div>
+      <p id="pp-empty" hidden>Проектов пока не видно. Войдите на платформе или заведите первый проект.</p>
+    </div>
+  </div>
+
+  <!-- Подсказка входа и пропуск пролёта -->
+  <div id="intro-hint" hidden>
+    <span id="intro-text"></span>
+    <button id="intro-skip" type="button" class="btn">Пропустить пролёт</button>
+  </div>
+
+  <div id="office-toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="zone-style.js?v=4"></script>
+  <script src="vendor/cube.js"></script>
+  <script src="office-data.js?v=1"></script>
+  <!-- CSP платформы запрещает inline-скрипты, поэтому import map не используется:
+       вендорные модули импортируются относительными путями -->
+  <script type="module" src="office.js?v=1"></script>
+</body>
+</html>

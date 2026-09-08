@@ -1,0 +1,214 @@
+/* ════════════════════════════════════════════════════════════════════
+   Виртуальный офис — витрина платформы.
+
+   Правило двух слоёв в силе: сцена — «мир», текст живёт либо на «бумаге»
+   (правая панель #dock, карточки выбора проекта), либо на «жидком стекле»
+   (капсула #office-bar, подсказка пролёта). Токены — из styles.css.
+   ════════════════════════════════════════════════════════════════════ */
+
+html[data-page], body[data-page="office"] { height: 100%; }
+body[data-page="office"] {
+  margin: 0; overflow: hidden;
+  background: var(--bg);
+  font-family: var(--font-text);
+  color: var(--text);
+}
+
+#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+/* ---------- капсула управления (стекло) ---------- */
+
+#office-bar {
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 30;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 999px;
+  max-width: min(94vw, 720px);
+  box-shadow: var(--glass-shadow);
+}
+.ob-brand {
+  font-family: var(--font-display); font-weight: 700; letter-spacing: .12em;
+  font-size: 13px; color: var(--accent); padding: 0 2px;
+}
+.ob-chip {
+  border: 1px solid var(--stroke); background: transparent; color: var(--text);
+  border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer;
+  max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ob-chip:hover { border-color: var(--accent); }
+.ob-views { display: flex; gap: 2px; }
+.ob-views button {
+  border: 0; background: transparent; color: var(--text-2); cursor: pointer;
+  border-radius: 999px; padding: 5px 10px; font-size: 12.5px;
+}
+.ob-views button.active { background: var(--accent); color: var(--accent-contrast); }
+.ob-icon {
+  border: 0; background: transparent; cursor: pointer; font-size: 14px;
+  color: var(--text-2); text-decoration: none; padding: 4px 6px; border-radius: 999px;
+  line-height: 1;
+}
+.ob-icon:hover { color: var(--accent); }
+
+/* ---------- правая панель («бумага») ---------- */
+
+#dock {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 40;
+  width: min(430px, 96vw);
+  display: flex; flex-direction: column;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--stroke);
+  box-shadow: -18px 0 48px rgba(40, 30, 18, .18);
+  transform: translateX(102%);
+  transition: transform .28s ease;
+}
+#dock.open { transform: translateX(0); }
+@media (prefers-reduced-motion: reduce) { #dock { transition: none; } }
+
+#dock-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 20px 22px 10px; gap: 12px;
+}
+#dock-head h2 { margin: 0; font-family: var(--font-display); font-size: 22px; line-height: 1.2; }
+.dock-sub { margin: 4px 0 0; color: var(--text-2); font-size: 12.5px; }
+#dock-close {
+  border: 1px solid var(--stroke); background: transparent; color: var(--text-2);
+  border-radius: 999px; width: 30px; height: 30px; cursor: pointer; flex: none;
+}
+#dock-close:hover { color: var(--accent); border-color: var(--accent); }
+
+#dock-tabs { display: flex; gap: 4px; padding: 0 22px 10px; border-bottom: 1px solid var(--stroke-soft); }
+#dock-tabs [role="tab"] {
+  border: 0; background: transparent; color: var(--text-2); cursor: pointer;
+  padding: 7px 12px; border-radius: 999px; font-size: 13px;
+}
+#dock-tabs [role="tab"][aria-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+
+#dock-body { flex: 1; overflow: hidden; display: flex; }
+.dock-pane { display: none; flex: 1; overflow: auto; padding: 16px 22px 24px; }
+.dock-pane.active { display: flex; flex-direction: column; }
+
+/* информация */
+#dock-info h3 { font-family: var(--font-display); font-size: 16px; margin: 18px 0 6px; }
+#dock-info h3:first-child { margin-top: 0; }
+#dock-info p { margin: 6px 0; font-size: 13.5px; line-height: 1.55; }
+#dock-info .muted { color: var(--text-2); }
+.dock-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; margin: 8px 0; }
+.dock-kv dt { color: var(--text-2); }
+.dock-kv dd { margin: 0; }
+.dock-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.dock-chips li {
+  font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text);
+}
+.dock-journal { list-style: none; margin: 8px 0; padding: 0; font-family: var(--font-mono); font-size: 11.5px; }
+.dock-journal li { padding: 5px 0; border-bottom: 1px dashed var(--stroke-soft); line-height: 1.45; }
+.dock-journal .t { color: var(--text-2); margin-right: 8px; }
+.dock-journal .warn { color: var(--orange); }
+.dock-journal .error { color: var(--red); }
+.dock-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.dock-prompt {
+  background: var(--bg); border: 1px solid var(--stroke-soft); border-radius: 10px;
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 11px;
+  white-space: pre-wrap; max-height: 220px; overflow: auto; margin: 6px 0;
+}
+.dock-fact {
+  border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; margin: 10px 0;
+  font-size: 13.5px; line-height: 1.55;
+}
+.mod-state { display: grid; gap: 6px; margin: 8px 0; }
+.mod-state .row {
+  display: flex; align-items: baseline; gap: 8px; font-size: 13px;
+  padding: 7px 10px; border: 1px solid var(--stroke-soft); border-radius: 10px;
+}
+.mod-state .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
+.mod-state .nm { font-weight: 600; white-space: nowrap; }
+.mod-state .ln { color: var(--text-2); font-size: 12px; }
+.st-ok { background: var(--green); } .st-warn { background: var(--orange); }
+.st-bad { background: var(--red); } .st-run { background: var(--data); }
+.st-none, .st-off { background: var(--stroke); }
+
+/* чат */
+#chat-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
+.chat-msg { max-width: 88%; padding: 9px 13px; border-radius: 14px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
+.chat-msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-contrast); border-bottom-right-radius: 4px; }
+.chat-msg.assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--stroke-soft); border-bottom-left-radius: 4px; }
+.chat-msg.busy { color: var(--text-2); font-style: italic; }
+.chat-meta { font-size: 10.5px; color: var(--text-2); margin-top: 3px; }
+#chat-form { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--stroke-soft); }
+#chat-input {
+  flex: 1; border: 1px solid var(--stroke); border-radius: 999px; padding: 9px 16px;
+  background: var(--panel-solid); color: var(--text); font-size: 13.5px;
+}
+#chat-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+#chat-form .btn-primary { border-radius: 999px; padding: 8px 16px; }
+
+/* история */
+#dock-history .h-item { padding: 8px 0; border-bottom: 1px dashed var(--stroke-soft); font-size: 13px; }
+#dock-history .h-item .t { color: var(--text-2); font-size: 11px; }
+
+/* игровые элементы в панели */
+.game-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.game-status { font-size: 13px; margin: 8px 0; color: var(--text-2); }
+.game-list { list-style: none; margin: 8px 0; padding: 0; }
+.game-list li { padding: 8px 10px; border: 1px solid var(--stroke-soft); border-radius: 10px; margin: 6px 0; cursor: pointer; font-size: 13px; }
+.game-list li:hover { border-color: var(--accent); }
+.game-list .sub { display: block; color: var(--text-2); font-size: 11.5px; margin-top: 2px; }
+.cube-steps { font-family: var(--font-mono); font-size: 13px; letter-spacing: .06em; line-height: 1.8; word-break: break-all; }
+.cube-steps b { color: var(--accent); }
+
+/* ---------- выбор проекта ---------- */
+
+#project-pick {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.pp-card {
+  width: min(460px, 92vw); max-height: 80vh; overflow: auto;
+  background: var(--panel-solid); border: 1px solid var(--stroke);
+  border-radius: 18px; padding: 26px 28px;
+  box-shadow: var(--glass-shadow);
+}
+.pp-card h2 { margin: 0 0 6px; font-family: var(--font-display); font-size: 21px; }
+.pp-note { color: var(--text-2); font-size: 13px; margin: 0 0 14px; }
+#pp-list button {
+  display: block; width: 100%; text-align: left; margin: 8px 0; cursor: pointer;
+  border: 1px solid var(--stroke-soft); border-radius: 12px; padding: 12px 14px;
+  background: transparent; color: var(--text); font-size: 14px;
+}
+#pp-list button:hover { border-color: var(--accent); }
+#pp-list .sub { display: block; color: var(--text-2); font-size: 12px; margin-top: 3px; }
+
+/* ---------- подсказка пролёта / тост ---------- */
+
+#intro-hint {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  z-index: 30; display: flex; align-items: center; gap: 14px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  border-radius: 999px; padding: 10px 12px 10px 20px;
+  box-shadow: var(--glass-shadow); font-size: 13.5px;
+  max-width: 92vw;
+}
+#office-toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  z-index: 60; background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur));
+  border-radius: 999px; padding: 10px 18px; font-size: 13px; box-shadow: var(--glass-shadow);
+}
+
+/* ---------- телефон ---------- */
+
+@media (max-width: 700px) {
+  #office-bar { top: 10px; gap: 6px; padding: 6px 8px; }
+  .ob-views button { padding: 4px 7px; font-size: 11.5px; }
+  .ob-chip { max-width: 24vw; }
+  #dock { width: 100vw; border-left: 0; }
+}
+
+/* ---------- ТВ-режим (?tv=1): только сцена ---------- */
+
+body[data-tv="1"] #office-bar,
+body[data-tv="1"] #dock,
+body[data-tv="1"] #intro-hint { display: none; }

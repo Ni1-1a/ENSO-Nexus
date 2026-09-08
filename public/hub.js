@@ -105,7 +105,12 @@
         <span class="pn-plus">${svg(ICONS.plus)}</span>
         <span class="pn-title">Новый проект</span>
         <span class="pn-sub">Название, стадия, заказчик — и модули появятся сами</span>
-      </button>`;
+      </button>
+      <a class="proj-new" id="office-door" href="office.html">
+        <span class="pn-plus">${svg(ICONS.screen)}</span>
+        <span class="pn-title">Виртуальный офис</span>
+        <span class="pn-sub">Зал агентов, центральный экран и стол проекта в 3D</span>
+      </a>`;
     refocus(list, keep);
     const note = $('projects-goto');
     if (S.projectsError && !projects.length) {

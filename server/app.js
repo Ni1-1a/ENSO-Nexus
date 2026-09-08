@@ -63,6 +63,8 @@ function createApp() {
   app.use('/api/gge', logErrorResponses, require('./routes/gge').router);
   // проекты платформы: единица работы, внутри которой живут модули (2026-09-02)
   app.use('/api/projects', logErrorResponses, require('./routes/projects').router);
+  // «Виртуальный офис» — демо-витрина: читает боевые данные, пишет только в office.db
+  app.use('/api/office', logErrorResponses, require('./routes/office').router);
   app.use('/api', logErrorResponses, apiRouter);
   // всё, что заведено до проектов, переезжает в «Ранние работы» — таблицы модулей уже созданы
   require('./services/projects').migrateLegacy();
