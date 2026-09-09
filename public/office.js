@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=1';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=1';
+import { OfficeScene } from './office-scene.js?v=2';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=2';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -30,6 +30,8 @@ const state = {
   apps: {},
   dock: { context: null, tab: 'info' },
   sound: false,
+  walk: false,
+  paused: false,
   factIndex: {},
   visited: false,
 };
@@ -85,6 +87,20 @@ const Sound = {
   setOn(on) {
     if (on) { this.ensure(); this.ctx.resume(); this.ambient.gain.value = 0.05; }
     else if (this.ambient) this.ambient.gain.value = 0;
+  },
+  step() {
+    if (!state.sound || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    const len = Math.floor(this.ctx.sampleRate * 0.08);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+    src.buffer = buf;
+    const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700 + Math.random() * 300;
+    const g = this.ctx.createGain(); g.gain.value = 0.07;
+    src.connect(lp).connect(g).connect(this.ctx.destination);
+    src.start(t);
   },
   click() {
     if (!state.sound || !this.ctx) return;
@@ -383,6 +399,18 @@ function secretaryContext() {
     afterInfo(el) {
       el.querySelector('#sec-project').onclick = showProjectPick;
       el.querySelector('#sec-tour').onclick = () => { closeDock(); runIntroFlight(false); };
+    },
+  };
+}
+
+function posterContext(info) {
+  const p = D.posters[info.id] || { title: 'Постер', text: '' };
+  return {
+    title: p.title,
+    sub: info.series === 'mech' ? 'серия «Механика» · чёрный фон, красная рама' : 'серия «Кодекс» · сепия и зеркальное письмо',
+    chatKind: null,
+    renderInfo() {
+      return `<p>${esc(p.text)}</p><p class="muted">Композиция построена по золотому сечению: предмет стоит в точке φ, рама — прямоугольник 1 : 1,618.</p>`;
     },
   };
 }
@@ -706,6 +734,42 @@ function setView(view) {
   }
 }
 
+/* ---------------- прогулка ---------------- */
+
+function setWalk(on) {
+  state.walk = on;
+  state.scene.setWalk(on);
+  $('ob-walk').setAttribute('aria-pressed', String(on));
+  $('ob-walk').querySelector('use').setAttribute('href', on ? '#i-orbit' : '#i-walk');
+  $('walk-hint').hidden = !on;
+  $('crosshair').hidden = !on;
+  $('hover-tag').hidden = true;
+  if (on) {
+    closeDock();
+    if (!matchMedia('(pointer: coarse)').matches) state.scene.walk.lock();
+    setTimeout(() => { $('walk-hint').hidden = true; }, 7000);
+  }
+}
+
+function hoverLabel(info) {
+  if (!info) return '';
+  switch (info.kind) {
+    case 'agent': { const p = state.data && state.data.personas.agents.find((x) => x.module === info.module); return p ? `${p.name} · ${D.moduleNames[info.module]}` : D.moduleNames[info.module]; }
+    case 'secretary': return state.data ? `${state.data.personas.secretary.name} · администратор` : 'Секретарь';
+    case 'screen': return 'Центральный экран';
+    case 'table': return 'Стол проекта';
+    case 'zone': return `Зона: ${info.label}`;
+    case 'building': return `Вариант №${info.variant.number}`;
+    case 'plaque': return D.plaques[info.index] ? D.plaques[info.index].sub : 'табличка';
+    case 'item': return D.items[info.item] ? D.items[info.item].title : info.item;
+    case 'poster': return D.posters[info.id] ? D.posters[info.id].title : 'постер';
+    case 'walker': return (D.walkers && D.walkers[info.index]) || 'коллега';
+    case 'chess-square': return 'Шахматы';
+    case 'go-point': return 'Го';
+    default: return '';
+  }
+}
+
 /* ---------------- сборка ---------------- */
 
 async function main() {
@@ -716,9 +780,15 @@ async function main() {
   const dark = document.documentElement.dataset.theme === 'dark'
     || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const mobile = matchMedia('(max-width: 700px), (pointer: coarse) and (max-width: 1100px)').matches;
+  // ?lite=1 — облегчённый режим (без зеркала, теней и сглаживания): слабые машины и автономные проверки
+  const mobile = matchMedia('(max-width: 700px), (pointer: coarse) and (max-width: 1100px)').matches
+    || new URLSearchParams(location.search).get('lite') === '1';
 
+  // сборка зала занимает несколько секунд — честно говорим об этом до первого кадра
+  toast('Собираю зал…', 12000);
+  await new Promise((r) => setTimeout(r, 30));
   state.scene = new OfficeScene($('scene'), { dark, reducedMotion: reduced, mobile });
+  $('office-toast').hidden = true;
   state.scene.onTypingTick = () => Sound.click();
   state.scene.onPick = handlePick;
 
@@ -748,10 +818,19 @@ async function main() {
   $('ob-sound').onclick = () => {
     state.sound = !state.sound;
     Sound.setOn(state.sound);
-    $('ob-sound').textContent = state.sound ? '🔊' : '🔇';
+    $('ob-sound').querySelector('use').setAttribute('href', state.sound ? '#i-sound-on' : '#i-sound-off');
     $('ob-sound').setAttribute('aria-pressed', String(state.sound));
     if (!state.sound && 'speechSynthesis' in window) speechSynthesis.cancel();
   };
+  // прогулка от первого лица
+  $('ob-walk').onclick = () => setWalk(!state.walk);
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.code === 'KeyF') setWalk(!state.walk);
+  });
+  state.scene.walk.onStep = () => Sound.step();
+  state.scene.walk.onLockChange = (locked) => { $('crosshair').hidden = !locked; if (!locked && state.walk) $('walk-hint').hidden = false; };
   $('dock-close').onclick = closeDock;
   for (const b of $('dock-tabs').querySelectorAll('[role="tab"]')) {
     b.onclick = () => setTab(b.dataset.tab);
@@ -773,9 +852,21 @@ async function main() {
     const now = performance.now();
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    if (state.paused) { requestAnimationFrame(frame); return; }
     state.scene.update(dt);
     for (const app of Object.values(state.apps)) if (app.update) app.update(dt);
+    if (state.walk) {
+      hoverAcc += dt;
+      if (hoverAcc > 0.15) {
+        hoverAcc = 0;
+        const label = hoverLabel(state.scene.hoverCenter());
+        const tag = $('hover-tag');
+        tag.hidden = !label;
+        if (label) tag.textContent = label;
+      }
+    }
   };
+  let hoverAcc = 0;
   const frame = () => { tick(); requestAnimationFrame(frame); };
   requestAnimationFrame(frame);
   // rAF замирает в фоновой вкладке (превью, второй монитор): запасной таймер
@@ -836,6 +927,12 @@ function handlePick(info) {
     case 'item':
       state.scene.focusAnchor(info.item);
       openDock(itemContext(info.item));
+      break;
+    case 'poster':
+      openDock(posterContext(info));
+      break;
+    case 'walker':
+      toast(`${(D.walkers && D.walkers[info.index]) || 'Коллега'} — идёт по делам`);
       break;
     case 'chess-square':
       ensureChess().clickSquare(info.square);

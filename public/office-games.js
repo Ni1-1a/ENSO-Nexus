@@ -29,8 +29,8 @@ export class RubikApp {
   }
 
   _build(pickables) {
-    const size = 0.052;
-    const gap = 0.0035;
+    const size = 0.0185;
+    const gap = 0.0012;
     const step = size + gap;
     this.cubies = [];
     for (let x = -1; x <= 1; x++) {
@@ -52,13 +52,13 @@ export class RubikApp {
         }
       }
     }
-    this.group.position.y = 0.085;
+    this.group.position.y = 0.04;
     this.group.rotation.y = 0.6;
     const holder = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.11, 0.13, 0.02, 16),
+      new THREE.CylinderGeometry(0.045, 0.055, 0.012, 16),
       new THREE.MeshLambertMaterial({ color: 0x3a332a }),
     );
-    holder.position.y = -0.095;
+    holder.position.y = -0.036;
     this.group.add(holder);
     pickables.push(this.group);
     this.group.traverse((m) => { m.userData.pick = { kind: 'item', item: 'cube' }; });
@@ -138,7 +138,7 @@ export class RubikApp {
     for (const m of this.cubies) {
       m.rotation.set(0, 0, 0);
       const [x, y, z] = m.userData.cubie;
-      const size = 0.052 + 0.0035;
+      const size = 0.0185 + 0.0012;
       m.position.set(x * size, y * size, z * size);
       for (const mat of m.material) mat.color.set(0x2a2622);
     }
@@ -191,7 +191,7 @@ export class RubikApp {
     const dbl = mv.includes('2');
     const AXIS = { U: ['y', 1], D: ['y', -1], R: ['x', 1], L: ['x', -1], F: ['z', 1], B: ['z', -1] };
     const [axis, sign] = AXIS[face] || ['y', 1];
-    const step = 0.052 + 0.0035;
+    const step = 0.0185 + 0.0012;
     const pivot = new THREE.Group();
     this.group.add(pivot);
     for (const m of [...this.cubies]) {

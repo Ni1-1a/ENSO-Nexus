@@ -7,12 +7,21 @@
   <meta name="description" content="Диспетчерский зал платформы: агенты за работой, центральный экран проекта, стол с участком в 3D, шахматы, го и кубик Рубика">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="office.css?v=1">
+  <link rel="stylesheet" href="office.css?v=2">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M18 72l32-18 32 18-32 18z' fill='none' stroke='%23B95740' stroke-width='5' stroke-linejoin='round'/><path d='M34 44h32v18H34z' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M42 30h16v14H42z' fill='none' stroke='%23B95740' stroke-width='5'/></svg>">
 </head>
 <body data-page="office">
   <canvas id="scene" aria-label="Трёхмерный зал платформы"></canvas>
+
+  <!-- иконки (SVG-спрайт, без эмодзи) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-sound-on" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 8.5a4 4 0 0 1 0 7M18.5 6a7.5 7.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-sound-off" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 9l5 6M21 9l-5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-walk" viewBox="0 0 24 24"><circle cx="13" cy="4.5" r="2" fill="currentColor"/><path d="M11 8l-3 5 2 1 1.5-2.5L13 14v6h2v-7l-2-2 1-3 2 2h3v-2h-2l-2-3h-4z" fill="currentColor"/></symbol>
+    <symbol id="i-orbit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/><ellipse cx="12" cy="12" rx="9" ry="4" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="12" cy="12" rx="9" ry="4" transform="rotate(60 12 12)" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+  </svg>
 
   <!-- Капсула управления: жидкое стекло поверх сцены -->
   <header id="office-bar" class="glass-bar" hidden>
@@ -24,9 +33,17 @@
       <button data-goto="screen" type="button">Экран</button>
       <button data-goto="table" type="button">Стол</button>
     </nav>
-    <button id="ob-sound" class="ob-icon" type="button" aria-pressed="false" title="Звук зала">🔇</button>
-    <a id="ob-exit" class="ob-icon" href="/" title="Вернуться на платформу">✕</a>
+    <button id="ob-walk" class="ob-icon" type="button" aria-pressed="false" title="Пройтись (F): WASD — идти, мышь — смотреть"><svg class="ico"><use href="#i-walk"/></svg></button>
+    <button id="ob-sound" class="ob-icon" type="button" aria-pressed="false" title="Звук зала"><svg class="ico"><use href="#i-sound-off"/></svg></button>
+    <a id="ob-exit" class="ob-icon" href="/" title="Вернуться на платформу"><svg class="ico"><use href="#i-close"/></svg></a>
   </header>
+
+  <!-- прицел и подпись под ним в режиме ходьбы -->
+  <div id="crosshair" hidden aria-hidden="true"></div>
+  <div id="hover-tag" hidden></div>
+  <div id="walk-hint" hidden>
+    <b>Режим прогулки.</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — идти, <kbd>Shift</kbd> — быстрее, мышь — смотреть, клик — открыть, <kbd>Esc</kbd> — отпустить мышь, <kbd>F</kbd> — вернуться к обзору.
+  </div>
 
   <!-- Правая панель-«бумага»: информация, чат, история -->
   <aside id="dock" hidden aria-label="Панель зала">
@@ -35,7 +52,7 @@
         <h2 id="dock-title">Зал</h2>
         <p id="dock-sub" class="dock-sub"></p>
       </div>
-      <button id="dock-close" type="button" aria-label="Закрыть панель">✕</button>
+      <button id="dock-close" type="button" aria-label="Закрыть панель"><svg class="ico"><use href="#i-close"/></svg></button>
     </header>
     <div id="dock-tabs" role="tablist">
       <button role="tab" data-tab="info" aria-selected="true" type="button">Информация</button>
@@ -47,8 +64,9 @@
       <section id="dock-chat" class="dock-pane">
         <div id="chat-log" aria-live="polite"></div>
         <form id="chat-form">
+          <label for="chat-input" class="sr-only">Сообщение</label>
           <input id="chat-input" type="text" autocomplete="off" maxlength="4000" placeholder="Спросить…">
-          <button class="btn btn-primary" type="submit">→</button>
+          <button class="btn btn-primary" type="submit" aria-label="Отправить">→</button>
         </form>
       </section>
       <section id="dock-history" class="dock-pane"></section>
@@ -75,9 +93,9 @@
 
   <script src="zone-style.js?v=4"></script>
   <script src="vendor/cube.js"></script>
-  <script src="office-data.js?v=1"></script>
+  <script src="office-data.js?v=2"></script>
   <!-- CSP платформы запрещает inline-скрипты, поэтому import map не используется:
        вендорные модули импортируются относительными путями -->
-  <script type="module" src="office.js?v=1"></script>
+  <script type="module" src="office.js?v=2"></script>
 </body>
 </html>
