@@ -38,6 +38,8 @@ let scenario = { text: '{"ok":1}' };
  * одним общим сценарием нельзя. null — отвечать как всем.
  */
 let scenarioLm = null;
+/** Очередь сценариев на ближайшие запросы (по одному на запрос); пустая — действует scenario. */
+let scenarioQueue = [];
 let requests = [];
 
 function startFakeServer() {
@@ -49,10 +51,17 @@ function startFakeServer() {
         let parsed = null;
         try { parsed = JSON.parse(body); } catch { /* тело не JSON */ }
         requests.push({ url: req.url, auth: req.headers.authorization || '', body: parsed });
-        const sc = req.url.startsWith('/lm') && scenarioLm ? scenarioLm : scenario;
+        const sc = scenarioQueue.length ? scenarioQueue.shift()
+          : (req.url.startsWith('/lm') && scenarioLm ? scenarioLm : scenario);
         if (sc.status) {
-          res.writeHead(sc.status, { 'Content-Type': 'application/json' });
+          res.writeHead(sc.status, { 'Content-Type': 'application/json', ...(sc.headers || {}) });
           return res.end(sc.body !== undefined ? sc.body : JSON.stringify({ error: { message: sc.message || 'boom' } }));
+        }
+        if (sc.dropMidStream) {
+          // заголовки ушли, часть ответа ушла — и соединение оборвано (как шлюз при read ETIMEDOUT)
+          res.writeHead(200, { 'Content-Type': parsed && parsed.stream ? 'text/event-stream' : 'application/json' });
+          res.write(parsed && parsed.stream ? 'data: {"choices":[{"delta":{"content":"нач"}}]}\n\n' : '{"choices":[{"mess');
+          return setTimeout(() => res.destroy(), 20);
         }
         const text = sc.text !== undefined ? sc.text : '{"ok":1}';
         const finish = sc.finish || 'stop';
@@ -110,6 +119,7 @@ before(async () => {
   process.env.KIMI_API_KEY = 'sk-kimi-fake-key';
   process.env.ANTHROPIC_API_KEY = '';
   process.env.LOCAL_AI_TIMEOUT = '5000';
+  process.env.AI_CLOUD_RETRY_DELAY = '30'; // паузы повторов в тестах — миллисекунды, не секунды
 
   stubModelManager();
   adapter = require('../server/services/claude/adapter');
@@ -491,6 +501,134 @@ test('подсказки: при обрыве на размышлениях об
   assert.ok(!/LOCAL_AI_MAX_TOKENS/.test(reply), 'совет про локальную переменную на облачном маршруте бесполезен');
 });
 
+/* ================= перегрузка облака: повтор вместо отказа ================= */
+
+const OVERLOADED = '{"error":{"message":"The engine is currently overloaded, please try again later","type":"engine_overloaded_error"}}';
+const KIMI = { provider: 'kimi', model: 'kimi-k3' };
+
+test('перегрузка: 429 «engine overloaded» у Kimi переживается повтором, а не отказом', async () => {
+  resetSession();
+  scenarioQueue = [{ status: 429, body: OVERLOADED }];
+  scenario = { text: 'ответ после паузы' };
+  const before = chatRequests().length;
+  const reply = await adapter.chatOnce(SID, { text: 'привет', route: KIMI });
+  assert.match(reply, /ответ после паузы/);
+  assert.strictEqual(chatRequests().length - before, 2, 'первый запрос упал на 429, второй прошёл');
+  const rows = db.prepare('SELECT detail, level FROM events WHERE session_id = ? AND stage = ?').all(SID, 'Повтор запроса к модели');
+  assert.strictEqual(rows.length, 1, 'пауза перед повтором видна в журнале этапов');
+  assert.match(rows[0].detail, /Kimi \(Moonshot AI\) перегружен \(429\) — повтор 1 из 3 через/);
+  assert.strictEqual(rows[0].level, 'warn');
+});
+
+test('перегрузка: Retry-After провайдера уважается, без него пауза удваивается, потолок — 2 мин', () => {
+  const base = config.aiCloudRetryDelayMs;
+  assert.strictEqual(adapter.retryDelayMs(null, 0), base);
+  assert.strictEqual(adapter.retryDelayMs(null, 1), base * 2);
+  assert.strictEqual(adapter.retryDelayMs(null, 2), base * 4);
+  assert.strictEqual(adapter.retryDelayMs('7', 0), 7000, 'Retry-After в секундах');
+  assert.strictEqual(adapter.retryDelayMs('9999', 0), 120000, 'дольше двух минут не ждём');
+  assert.strictEqual(adapter.retryDelayMs('мусор', 2), base * 4, 'нечитаемый Retry-After — как без него');
+});
+
+test('секреты: идентификатор ключа Moonshot «ak-…» из текста «suspended» скрывается', () => {
+  // живой ответ 09.09.2026: «Your account org-… <ak-fbt7cgy9i33i11a7j6i1> is suspended due to insufficient balance»
+  const msg = adapter.humanizeProviderError('kimi', 429, '{"error":{"message":"Your account org-bf46 <ak-fbt7cgy9i33i11a7j6i1> is suspended due to insufficient balance, please recharge"}}');
+  assert.match(msg, /закончились средства/);
+  assert.ok(!/ak-fbt7/.test(msg), 'идентификатор ключа не должен уходить человеку');
+  assert.match(msg, /«ключ скрыт»/);
+});
+
+test('перегрузка: деньги, квота и конфигурация шлюза повтором не лечатся', async () => {
+  assert.ok(adapter.retryableProviderStatus('kimi', 429, OVERLOADED));
+  assert.ok(adapter.retryableProviderStatus('kimi', 503, '{"error":{"message":"Service Unavailable"}}'));
+  assert.ok(adapter.retryableProviderStatus('kimi', 502, '{"error":{"message":"moonshot: read ETIMEDOUT","type":"upstream_error"}}'), '502 шлюза мака — перегрузка пути');
+  assert.ok(!adapter.retryableProviderStatus('kimi', 429, '{"error":{"message":"Insufficient balance","type":"exceeded_current_quota_error"}}'));
+  assert.ok(!adapter.retryableProviderStatus('kimi', 503, '{"error":{"message":"Ключ moonshot на шлюзе не задан","type":"no_key"}}'));
+  assert.ok(!adapter.retryableProviderStatus('kimi', 400, OVERLOADED), '400 — наша ошибка, не перегрузка');
+  assert.ok(!adapter.retryableProviderStatus('lmstudio', 503, OVERLOADED), 'локальный сервер моделей паузами не лечат');
+
+  resetSession();
+  scenario = { status: 429, body: '{"error":{"message":"Insufficient balance","type":"exceeded_current_quota_error"}}' };
+  const before = chatRequests().length;
+  await assert.rejects(() => adapter.chatOnce(SID, { text: 'привет', route: KIMI }), /закончились средства|квота/);
+  assert.strictEqual(chatRequests().length - before, 1, 'на пустом балансе повторы — выброшенные запросы');
+});
+
+test('перегрузка: после исчерпания повторов отказ называет число попыток и ответ сервера', async () => {
+  resetSession();
+  scenario = { status: 503, body: '{"error":{"message":"Service Unavailable"}}' };
+  const before = chatRequests().length;
+  await assert.rejects(
+    () => adapter.chatOnce(SID, { text: 'привет', route: KIMI }),
+    (err) => {
+      assert.ok(err instanceof adapter.AiUnavailableError);
+      assert.match(err.message, /перегружен \(503\) и не принял запрос 4 раза подряд/);
+      assert.match(err.message, /Service Unavailable/);
+      assert.match(err.message, /другую модель/);
+      return true;
+    },
+  );
+  assert.strictEqual(chatRequests().length - before, 1 + config.aiCloudRetries);
+  const rows = db.prepare('SELECT detail FROM events WHERE session_id = ? AND stage = ?').all(SID, 'Повтор запроса к модели');
+  assert.strictEqual(rows.length, config.aiCloudRetries, 'каждая пауза записана в журнал');
+  scenario = { text: '{"ok":1}' };
+});
+
+test('перегрузка: 502 шлюза с «upstream_error» — повтор, а не молчаливый уход со стриминга', async () => {
+  resetSession();
+  scenarioQueue = [{ status: 502, body: '{"error":{"message":"moonshot: read ETIMEDOUT","type":"upstream_error","code":502}}' }];
+  scenario = { text: 'после шлюза' };
+  const before = chatRequests().length;
+  const reply = await adapter.chatOnce(SID, { text: 'привет', route: KIMI });
+  assert.match(reply, /после шлюза/);
+  const sent = chatRequests().slice(before);
+  assert.strictEqual(sent.length, 2);
+  assert.strictEqual(sent[1].body.stream, true, 'повтор идёт тем же стримингом: 502 — не «сервер не понял stream»');
+});
+
+test('перегрузка: обрыв ответа на середине повторяется, ответ приходит со второго раза', async () => {
+  resetSession();
+  scenarioQueue = [{ dropMidStream: true }];
+  scenario = { text: 'дочитано со второго раза' };
+  const before = chatRequests().length;
+  const reply = await adapter.chatOnce(SID, { text: 'привет', route: KIMI });
+  assert.match(reply, /дочитано со второго раза/);
+  assert.strictEqual(chatRequests().length - before, 2);
+  const rows = db.prepare('SELECT detail FROM events WHERE session_id = ? AND stage = ?').all(SID, 'Повтор запроса к модели');
+  assert.strictEqual(rows.length, 1);
+  assert.match(rows[0].detail, /оборвался на середине/);
+});
+
+test('перегрузка: обрыв, который не проходит, объясняет сколько раз повторяли', async () => {
+  resetSession();
+  scenarioQueue = Array.from({ length: 1 + config.aiCloudRetries }, () => ({ dropMidStream: true }));
+  scenario = { text: '{"ok":1}' };
+  const before = chatRequests().length;
+  await assert.rejects(
+    () => adapter.chatOnce(SID, { text: 'привет', route: KIMI }),
+    (err) => {
+      assert.match(err.message, /оборвалось на середине ответа/);
+      assert.match(err.message, /повторила запрос 3 раза — не помогло/);
+      return true;
+    },
+  );
+  assert.strictEqual(chatRequests().length - before, 1 + config.aiCloudRetries);
+  scenarioQueue = [];
+});
+
+test('перегрузка: локальный сервер моделей повторами не мучают', async () => {
+  resetSession();
+  scenarioLm = { status: 503, body: '{"error":{"message":"busy"}}' };
+  const before = chatRequests().length;
+  try {
+    await assert.rejects(() => adapter.chatOnce(SID, { text: 'привет', route: { provider: 'lmstudio', model: 'qwen/qwen3.8-27b' } }), /503/);
+    assert.strictEqual(chatRequests().length - before, 1, 'локальный 503 — один запрос, без пауз');
+  } finally {
+    scenarioLm = null;
+    scenario = { text: '{"ok":1}' };
+  }
+});
+
 /* ================= документы: обрезка, кодировка, форматы ================= */
 
 test('документы: обрезанный текст помечен, а не обрывается молча', () => {
@@ -655,8 +793,12 @@ test('распознавание: отказ выбранной модели п�
   assert.deepStrictEqual(res.by, [`lmstudio/${config.localAiOcrModel}`]);
 
   const calls = chatRequests();
-  assert.ok(calls[0].url.startsWith('/v1'), 'сначала пробуем выбранную модель');
-  assert.ok(calls[1].url.startsWith('/lm'), 'и только потом локальную');
+  // 500 у облака — перегрузка, её сначала пережидают повторами (AI_CLOUD_RETRIES),
+  // и лишь после этого страницу отдают локальной модели: транзитный сбой не должен
+  // отправлять весь скан к 8B-модели
+  const cloudTries = 1 + config.aiCloudRetries;
+  assert.ok(calls.slice(0, cloudTries).every((c) => c.url.startsWith('/v1')), 'сначала пробуем выбранную модель, с повторами на перегрузку');
+  assert.ok(calls[cloudTries].url.startsWith('/lm'), 'и только потом локальную');
 
   const md = fs.readFileSync(stored + '.vision.md', 'utf8');
   assert.match(md, /распознано локально: участок 3700 м2/);

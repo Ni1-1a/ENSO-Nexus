@@ -75,6 +75,13 @@ const config = {
   localAiOcrModel: process.env.LOCAL_AI_OCR_MODEL || 'qwen/qwen3-vl-30b', // vision-модель для VLM-OCR
   localAiMaxTokens: int('LOCAL_AI_MAX_TOKENS', 12288),
   localAiTimeoutMs: int('LOCAL_AI_TIMEOUT', 480000), // очередь LM Studio может быть занята (OCR и др.)
+  // Повторы облачного вызова при перегрузке провайдера (429 «engine overloaded»,
+  // 5xx) и при обрыве ответа на середине; пауза удваивается от базовой
+  // (15 → 30 → 60 с). Прогон 09.09.2026: Kimi отвечал 429 «The engine is
+  // currently overloaded» МЕЖДУ двумя успешными запросами — перегрузка проходит
+  // за минуту, а платформа отдавала ошибку сразу и человек перезапускал этап руками.
+  aiCloudRetries: int('AI_CLOUD_RETRIES', 3),
+  aiCloudRetryDelayMs: int('AI_CLOUD_RETRY_DELAY', 15000),
   localAiDocCharLimit: int('LOCAL_AI_DOC_CHAR_LIMIT', 45000),
   // Размер контекста при явной загрузке моделей (см. services/model-manager.js).
   // Значения подобраны под 48 ГБ RAM: модель + KV-кэш помещаются в лимит Metal.

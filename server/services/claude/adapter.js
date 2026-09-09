@@ -81,7 +81,7 @@ function maxTokensEnv(providerId) {
  */
 function redactSecrets(text) {
   return String(text || '')
-    .replace(/\b(?:sk|rk|pk|sess)-[A-Za-z0-9_\-*]{4,}/g, '«ключ скрыт»')
+    .replace(/\b(?:sk|rk|pk|ak|sess)-[A-Za-z0-9_\-*]{4,}/g, '«ключ скрыт»')
     .replace(/\bAIza[0-9A-Za-z_\-]{10,}/g, '«ключ скрыт»')
     .replace(/\bBearer\s+[A-Za-z0-9._\-]{8,}/gi, 'Bearer «ключ скрыт»')
     .replace(/("?(?:api[_-]?key|authorization|x-api-key)"?\s*[:=]\s*)"?[^"\s,}]{6,}/gi, '$1«ключ скрыт»');
@@ -96,13 +96,8 @@ function redactSecrets(text) {
 function humanizeProviderError(providerId, status, detail) {
   const label = providerLabel(providerId);
   const local = LOCAL_PROVIDERS.has(providerId);
-  let msg = '';
-  try {
-    const j = JSON.parse(detail);
-    msg = j.error?.message || (typeof j.error === 'string' ? j.error : '') || j.message || '';
-  } catch { /* тело не JSON — берём как есть */ }
-  msg = redactSecrets(String(msg || detail || '')).replace(/\s+/g, ' ').trim();
-  const tail = msg ? ` Ответ сервера: ${msg.slice(0, 200)}` : '';
+  const msg = providerErrorMessage(detail);
+  const tail = providerErrorTail(msg);
 
   // локальный сервер моделей падает почти всегда из-за памяти и загрузки модели
   if (local) {
@@ -118,7 +113,7 @@ function humanizeProviderError(providerId, status, detail) {
     return `${label} не принял ключ доступа (${status}). Повтор не поможет: проверьте ${env ? `${env} в .env` : 'ключ провайдера'} на сервере` +
       `${status === 403 ? ' и права доступа к выбранной модели' : ''}.${tail}`;
   }
-  if (status === 402 || (status < 500 && /insufficient (balance|credit|funds|quota)|billing|exceeded your (current )?quota|out of credit|payment required/i.test(msg))) {
+  if (status === 402 || (status < 500 && isQuotaMessage(msg))) {
     return `${label}: закончились средства или исчерпана квота аккаунта (${status}). Пополните баланс или дождитесь сброса лимита — до этого запросы проходить не будут.${tail}`;
   }
   if (status === 429) {
@@ -134,6 +129,91 @@ function humanizeProviderError(providerId, status, detail) {
     return `Сервер провайдера — ${label} — вернул ошибку ${status}. Это сбой на его стороне, повторите попытку позже.${tail}`;
   }
   return `${label} вернул ошибку ${status}.${tail} Повторите попытку.`;
+}
+
+/** Текст ошибки из тела ответа провайдера (JSON или как есть), без секретов. */
+function providerErrorMessage(detail) {
+  let msg = '';
+  try {
+    const j = JSON.parse(detail);
+    msg = j.error?.message || (typeof j.error === 'string' ? j.error : '') || j.message || '';
+  } catch { /* тело не JSON — берём как есть */ }
+  return redactSecrets(String(msg || detail || '')).replace(/\s+/g, ' ').trim();
+}
+
+function providerErrorTail(msg) {
+  return msg ? ` Ответ сервера: ${msg.slice(0, 200)}` : '';
+}
+
+/** Провайдер говорит о деньгах или квоте аккаунта — паузой и повтором не лечится. */
+function isQuotaMessage(text) {
+  return /insufficient (balance|credit|funds|quota)|billing|exceeded your (current )?quota|out of credit|payment required/i.test(String(text || ''));
+}
+
+/**
+ * За этими статусами у облака стоит перегрузка провайдера или сбой на его
+ * стороне, а не наша ошибка: их лечит пауза и повтор. Kimi отдаёт 429 не только
+ * за частоту, но и за «The engine is currently overloaded» (engine_overloaded_error),
+ * 529 — «overloaded» у Anthropic-совместимых шлюзов.
+ */
+const OVERLOAD_STATUSES = new Set([429, 500, 502, 503, 504, 529]);
+function retryableProviderStatus(providerId, status, detail) {
+  if (!cloudAccess.isCloud(providerId) || !OVERLOAD_STATUSES.has(status)) return false;
+  if (isQuotaMessage(providerErrorMessage(detail))) return false;
+  // конфигурация шлюза (нет ключа, не тот ключ) повтором тоже не лечится
+  if (/no_key|authentication_error|invalid_request_error/i.test(String(detail || ''))) return false;
+  return true;
+}
+
+/** Потолок одной паузы перед повтором: дольше человек ждать не станет. */
+const RETRY_DELAY_CAP_MS = 120000;
+/**
+ * Пауза перед повтором: Retry-After провайдера (секунды или дата), иначе базовая
+ * пауза, удвоенная столько раз, сколько повторов уже было.
+ */
+function retryDelayMs(retryAfter, netRetry) {
+  const base = config.aiCloudRetryDelayMs * 2 ** netRetry;
+  let hinted = 0;
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    hinted = Number.isFinite(secs) ? secs * 1000 : Date.parse(retryAfter) - Date.now();
+  }
+  return Math.min(hinted > 0 ? Math.max(hinted, 1000) : base, RETRY_DELAY_CAP_MS);
+}
+
+function abortedError() {
+  return Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
+}
+
+/** «3 раза», «5 раз» — для сообщений о повторах. */
+function timesRu(n) {
+  const d = n % 10, dd = n % 100;
+  if (dd >= 11 && dd <= 14) return `${n} раз`;
+  return d >= 2 && d <= 4 ? `${n} раза` : `${n} раз`;
+}
+
+/**
+ * Пауза перед повтором облачного вызова. Видна в карточке прогресса и в журнале
+ * этапов и прерывается вместе с обработкой: молчаливая минута ожидания выглядит
+ * как зависший этап, и человек останавливает его и запускает заново руками.
+ */
+async function waitBeforeRetry({ sessionId, providerId, modelId, signal, progressStep, delay, netRetry, why }) {
+  const label = `${why} — повтор ${netRetry + 1} из ${config.aiCloudRetries} через ${humanDuration(delay)}…`;
+  console.warn(`[${providerId}] ${label}`);
+  progress.set(sessionId, {
+    phase: progressStep ? progressStep.phase : 'waiting_model',
+    model: modelId, provider: providerId, label,
+  });
+  logRow(sessionId, 'Повтор запроса к модели', label, 'warn');
+  await new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(abortedError());
+    const onAbort = () => { clearTimeout(timer); reject(abortedError()); };
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delay);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /** Длительность по-русски: минуты при больших значениях, секунды при малых. */
@@ -688,7 +768,7 @@ const openaiNoReasoningEffort = new Set();
  * карточка прогресса на каждой странице перескакивала с «Изучение документации»
  * на «Обработка запроса моделью» и обратно — семнадцать раз на один скан.
  */
-async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true, signal = null, progressStep = null, internal = false }) {
+async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true, signal = null, progressStep = null, internal = false, netRetry = 0 }) {
   const modelId = model || config.localAiModel;
   const isLmStudio = baseUrl === config.localAiBaseUrl;
   const providerId = provider || (isLmStudio ? 'lmstudio' : 'openai-compat');
@@ -924,6 +1004,30 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     logAiError({ where: 'chat/completions', provider: providerId, status: res.status, model: modelId, baseUrl, attempt, detail: redactSecrets(detail).slice(0, 2000) });
+    // Перегрузка облака (429 «engine overloaded», 5xx) — переждать и повторить.
+    // Проверяется РАНЬШЕ переговоров о параметрах: тело 502 от шлюза мака содержит
+    // «upstream_error» и попадало бы под повтор «без стриминга» по /stream/i.
+    // Раньше 429 сразу становился ошибкой этапа с советом «подождите минуту»,
+    // и человек перезапускал анализ руками — притом что перегрузка Kimi проходит
+    // за минуту сама (09.09.2026: 429 между двумя успешными запросами).
+    if (retryableProviderStatus(providerId, res.status, detail)) {
+      const label = providerLabel(providerId);
+      if (netRetry < config.aiCloudRetries) {
+        const delay = retryDelayMs(res.headers.get('retry-after'), netRetry);
+        await waitBeforeRetry({
+          sessionId, providerId, modelId, signal, progressStep, delay, netRetry,
+          why: `${label} перегружен (${res.status})`,
+        });
+        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry: netRetry + 1 });
+      }
+      const tried = netRetry
+        ? `не принял запрос ${timesRu(netRetry + 1)} подряд, с паузами до ${humanDuration(retryDelayMs(null, netRetry - 1))}`
+        : 'не принял запрос';
+      throw new AiUnavailableError(
+        `${label} перегружен (${res.status}) и ${tried}. ` +
+        'Это сбой на стороне провайдера: подождите несколько минут и повторите — или выберите другую модель в «Настройках».' +
+        providerErrorTail(providerErrorMessage(detail)));
+    }
     // Модель выгружена/не найдена — загружаем через менеджер и повторяем.
     // Только для локальных серверов: у облака «model not found» повтором не лечится,
     // а пауза 15 и 30 с превращала мгновенную ошибку в минуту ожидания.
@@ -944,7 +1048,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       } else {
         await new Promise((r) => setTimeout(r, attempt * 15000));
       }
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal, netRetry });
     }
     // запрошенный лимит больше потолка модели — повтор с её собственным потолком
     const capMatch = detail.match(/(?:at most|maximum(?: of)?|<=)\s*(\d{4,})/i);
@@ -952,54 +1056,72 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       const cap = parseInt(capMatch[1], 10);
       if (cap > 0 && cap < effMaxTokens) {
         console.warn(`[openai] модель ${modelId} поддерживает максимум ${cap} выходных токенов — повтор с этим лимитом`);
-        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens: cap, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal });
+        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens: cap, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal, netRetry });
       }
     }
     // модель не принимает reasoning_effort — запомнить и повторить без него
     if (providerId === 'chatgpt' && /reasoning[._]?effort/i.test(detail) && !openaiNoReasoningEffort.has(modelId)) {
       openaiNoReasoningEffort.add(modelId);
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry });
     }
     // сервер не понял параметры стриминга — повтор без стриминга
     if (stream && /stream/i.test(detail)) {
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false, signal, progressStep, internal });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry });
     }
     // некоторые модели не принимают json_schema — один повтор в режиме «просто JSON»
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callOpenAiCompat({
         system: system + '\n\n' + prompts.load('tasks/json-only'),
-        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false, signal, progressStep, internal,
+        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false, signal, progressStep, internal, netRetry,
       });
     }
     throw new AiUnavailableError(humanizeProviderError(providerId, res.status, detail));
   }
 
   let text, reasoning = '', usage, truncated;
-  if (stream) {
-    ({ text, reasoning, usage, truncated } = await readSseStream(res, (tokens, thinking) => {
-      progress.set(sessionId, {
-        phase: progressStep ? progressStep.phase : 'generating',
-        model: modelId, provider: providerId,
-        label: progressStep ? progressStep.label
-          : thinking ? `Модель ${modelId} размышляет…` : `Модель ${modelId} генерирует ответ…`,
-        tokensOut: tokens,
+  try {
+    if (stream) {
+      ({ text, reasoning, usage, truncated } = await readSseStream(res, (tokens, thinking) => {
+        progress.set(sessionId, {
+          phase: progressStep ? progressStep.phase : 'generating',
+          model: modelId, provider: providerId,
+          label: progressStep ? progressStep.label
+            : thinking ? `Модель ${modelId} размышляет…` : `Модель ${modelId} генерирует ответ…`,
+          tokensOut: tokens,
+        });
+      }));
+    } else {
+      const data = await res.json();
+      const choice = data.choices && data.choices[0];
+      text = choice?.message?.content || '';
+      reasoning = choice?.message?.reasoning_content || '';
+      truncated = choice?.finish_reason === 'length';
+      usage = data.usage;
+    }
+  } catch (err) {
+    if (signal && signal.aborted) throw abortedError();
+    const label = providerLabel(providerId);
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new AiUnavailableError(`${label}: модель ${modelId} не успела завершить ответ за ${humanDuration(timeoutMs)}. Повторите или упростите задачу.`);
+    }
+    /*
+     * Обрыв ответа на середине («terminated»): шлюз мака рвёт поток, когда
+     * соединение с провайдером глохнет (в журнале шлюза — «read ETIMEDOUT»
+     * посреди SSE, 09.09.2026). Тело запроса провайдер принял, ответ уже
+     * не доедет — единственный выход повторить запрос целиком. Раньше обрыв
+     * сразу валил этап, и логов о нём в ai-errors.log не оставалось.
+     */
+    const reason = redactSecrets(String(err && err.message || '')).slice(0, 120);
+    logAiError({ where: 'chat/completions', provider: providerId, model: modelId, baseUrl, attempt, netRetry, detail: `обрыв ответа: ${reason}` });
+    if (cloudAccess.isCloud(providerId) && netRetry < config.aiCloudRetries) {
+      await waitBeforeRetry({
+        sessionId, providerId, modelId, signal, progressStep, delay: retryDelayMs(null, netRetry), netRetry,
+        why: `Ответ ${label} оборвался на середине (${reason})`,
       });
-    }).catch((err) => {
-      if (signal && signal.aborted) {
-        throw Object.assign(new Error('Обработка прервана'), { name: 'AbortError' });
-      }
-      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-        throw new AiUnavailableError(`${providerLabel(providerId)}: модель ${modelId} не успела завершить ответ за ${humanDuration(timeoutMs)}. Повторите или упростите задачу.`);
-      }
-      throw new AiUnavailableError(`Соединение с ${providerLabel(providerId)} оборвалось на середине ответа: ${redactSecrets(String(err && err.message || '')).slice(0, 120)}. Повторите попытку.`);
-    }));
-  } else {
-    const data = await res.json();
-    const choice = data.choices && data.choices[0];
-    text = choice?.message?.content || '';
-    reasoning = choice?.message?.reasoning_content || '';
-    truncated = choice?.finish_reason === 'length';
-    usage = data.usage;
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry: netRetry + 1 });
+    }
+    throw new AiUnavailableError(`Соединение с ${label} оборвалось на середине ответа: ${reason}.` +
+      (netRetry ? ` Платформа повторила запрос ${timesRu(netRetry)} — не помогло.` : '') + ' Повторите попытку.');
   }
   recordUsage(sessionId, {
     input_tokens: usage?.prompt_tokens || 0,
@@ -1617,7 +1739,7 @@ module.exports = {
   structuredCall, runAnalysis, analyzeOnce, chatOnce, plainCall, checkBudget, effectiveProvider, resolveModel, maybeCompact, BudgetExceededError, AiUnavailableError, tryParse,
   // открыто для тестов: поведение, которое обязано оставаться проверяемым
   humanizeProviderError, toOpenAiContent, redactSecrets, maxTokensEnv, providerLabel, recordUsage,
-  unionTypesToAnyOf, isLocalGrammarEngine,
+  unionTypesToAnyOf, isLocalGrammarEngine, retryDelayMs, retryableProviderStatus,
   // единая оценка «символы → токены» платформы: ей же считает модуль «Датасет»
   CHARS_PER_TOKEN,
   ROUTABLE_PROVIDERS, MAX_ANALYSIS_CALLS, MAX_CONTINUATIONS, ensureDocumentsStudied };
