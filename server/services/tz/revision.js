@@ -54,12 +54,18 @@ function place(text, items) {
   const tail = [];
   for (const item of items) {
     const q = norm(item.quote || '');
-    const head = q.length > 24 ? q.slice(0, 24) : '';
+    /*
+     * Запасной ключ — начало цитаты: модель иногда обрезает хвост фразы. Но
+     * берётся он ТОЛЬКО когда встречается в документе один раз. Для русского
+     * техтекста 40 знаков — это «требования к проектной документации», и по
+     * первому совпадению правка вставала бы в чужой пункт.
+     */
+    const head = q.length > 40 ? q.slice(0, 40) : '';
+    const unique = head && normParas.filter((p) => p.includes(head)).length === 1;
     let at = -1;
     if (q && q.length >= 12) {
       at = normParas.findIndex((p) => p.includes(q));
-      // короткую цитату ищем по началу: модель иногда обрезает хвост фразы
-      if (at < 0 && head) at = normParas.findIndex((p) => p.includes(head));
+      if (at < 0 && unique) at = normParas.findIndex((p) => p.includes(head));
     }
     if (at < 0) { tail.push(item); continue; }
     const lines = paras[at].text.split('\n');
