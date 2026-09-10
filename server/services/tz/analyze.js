@@ -23,7 +23,7 @@ const store = require('./store');
 const checklists = require('./checklists');
 const { dedupe, verdict } = require('./dedup');
 
-// Потолок текста ЗнП, уходящего модели за один проход. Обрезка честно
+// Потолок текста ТЗ, уходящего модели за один проход. Обрезка честно
 // проговаривается в unverified — молча урезанный документ выглядит проверенным.
 const ANALYZE_CHAR_LIMIT = 180_000;
 
@@ -93,7 +93,7 @@ const FINDINGS_SCHEMA = {
         properties: {
           severity: { type: 'string', enum: checklists.SEVERITIES },
           category: { type: 'string', enum: ['формулировка', 'противоречие', 'нормативная_база', 'ИРД'] },
-          znp_ref: { type: 'string', description: 'Пункт/раздел ЗнП или короткий ориентир' },
+          znp_ref: { type: 'string', description: 'Пункт/раздел ТЗ или короткий ориентир' },
           quote: { type: ['string', 'null'], description: 'Дословная цитата дефектного места' },
           problem: { type: 'string' },
           consequence: {
@@ -151,7 +151,7 @@ function completenessFindings(matrix, checklist, funding) {
       znp_ref: row.status === 'НЕТ' ? 'отсутствует' : (row.znp_ref || 'отсутствует'),
       quote: null,
       problem: row.status === 'НЕТ'
-        ? `В ЗнП нет пункта: ${item.label}${row.note ? ` (${row.note})` : ''}`
+        ? `В ТЗ нет пункта: ${item.label}${row.note ? ` (${row.note})` : ''}`
         : `Пункт раскрыт неполно: ${item.label}${row.note ? ` (${row.note})` : ''}`,
       requirement_source: checklists.findingSource(item, funding),
       consequence: severity === 'БЛОКЕР' ? 'отказ в приёме' : 'переделка ПД',
@@ -177,7 +177,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
   if (!run) throw store.httpError(404, 'Прогон не найден');
   const project = store.projectById(run.project_id);
   if (!project) throw store.httpError(404, 'Проект не найден');
-  if (!run.document_text.trim()) throw store.httpError(422, 'В проекте нет текста ЗнП — загрузите документ');
+  if (!run.document_text.trim()) throw store.httpError(422, 'В проекте нет текста ТЗ — загрузите документ');
   if (!run.provider) throw store.httpError(422, 'Не выбрана модель для анализа');
 
   const route = { provider: run.provider, model: run.model };
@@ -186,12 +186,12 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
   const unverified = [];
   if (doc.truncated) {
     unverified.push({
-      what: `Текст ЗнП обрезан до ${ANALYZE_CHAR_LIMIT.toLocaleString('ru-RU')} символов из ${run.document_text.length.toLocaleString('ru-RU')}`,
+      what: `Текст ТЗ обрезан до ${ANALYZE_CHAR_LIMIT.toLocaleString('ru-RU')} символов из ${run.document_text.length.toLocaleString('ru-RU')}`,
       why: 'потолок контекста одного прохода — хвост документа не проверялся',
     });
   }
   unverified.push({
-    what: 'Актуальность нормативных документов, названных в ЗнП, и региональные данные площадки',
+    what: 'Актуальность нормативных документов, названных в ТЗ, и региональные данные площадки',
     why: 'в этой версии модуль работает без внешних источников — статусы НПА и параметры площадки не сверялись',
   });
 
@@ -283,7 +283,7 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
     .filter((f) => f && f.problem)
     .map((f) => ({
       ...f,
-      // Ссылка на пункт ЗнП обязательна по промту, но модель её иногда не даёт
+      // Ссылка на пункт ТЗ обязательна по промту, но модель её иногда не даёт
       // (только цитату). Раньше такая находка молча выбрасывалась; теперь она
       // остаётся с пометкой «место не указано» и уходит человеку (рецензия промтов 04.09.2026).
       znp_ref: f.znp_ref || 'место не указано',
@@ -328,4 +328,110 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
   return result;
 }
 
-module.exports = { runAnalysis, _setCallFn, ANALYZE_CHAR_LIMIT, CLASSIFY_SCHEMA, FINDINGS_SCHEMA, completenessSchema, completenessFindings };
+const SUGGEST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['variants'],
+  properties: {
+    variants: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'text', 'why', 'needs_check'],
+        properties: {
+          title: { type: 'string', description: '2–4 слова: чем этот вариант отличается' },
+          text: { type: 'string', description: 'Готовый текст пункта ТЗ' },
+          why: { type: 'string', description: 'Одно предложение: когда брать этот вариант' },
+          needs_check: { type: 'boolean' },
+        },
+      },
+    },
+  },
+};
+
+/** Фрагмент ТЗ вокруг цитаты: без него модель предлагает пункт «вообще», а не для этого документа. */
+function around(text, quote, radius = 1200) {
+  const src = String(text || '');
+  const q = String(quote || '').trim();
+  if (!q) return src.slice(0, radius);
+  const at = src.indexOf(q);
+  if (at < 0) return src.slice(0, radius);
+  return src.slice(Math.max(0, at - radius / 2), at + q.length + radius / 2);
+}
+
+/**
+ * Предложения формулировок по ОДНОЙ находке (замечание 2 владельца 10.09.2026).
+ *
+ * Модель пишет варианты текста пункта, человек выбирает или пишет свой —
+ * поэтому здесь нет ни выбора, ни записи в документ: только предложения.
+ * Цифры модель выдумывать не имеет права (см. prompts/tz-suggest.md) — вместо
+ * них place-holder'ы в квадратных скобках, которые заполняет заказчик.
+ */
+async function suggestFix(runId, findingId, { callFn = null, host = '' } = {}) {
+  const adapter = require('../claude/adapter');
+  const call = callFn || overrideCallFn || adapter.structuredCall;
+  const run = store.runById(runId, { withText: true });
+  if (!run) throw store.httpError(404, 'Прогон не найден');
+  const project = store.projectById(run.project_id);
+  if (!project) throw store.httpError(404, 'Проект не найден');
+  const finding = store.findingOf(run, findingId);
+  if (!finding) throw store.httpError(404, 'Замечание не найдено в этом прогоне');
+  /*
+   * Нейросеть — та, что выбрана у проекта платформы; провайдер прогона нужен
+   * лишь как запасной. Прогон помнит модель, которой он СДЕЛАН, а формулировки
+   * пишутся сейчас: на старом прогоне это был бы отказ недоступного провайдера
+   * без единого способа его сменить (пикер из модуля убран 10.09.2026).
+   */
+  const projectAi = require('../projects').aiChoice(project.project_id);
+  const route = projectAi.provider
+    ? { provider: projectAi.provider, model: projectAi.model }
+    : { provider: run.provider, model: run.model };
+  if (!route.provider) {
+    throw store.httpError(422, 'У проекта не выбрана нейросеть. Откройте «Свойства проекта» на главной и выберите её.');
+  }
+
+  const result = run.result || {};
+  const object = result.object || {};
+  const list = checklists.CHECKLISTS[run.checklist || project.checklist] || null;
+  const item = list && finding.checklist_item ? list.items.find((x) => x.id === finding.checklist_item) : null;
+
+  const parts = [
+    `ОБЪЕКТ: ${object.kind || project.name}; финансирование: ${object.funding || 'неизвестно'}; `
+      + `вид работ: ${object.work_kind || 'неизвестно'}${object.region ? `; регион: ${object.region}` : ''}.`,
+    `ЗАМЕЧАНИЕ ${finding.id} (${finding.severity}, ${finding.category}): ${finding.problem}`,
+    `МЕСТО В ТЗ: ${finding.znp_ref || 'не указано'}`,
+    finding.quote ? `ЦИТАТА: «${finding.quote}»` : 'ЦИТАТА: пункта в тексте нет',
+    finding.consequence ? `ЧЕМ ГРОЗИТ: ${finding.consequence}` : '',
+    item ? `ПУНКТ СОСТАВА: ${item.label}` : '',
+    finding.requirement_source ? `ОСНОВАНИЕ: ${finding.requirement_source}` : '',
+    finding.proposed_text ? `ЧЕРНОВИК ИЗ ОТЧЁТА: ${finding.proposed_text}` : '',
+    `\nФРАГМЕНТ ТЗ:\n${around(run.document_text, finding.quote)}`,
+  ].filter(Boolean);
+
+  const out = await call({
+    system: prompts.load('tz-suggest'),
+    messages: [{ role: 'user', content: parts.join('\n') }],
+    sessionId: store.ensureServiceSession(project, null, host),
+    route,
+    schema: SUGGEST_SCHEMA, schemaName: 'tz_suggest', maxTokens: 6000,
+  });
+  const parsed = adapter.tryParse(out.text || '');
+  if (!parsed || !Array.isArray(parsed.variants) || !parsed.variants.length) {
+    throw new Error('Модель не предложила ни одной формулировки — повторите или напишите свой вариант');
+  }
+  const variants = parsed.variants.slice(0, 5).map((v, i) => ({
+    id: `V-${i + 1}`,
+    title: String(v.title || `Вариант ${i + 1}`).slice(0, 80),
+    text: String(v.text || '').trim().slice(0, 8000),
+    why: String(v.why || '').slice(0, 400),
+    needsCheck: !!v.needs_check,
+  })).filter((v) => v.text);
+  if (!variants.length) throw new Error('Модель вернула пустые формулировки — напишите свой вариант');
+  return store.saveSuggestions(runId, findingId, variants);
+}
+
+module.exports = {
+  runAnalysis, suggestFix, _setCallFn, ANALYZE_CHAR_LIMIT,
+  CLASSIFY_SCHEMA, FINDINGS_SCHEMA, SUGGEST_SCHEMA, completenessSchema, completenessFindings,
+};

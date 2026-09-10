@@ -1907,3 +1907,6 @@ html[data-boot="auth"] .shell { visibility: hidden; }
   :root:not([data-theme="light"]) .btn-quiet,
   :root:not([data-theme="light"]) .btn-danger { box-shadow: inset 0 1px 0 rgba(255, 244, 226, .1); }
 }
+
+/* подпись под полями окна проекта (нейросеть проекта, 10.09.2026) */
+.pf-hint { grid-column: 1 / -1; margin: -4px 0 0; font-size: 12px; color: var(--text-3); line-height: 1.45; }

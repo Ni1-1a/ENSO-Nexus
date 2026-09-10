@@ -20,7 +20,7 @@ function normalize(text) {
     .trim();
 }
 
-/** Ключ слияния: пункт ЗнП + суть дефекта (спека v1.1, правка 4). */
+/** Ключ слияния: пункт ТЗ + суть дефекта (спека v1.1, правка 4). */
 function findingKey(f) {
   return `${normalize(f.znp_ref)}|${normalize(f.problem).slice(0, 80)}`;
 }

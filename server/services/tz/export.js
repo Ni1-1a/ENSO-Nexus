@@ -29,7 +29,7 @@ const XLSX_COLS = [
   { label: '№', width: 8 },
   { label: 'Серьёзность', width: 16 },
   { label: 'Категория', width: 18 },
-  { label: 'Пункт ЗнП', width: 22 },
+  { label: 'Пункт ТЗ', width: 22 },
   { label: 'Цитата', width: 40 },
   { label: 'Дефект', width: 52 },
   { label: 'Источник требования', width: 46 },
@@ -204,7 +204,7 @@ function reportDocx(run, project) {
 
   body.push(heading('7. Матрица полноты по чек-листу'));
   body.push(tableXml(
-    ['Пункт состава ЗнП', 'Статус', 'Где в ЗнП', 'Комментарий'],
+    ['Пункт состава ТЗ', 'Статус', 'Где в ТЗ', 'Комментарий'],
     (result.checklist_matrix || []).map((m) => [m.item, m.status, m.znp_ref || '—', m.note || '']),
     [4200, 1200, 1800, 2800],
   ));
@@ -214,9 +214,14 @@ function reportDocx(run, project) {
   if (!unv.length) body.push(para('Нет.'));
   for (const u of unv) body.push(para(`— ${u.what} (${u.why})`, { after: 60 }));
 
+  return docxBuffer(body.join(''));
+}
+
+/** DOCX-контейнер из готового тела документа: общий для заключения и редакции ТЗ. */
+function docxBuffer(bodyXml) {
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
-<w:body>${body.join('')}
+<w:body>${bodyXml}
 <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="850" w:bottom="1134" w:left="1418"/></w:sectPr>
 </w:body></w:document>`;
 
@@ -244,4 +249,29 @@ function reportDocx(run, project) {
   return zip.toBuffer();
 }
 
-module.exports = { findingsXlsx, reportDocx };
+/**
+ * Готовое ТЗ в DOCX: исходный текст с принятыми правками (services/tz/revision.js).
+ *
+ * Это НЕ заключение, а сам документ — то, что человек отдаёт заказчику или
+ * несёт на следующий круг проверки. Первым абзацем — честная шапка: сколько
+ * правок принято, каким прогоном и что платформа не переписывала исходные
+ * пункты, а дописывала уточнения.
+ */
+function revisionDocx({ project, run, revision }) {
+  const body = [];
+  body.push(para(`Задание на проектирование — ${project.name}`, { bold: true, size: 16, after: 160 }));
+  body.push(labeled('Редакция:', `с учётом ${revision.applied} принятых формулировок по проверке от ${String(run.finished_at || run.created_at).slice(0, 10)}`));
+  body.push(para('Исходные пункты не переписаны: принятые формулировки добавлены после места замечания '
+    + 'или в раздел «Дополнения по результатам проверки». Значения в квадратных скобках заполняет заказчик.',
+  { after: 200 }));
+  for (const block of String(revision.text || '').split(/\n{2,}/)) {
+    const t = block.trim();
+    if (!t) continue;
+    const isHead = /^[А-ЯЁ0-9][А-ЯЁ \d.,«»()-]{6,}$/.test(t) && t.length < 120;
+    const isNote = /^\((уточнение|по замечанию)/.test(t);
+    body.push(para(t, { bold: isHead, size: isHead ? 13 : null, after: isNote ? 160 : 120 }));
+  }
+  return docxBuffer(body.join(''));
+}
+
+module.exports = { findingsXlsx, reportDocx, revisionDocx };

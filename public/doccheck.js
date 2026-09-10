@@ -494,6 +494,8 @@
     }
     state.run = data.run;
     const run = state.run;
+    // место обсуждения фрагментов на этой странице (frag-chat.js)
+    if (window.FragChat) FragChat.setContext({ entityId: run.id, anchor: `проверка «${run.check_name || ''}»` });
     $('r-title').textContent = 'Результат проверки';
     crumbs([{ label: 'Проверки', href: '#/' }, { label: run.check_name || 'Проверка', href: `#/c/${run.check_id}` }, { label: 'Результат' }]);
     $('r-sub').textContent = `${fmtDateTime(run.created_at)}${run.provider ? ` · ${run.provider}${run.model ? ` (${run.model})` : ''}` : ' · без модели'}${run.started_by_name ? ` · запустил: ${run.started_by_name}` : ''}`;
@@ -593,7 +595,12 @@
   function renderRunFinding(f) {
     const run = state.run;
     const d = (run.decisions || {})[f.id] || null;
-    const card = h('div', { class: 'mod-finding', 'data-decision': d ? d.decision : '' });
+    // место для обсуждения выделенного фрагмента (frag-chat.js)
+    const card = h('div', {
+      class: 'mod-finding', 'data-decision': d ? d.decision : '',
+      'data-frag-entity': run.id,
+      'data-frag-anchor': `находка ${f.id}${f.kind ? `, ${f.kind}` : ''}`,
+    });
     card.append(h('div', { class: 'head' },
       h('span', { class: 'fid' }, f.id),
       h('span', { class: 'mod-badge', 'data-act': f.action }, f.action),

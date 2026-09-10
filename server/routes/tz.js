@@ -29,7 +29,7 @@ const upload = multer({
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// текст ЗнП больше общего лимита JSON платформы (256 КБ) — свой разбор тела.
+// текст ТЗ больше общего лимита JSON платформы (256 КБ) — свой разбор тела.
 // Лимит считается от DOC_CHAR_LIMIT: кириллица в JSON занимает до 3 байт на знак
 // (2 в UTF-8 + экранирование), и при «2mb» потолок в 1,5 млн знаков был
 // недостижим — вставка обрывалась на миллионе безликим 413 (аудит 09.09.2026)
@@ -127,15 +127,18 @@ router.post('/projects', bigJson, wrap(async (req, res) => {
       .validateChoice(String(provider), model ? String(model) : '', req.user, req.hostname);
     if (!check.ok) return res.status(400).json({ error: check.error });
   }
+  // нейросеть задания = нейросеть проекта платформы; тело её больше не задаёт
+  const pid = platformProjects.resolveProjectId(projectId, req.user).id;
+  const inherited = platformProjects.aiChoice(pid);
   const project = store.createProject({
     name: String(name).trim().slice(0, 200),
     checklist: checklistId,
-    provider: provider ? String(provider) : '',
-    model: model ? String(model) : '',
+    provider: provider ? String(provider) : inherited.provider,
+    model: provider ? (model ? String(model) : '') : inherited.model,
     object: object && typeof object === 'object' ? object : {},
     user: req.user,
     // пусто — «Ранние работы», чужой или удалённый проект — 404 (общее правило модулей)
-    projectId: platformProjects.resolveProjectId(projectId, req.user).id,
+    projectId: pid,
   });
   platformProjects.touch(project.project_id);
   // как в GET: текст документа и сырой object_json в ответ не уходят (object — разобранный)
@@ -200,9 +203,9 @@ router.delete('/projects/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/* ---------------- документ ЗнП ---------------- */
+/* ---------------- документ ТЗ ---------------- */
 
-/** Вставка текста ЗнП руками (основной путь, работает всегда). */
+/** Вставка текста ТЗ руками (основной путь, работает всегда). */
 router.put('/projects/:id/document', bigJson, wrap(async (req, res) => {
   if (!allowed(store.projectById(req.params.id), req, res, { write: true })) return;
   const body = req.body || {};
@@ -214,7 +217,7 @@ router.put('/projects/:id/document', bigJson, wrap(async (req, res) => {
     return res.status(400).json({ error: 'Поле name должно быть строкой' });
   }
   const text = String(body.text || '').trim();
-  if (!text) return res.status(400).json({ error: 'Пустой текст ЗнП' });
+  if (!text) return res.status(400).json({ error: 'Пустой текст ТЗ' });
   const tooBig = require('../services/validation').docSizeError(text);
   if (tooBig) return res.status(422).json({ error: tooBig });
   const project = store.setDocument(req.params.id, {
@@ -226,7 +229,7 @@ router.put('/projects/:id/document', bigJson, wrap(async (req, res) => {
 }));
 
 /**
- * Загрузка файла ЗнП: DOCX, PDF с текстовым слоем, TXT/MD. Сканы без текстового
+ * Загрузка файла ТЗ: DOCX, PDF с текстовым слоем, TXT/MD. Сканы без текстового
  * слоя в v1 не распознаются — честный отказ, не молчаливый пустой текст.
  */
 router.post('/projects/:id/document/file',
@@ -265,7 +268,7 @@ router.post('/projects/:id/document/file',
     if (!text) {
       return res.status(422).json({
         error: ext === 'pdf'
-          ? 'В PDF нет текстового слоя (скан). В этой версии распознавание сканов не выполняется — вставьте текст ЗнП вручную.'
+          ? 'В PDF нет текстового слоя (скан). В этой версии распознавание сканов не выполняется — вставьте текст ТЗ вручную.'
           : 'Не удалось извлечь текст из файла',
       });
     }
@@ -285,10 +288,26 @@ router.post('/projects/:id/analyze',
     const project = store.projectById(req.params.id);
     if (!allowed(project, req, res, { write: true })) return;
     if (!project.document_text.trim()) {
-      return res.status(422).json({ error: 'В проекте нет текста ЗнП — загрузите документ или вставьте текст' });
+      return res.status(422).json({ error: 'В проекте нет текста ТЗ — загрузите документ или вставьте текст' });
+    }
+    /*
+     * Нейросеть берётся у ПРОЕКТА ПЛАТФОРМЫ — один выбор на все модули
+     * (решение владельца 10.09.2026, пикер из модуля убран). Выбор проекта
+     * СИЛЬНЕЕ старого выбора задания: иначе задание, заведённое до правки,
+     * навсегда оставалось бы на прежней модели, а сменить её из интерфейса
+     * уже негде — ровно это и упиралось в «Claude не настроен» на прогоне.
+     * Свой выбор задания остаётся запасным: у проекта нейросети может не быть.
+     */
+    const projectAi = platformProjects.aiChoice(project.project_id);
+    if (projectAi.provider && projectAi.provider !== project.ai_provider) {
+      store.updateProject(project.id, { provider: projectAi.provider, model: projectAi.model });
+      project.ai_provider = projectAi.provider;
+      project.ai_model = projectAi.model;
     }
     if (!project.ai_provider) {
-      return res.status(422).json({ error: 'Не выбрана модель — укажите её в настройках проекта' });
+      return res.status(422).json({
+        error: 'У проекта не выбрана нейросеть. Откройте «Свойства проекта» на главной и выберите её — она общая для всех модулей.',
+      });
     }
     // Доступность провайдера здесь заново не проверяется: выбор валидировался при
     // сохранении, а настоящий запрет стоит на дне адаптера (правило платформы) —
@@ -340,6 +359,92 @@ function loadDoneRun(rid, req, res) {
   }
   return run;
 }
+
+/* ---------------- предложения по заполнению и правки (10.09.2026) ---------------- */
+
+/**
+ * Модель предлагает формулировки по ОДНОМУ замечанию. Ответ — варианты; выбор
+ * человека сохраняется отдельным маршрутом, свой текст он может написать сам.
+ */
+router.post('/runs/:rid/findings/:fid/suggest',
+  rateLimit(config.rateLimitExpensive, 'tz-suggest'),
+  wrap(async (req, res) => {
+    const run = store.runById(req.params.rid);
+    if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+    if (!projectForRun(run, req, res, { write: true })) return;
+    try {
+      const fix = await require('../services/tz/analyze')
+        .suggestFix(run.id, req.params.fid, { host: String(req.hostname || '').toLowerCase() });
+      res.json({ fix });
+    } catch (err) {
+      if (err.status) return res.status(err.status).json({ error: err.message });
+      // недоступная модель — состояние сервиса, а не наша ошибка
+      return res.status(503).json({ error: err.message });
+    }
+  }));
+
+/** Выбранная (или написанная) формулировка. Пустой текст снимает правку. */
+router.put('/runs/:rid/findings/:fid/fix', wrap(async (req, res) => {
+  const run = store.runById(req.params.rid);
+  if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!projectForRun(run, req, res, { write: true })) return;
+  const body = req.body || {};
+  if (badStrings(body, res, ['text', 'kind'])) return;
+  if (!store.findingOf(run, req.params.fid)) {
+    return res.status(404).json({ error: 'Замечание не найдено в этом прогоне' });
+  }
+  const fix = store.saveFix(run.id, req.params.fid, { text: body.text, kind: body.kind, user: req.user });
+  res.json({ fix });
+}));
+
+/** Все правки прогона — клиенту одним запросом вместе с отчётом. */
+router.get('/runs/:rid/fixes', wrap(async (req, res) => {
+  const run = store.runById(req.params.rid);
+  if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  if (!projectForRun(run, req, res)) return;
+  res.json({ fixes: store.listFixes(run.id) });
+}));
+
+/**
+ * Исправленная редакция ТЗ: исходный текст + принятые формулировки.
+ * ?apply=1 — записать её документом проекта (следующая проверка пойдёт по ней).
+ */
+router.post('/runs/:rid/revision', wrap(async (req, res) => {
+  const run = store.runById(req.params.rid, { withText: true });
+  if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  const project = store.projectById(run.project_id);
+  if (!allowed(project, req, res, { write: true })) return;
+  const fixes = store.listFixes(run.id);
+  const revision = require('../services/tz/revision')
+    .build(run.document_text, (run.result && run.result.findings) || [], fixes, run.checklist || project.checklist);
+  if (!revision.applied) {
+    return res.status(422).json({ error: 'Нет ни одной принятой формулировки — выберите или напишите хотя бы одну' });
+  }
+  const apply = String(req.query.apply || '') === '1';
+  if (apply) {
+    store.setDocument(project.id, {
+      text: revision.text,
+      name: `${project.document_name || 'ТЗ'} (редакция по проверке)`,
+      note: `собрано платформой ${new Date().toLocaleDateString('ru-RU')}: принято формулировок ${revision.applied}`,
+    });
+  }
+  res.json({ applied: revision.applied, chars: revision.text.length, placement: revision.byFinding, applied_to_project: apply });
+}));
+
+/** Готовое ТЗ с принятыми правками — DOCX. */
+router.get('/runs/:rid/revision.docx', wrap(async (req, res) => {
+  const run = store.runById(req.params.rid, { withText: true });
+  if (!run) return res.status(404).json({ error: 'Прогон не найден' });
+  const project = store.projectById(run.project_id);
+  if (!allowed(project, req, res)) return;
+  const fixes = store.listFixes(run.id);
+  const revision = require('../services/tz/revision')
+    .build(run.document_text, (run.result && run.result.findings) || [], fixes, run.checklist || project.checklist);
+  const buf = require('../services/tz/export').revisionDocx({ project, run, revision });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`ТЗ ${project.name} (редакция).docx`)}`);
+  res.send(buf);
+}));
 
 router.get('/runs/:rid/export.xlsx', wrap(async (req, res) => {
   const run = loadDoneRun(req.params.rid, req, res);

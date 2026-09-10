@@ -558,6 +558,8 @@
   }
 
   function renderRun(run, cached) {
+    // место обсуждения фрагментов на этой странице (frag-chat.js)
+    if (window.FragChat) FragChat.setContext({ entityId: String(run.id || ''), anchor: `комплект «${(state.project && state.project.name) || ''}»` });
     const statusMap = {
       done: ['выполнен', 'ok'],
       running: ['выполняется', 'warn'],
@@ -666,7 +668,11 @@
   }
 
   function findingCard(f) {
-    const card = h('div', { class: `nm-finding sev-${f.severity}${f.status !== 'open' ? ' settled' : ''}` });
+    // место для обсуждения выделенного фрагмента (frag-chat.js)
+    const card = h('div', {
+      class: `nm-finding sev-${f.severity}${f.status !== 'open' ? ' settled' : ''}`,
+      'data-frag-anchor': `замечание ${f.rule_id || f.id || ''}`.trim(),
+    });
 
     const top = h('div', { class: 'nm-f-top' },
       h('span', { class: 'nm-f-rule' }, f.rule_id),

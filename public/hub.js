@@ -202,6 +202,7 @@
     stageSel.innerHTML = ['<option value="">не указана</option>', ...STAGES.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`)].join('');
     if (project && project.stage && !STAGES.includes(project.stage)) stageSel.insertAdjacentHTML('beforeend', `<option value="${esc(project.stage)}">${esc(project.stage)}</option>`);
     stageSel.value = project ? project.stage || '' : 'П';
+    fillAiSelects(project ? project.ai_provider || '' : '', project ? project.ai_model || '' : '');
     $('pm-error').hidden = true;
     $('pm-submit').textContent = project ? 'Сохранить' : 'Создать проект';
     // «Ранние работы» — приёмник всего, что было до проектов: его не удаляют
@@ -209,6 +210,44 @@
     m.hidden = false;
     setTimeout(() => $('pm-name').focus(), 0);
   }
+  /**
+   * Пикер нейросети проекта: список провайдеров и моделей — общий с платформой
+   * (/api/health). У недоступных названа причина, как в пикере посадки.
+   */
+  let providersCache = null;
+  async function fillAiSelects(provider, model) {
+    const provSel = $('pm-provider'); const modelSel = $('pm-model');
+    if (!provSel || !modelSel) return;
+    if (!providersCache) {
+      try {
+        const data = await S.getJson('/api/health');
+        providersCache = (data && data.providers) || [];
+      } catch { providersCache = []; }
+    }
+    provSel.innerHTML = '<option value="">— не выбрана —</option>';
+    for (const p of providersCache) {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.available === false ? `${p.label} — ${p.note || 'недоступно'}` : p.label;
+      if (p.available === false) o.disabled = true;
+      if (p.id === provider) o.selected = true;
+      provSel.append(o);
+    }
+    const fillModels = () => {
+      const p = providersCache.find((x) => x.id === provSel.value) || null;
+      const models = (p && p.models) || [];
+      modelSel.innerHTML = '';
+      if (!models.length) {
+        modelSel.append(new Option(p ? 'модель по умолчанию' : '—', ''));
+      } else {
+        for (const m of models) modelSel.append(new Option(m, m, false, m === model));
+      }
+      modelSel.disabled = !p;
+    };
+    provSel.onchange = fillModels;
+    fillModels();
+  }
+
   function closeProjectModal() {
     $('proj-modal').hidden = true;
     if (modalOpener && modalOpener.isConnected && modalOpener.offsetParent !== null) modalOpener.focus();
@@ -225,6 +264,8 @@
       fullName: $('pm-full').value.trim(),
       client: $('pm-client').value.trim(),
       stage: $('pm-stage').value,
+      aiProvider: $('pm-provider') ? $('pm-provider').value : '',
+      aiModel: $('pm-provider') && $('pm-provider').value ? $('pm-model').value : '',
     };
     if (!body.name) { err.textContent = 'Дайте проекту короткое имя.'; err.hidden = false; $('pm-name').focus(); return; }
     const btn = $('pm-submit');

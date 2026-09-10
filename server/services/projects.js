@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS project_marks (
 );
 `);
 
+/*
+ * Нейросеть проекта: один выбор на все модули, как этап посадки берёт её из
+ * настроек сессии. До 10.09.2026 «Анализ ТЗ» спрашивал провайдера и модель в
+ * карточке КАЖДОГО задания — человек выбирал одно и то же по десять раз, а
+ * половина заданий оставалась без модели и падала на запуске.
+ */
+try { db.exec("ALTER TABLE projects ADD COLUMN ai_provider TEXT NOT NULL DEFAULT ''"); } catch { /* колонка уже есть */ }
+try { db.exec("ALTER TABLE projects ADD COLUMN ai_model TEXT NOT NULL DEFAULT ''"); } catch { /* колонка уже есть */ }
+
 const userName = (user) => (user ? `${user.lastName || ''} ${user.firstName || ''}`.trim() : '');
 const normId = (v) => (ID_RE.test(String(v || '').trim()) ? String(v).trim() : '');
 const clip = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
@@ -224,13 +233,14 @@ function fmtDate(iso) {
 
 /* ---------------- CRUD ---------------- */
 
-function create({ name, fullName, client, stage, note, user, id }) {
-  assertStrings({ name, fullName, client, stage, note });
+function create({ name, fullName, client, stage, note, aiProvider, aiModel, user, id }) {
+  assertStrings({ name, fullName, client, stage, note, aiProvider, aiModel });
   const pid = id || crypto.randomUUID();
   db.prepare(`INSERT INTO projects
-      (id, name, full_name, client, stage, note, created_by, created_by_name, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      (id, name, full_name, client, stage, note, ai_provider, ai_model, created_by, created_by_name, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(pid, clip(name, 120), clip(fullName, 300), clip(client, 200), clip(stage, 40), clip(note, 2000),
+      clip(aiProvider, 40), clip(aiModel, 120),
       (user && user.id) || '', userName(user), now(), now());
   return byId(pid);
 }
@@ -250,8 +260,11 @@ function list(user) {
     .filter((p) => canSee(p, user));
 }
 
-const EDITABLE = { name: 120, fullName: 300, client: 200, stage: 40, note: 2000 };
-const COLUMN = { name: 'name', fullName: 'full_name', client: 'client', stage: 'stage', note: 'note' };
+const EDITABLE = { name: 120, fullName: 300, client: 200, stage: 40, note: 2000, aiProvider: 40, aiModel: 120 };
+const COLUMN = {
+  name: 'name', fullName: 'full_name', client: 'client', stage: 'stage', note: 'note',
+  aiProvider: 'ai_provider', aiModel: 'ai_model',
+};
 
 function update(id, fields) {
   assertStrings(fields);
@@ -278,6 +291,15 @@ function remove(id) {
 function touch(id) {
   if (!id) return;
   try { db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(now(), id); } catch { /* нет проекта — не страшно */ }
+}
+
+/**
+ * Нейросеть проекта для модуля: {provider, model}. Пусто — значит человек её
+ * не выбрал, и модуль обязан сказать об этом прямо, а не падать на запуске.
+ */
+function aiChoice(projectId) {
+  const p = projectId ? byIdAny(projectId) : null;
+  return { provider: (p && p.ai_provider) || '', model: (p && p.ai_model) || '' };
 }
 
 /** Модули без хранения: только у них проект помнит отметку прогона. */
@@ -468,6 +490,7 @@ async function summarize(ids, user = null) {
 }
 
 module.exports = {
+  aiChoice,
   LEGACY_ID, MODULES, MARK_MODULES, FOREIGN_EDIT, normId, resolveProjectId, filterId,
   accessTo, entityAccess, entityDenial, visibleIds, onlyVisible, markable,
   create, byId, byIdAny, list, update, remove, touch, mark, canEdit, canSee,

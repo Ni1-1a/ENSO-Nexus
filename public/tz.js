@@ -26,6 +26,7 @@
   };
 
   const state = {
+    fixes: {},          // правки прогона: findingId → {variants, chosenText, …}
     route: { name: 'projects' },
     providers: [],          // из /api/health — уже отфильтровано по человеку и адресу
     checklists: [],         // из /api/tz/meta
@@ -296,7 +297,15 @@
 
     renderDocState();
     fillChecklistSelect($('pj-checklist'), p.checklist);
-    fillProviderSelect($('pj-provider'), $('pj-model'), p.ai_provider, p.ai_model, $('pj-provider-note'));
+    // нейросеть проекта платформы: показываем, какая работает (выбор — в свойствах проекта)
+    const ai = (window.EnsoShell && window.EnsoShell.project) || null;
+    const prov = (ai && ai.ai_provider) || p.ai_provider || '';
+    const mdl = (ai && ai.ai_model) || p.ai_model || '';
+    const known = state.providers.find((x) => x.id === prov);
+    $('pj-ai').textContent = prov
+      ? `${known ? known.label : prov}${mdl ? ` · ${mdl}` : ''}`
+      : 'не выбрана — откройте «Свойства проекта» на главной';
+    $('pj-ai').dataset.empty = prov ? '' : '1';
     $('pj-funding').value = (p.object && p.object.funding) || '';
     renderRuns();
 
@@ -325,7 +334,7 @@
         `Загружен: ${p.document_name || 'вставленный текст'} · ${fmtChars(p.document_chars)}`));
       if (p.document_note) box.append(h('span', { class: 'hint' }, ` — ${p.document_note}`));
     } else {
-      box.append(h('span', { class: 'none' }, 'Текст ЗнП ещё не загружен.'));
+      box.append(h('span', { class: 'none' }, 'Текст ТЗ ещё не загружен.'));
     }
   }
 
@@ -360,8 +369,6 @@
         method: 'PATCH',
         json: {
           checklist: $('pj-checklist').value,
-          provider: $('pj-provider').value,
-          model: $('pj-model').value,
           object,
         },
       });
@@ -449,6 +456,8 @@
     }
     state.run = data.run;
     const run = state.run;
+    // место обсуждения фрагментов на этой странице (frag-chat.js)
+    if (window.FragChat) FragChat.setContext({ entityId: run.id, anchor: `задание «${run.project_name || ''}»` });
     crumbs([{ label: 'Задания', href: '#/' }, { label: run.project_name || 'Задание', href: `#/p/${run.project_id}` }, { label: 'Результат' }]);
     $('r-title').textContent = 'Результат проверки';
     $('r-sub').textContent = `${fmtDateTime(run.created_at)} · ${run.provider}${run.model ? ` (${run.model})` : ''}${run.started_by_name ? ` · запустил: ${run.started_by_name}` : ''}`;
@@ -506,6 +515,7 @@
     if (result.norm_check_note) box.append(h('p', { class: 'tz-note-offline' }, `⚠ ${result.norm_check_note}`));
 
     renderFindings();
+    loadFixes();
 
     const matrix = result.checklist_matrix || [];
     const tbody = $('r-matrix');
@@ -552,7 +562,13 @@
   function renderFinding(f) {
     const run = state.run;
     const d = (run.decisions || {})[f.id] || null;
-    const card = h('div', { class: 'tz-finding', 'data-decision': d ? d.decision : '' });
+    // подпись места для обсуждения выделенного фрагмента (frag-chat.js):
+    // выделив цитату или формулировку, человек спрашивает именно об этом замечании
+    const card = h('div', {
+      class: 'tz-finding', 'data-decision': d ? d.decision : '',
+      'data-frag-entity': run.id,
+      'data-frag-anchor': `замечание ${f.id}${f.znp_ref ? `, ${f.znp_ref}` : ''}`,
+    });
     card.append(h('div', { class: 'head' },
       h('span', { class: 'fid' }, f.id),
       h('span', { class: 'tz-badge', 'data-sev': f.severity }, f.severity),
@@ -588,7 +604,117 @@
     decide.append(btnA, btnR);
     if (d) decide.append(h('span', { class: 'who' }, `${d.by || ''} · ${fmtDateTime(d.at)}`));
     card.append(decide);
+    card.append(renderFix(f));
     return card;
+  }
+
+  /* ---------------- предложения по заполнению (10.09.2026) ---------------- */
+
+  /**
+   * Блок «как это записать в ТЗ»: несколько формулировок от модели и своё поле.
+   *
+   * Правило то же, что у решений: пишет человек. Модель предлагает варианты,
+   * человек выбирает один или пишет собственный — и только выбранное попадает
+   * в исправленную редакцию ТЗ.
+   */
+  function renderFix(f) {
+    const fix = state.fixes[f.id] || null;
+    const box = h('div', { class: 'tz-fix' });
+    const head = h('div', { class: 'tz-fix-head' },
+      h('span', { class: 'tz-fix-title' }, 'Как записать в ТЗ'),
+      fix && fix.chosenText ? h('span', { class: 'tz-badge', 'data-sev': 'ok' }, 'формулировка принята') : null);
+    box.append(head);
+
+    const list = h('div', { class: 'tz-fix-variants' });
+    const own = h('textarea', {
+      class: 'tz-fix-own', rows: '3',
+      placeholder: 'Свой вариант: напишите текст пункта так, как он должен стоять в ТЗ',
+    });
+    if (fix && fix.chosenKind === 'own') own.value = fix.chosenText;
+
+    const apply = async (text, kind) => {
+      try {
+        const res = await api(`/runs/${state.run.id}/findings/${f.id}/fix`, { method: 'PUT', json: { text, kind } });
+        state.fixes[f.id] = res.fix;
+        toast(text ? 'Формулировка принята — войдёт в исправленное ТЗ' : 'Формулировка снята');
+        renderFindings();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+
+    const drawVariants = () => {
+      list.innerHTML = '';
+      const variants = (state.fixes[f.id] && state.fixes[f.id].variants) || [];
+      for (const v of variants) {
+        const chosen = state.fixes[f.id] && state.fixes[f.id].chosenKind === 'variant'
+          && state.fixes[f.id].chosenText === v.text;
+        const item = h('div', { class: 'tz-fix-variant', 'data-chosen': chosen ? '1' : null });
+        item.append(h('div', { class: 'tz-fix-vhead' },
+          h('span', { class: 'tz-fix-vtitle' }, v.title),
+          v.needsCheck ? h('span', { class: 'tz-badge' }, 'нужны данные заказчика') : null));
+        item.append(h('p', { class: 'tz-fix-text' }, v.text));
+        if (v.why) item.append(h('p', { class: 'tz-fix-why' }, v.why));
+        const take = h('button', { class: 'btn btn-quiet btn-sm', type: 'button' }, chosen ? '✓ Выбрано' : 'Взять этот');
+        take.addEventListener('click', () => apply(chosen ? '' : v.text, 'variant'));
+        const edit = h('button', { class: 'btn btn-ghost btn-sm', type: 'button' }, 'Править у себя');
+        edit.addEventListener('click', () => { own.value = v.text; own.focus(); });
+        item.append(h('div', { class: 'tz-fix-vfoot' }, take, edit));
+        list.append(item);
+      }
+    };
+    drawVariants();
+
+    const ask = h('button', { class: 'btn btn-primary btn-sm', type: 'button' },
+      (state.fixes[f.id] && state.fixes[f.id].variants.length) ? 'Предложить ещё' : 'Предложить формулировки');
+    ask.addEventListener('click', async () => {
+      ask.disabled = true;
+      const was = ask.textContent;
+      ask.textContent = 'Модель пишет варианты…';
+      try {
+        const res = await api(`/runs/${state.run.id}/findings/${f.id}/suggest`, { method: 'POST', json: {} });
+        state.fixes[f.id] = res.fix;
+        renderFindings();
+      } catch (err) {
+        toast(err.message, 'error');
+        ask.textContent = was;
+        ask.disabled = false;
+      }
+    });
+
+    const saveOwn = h('button', { class: 'btn btn-quiet btn-sm', type: 'button' }, 'Принять свой вариант');
+    saveOwn.addEventListener('click', () => apply(own.value.trim(), 'own'));
+    const clear = h('button', { class: 'btn btn-ghost btn-sm', type: 'button' }, 'Снять формулировку');
+    clear.addEventListener('click', () => apply('', ''));
+
+    box.append(list, own, h('div', { class: 'tz-fix-foot' }, ask, saveOwn,
+      fix && fix.chosenText ? clear : null));
+    return box;
+  }
+
+  /** Правки прогона: их держит сервер, клиент только показывает и меняет. */
+  async function loadFixes() {
+    if (!state.run) return;
+    try {
+      const data = await api(`/runs/${state.run.id}/fixes`);
+      state.fixes = {};
+      for (const fx of data.fixes || []) state.fixes[fx.findingId] = fx;
+      renderFindings();
+      renderRevisionBar();
+    } catch { /* правок может не быть — не повод рушить отчёт */ }
+  }
+
+  /**
+   * Полоса «дальше»: собрать исправленное ТЗ, скачать его и проверить заново.
+   * Появляется, как только принята хотя бы одна формулировка.
+   */
+  function renderRevisionBar() {
+    const bar = $('r-revision');
+    if (!bar) return;
+    const accepted = Object.values(state.fixes).filter((f) => f.chosenText).length;
+    bar.hidden = !accepted;
+    if (!accepted) return;
+    $('r-revision-count').textContent = accepted === 1
+      ? 'Принята 1 формулировка'
+      : `Принято формулировок: ${accepted}`;
   }
 
   /* ---------------- новый проект ---------------- */
@@ -598,7 +724,7 @@
     $('np-error').hidden = true;
     fillChecklistSelect($('np-checklist'), 'production');
     modalOpener = document.activeElement;
-    fillProviderSelect($('np-provider'), $('np-model'), '', '', null);
+
     // название — из проекта платформы, как в нормоконтроле
     const pp = window.EnsoShell && window.EnsoShell.project;
     if (pp) $('np-name').value = pp.full_name || pp.name || '';
@@ -628,8 +754,7 @@
           name,
           projectId: projectId(),
           checklist: $('np-checklist').value,
-          provider: $('np-provider').value,
-          model: $('np-model').value,
+          // нейросеть наследуется от проекта платформы — модуль её не спрашивает
         },
       });
       closeNewProject();
@@ -682,6 +807,38 @@
       if (e.dataTransfer && e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
     });
 
+    // исправленное ТЗ: скачать, записать редакцию в задание, проверить заново
+    const revNote = () => $('r-revision-note');
+    $('r-download-tz').addEventListener('click', () => {
+      if (!state.run) return;
+      window.location.href = `/api/tz/runs/${state.run.id}/revision.docx`;
+    });
+    $('r-apply-revision').addEventListener('click', async () => {
+      if (!state.run) return;
+      const btn = $('r-apply-revision');
+      btn.disabled = true;
+      try {
+        const res = await api(`/runs/${state.run.id}/revision?apply=1`, { method: 'POST', json: {} });
+        revNote().textContent = `Редакция записана в задание: принято формулировок ${res.applied}, `
+          + `по месту цитаты ${res.placement.filter((x) => x.placed === 'по месту цитаты').length}, `
+          + `в дополнения ${res.placement.filter((x) => x.placed === 'в дополнения').length}. `
+          + 'Следующая проверка пойдёт по ней.';
+        revNote().hidden = false;
+        toast('Редакция записана в задание');
+      } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; }
+    });
+    $('r-recheck').addEventListener('click', async () => {
+      if (!state.run) return;
+      const btn = $('r-recheck');
+      btn.disabled = true;
+      try {
+        // сначала записываем редакцию: проверять заново прежний текст бессмысленно
+        await api(`/runs/${state.run.id}/revision?apply=1`, { method: 'POST', json: {} });
+        const started = await api(`/projects/${state.run.project_id}/analyze`, { method: 'POST', json: {} });
+        toast('Проверка запущена по исправленному ТЗ');
+        location.hash = `#/r/${started.runId}`;
+      } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; }
+    });
     $('rf-severity').addEventListener('change', () => { state.filters.severity = $('rf-severity').value; renderFindings(); });
     $('rf-category').addEventListener('change', () => { state.filters.category = $('rf-category').value; renderFindings(); });
     $('r-export-xlsx').addEventListener('click', () =>

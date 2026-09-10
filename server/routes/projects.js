@@ -24,10 +24,22 @@ router.get('/', wrap(async (req, res) => {
   res.json({ projects: await withSummary(projects.list(req.user), req.user) });
 }));
 
+/** Нейросеть проекта — из общего пикера платформы: провайдер и модель проверяются, как везде. */
+async function badAiChoice(body, req, res) {
+  if (body.aiProvider === undefined && body.aiModel === undefined) return false;
+  const provider = String(body.aiProvider || '');
+  if (!provider) return false; // «не выбрана» — законное состояние
+  const check = await require('../services/providers')
+    .validateChoice(provider, String(body.aiModel || ''), req.user, req.hostname);
+  if (!check.ok) { res.status(400).json({ error: check.error }); return true; }
+  return false;
+}
+
 router.post('/', wrap(async (req, res) => {
-  const { name, fullName, client, stage, note } = req.body || {};
+  const { name, fullName, client, stage, note, aiProvider, aiModel } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'Нужно короткое имя проекта (name)' });
-  const project = projects.create({ name, fullName, client, stage, note, user: req.user });
+  if (await badAiChoice(req.body || {}, req, res)) return;
+  const project = projects.create({ name, fullName, client, stage, note, aiProvider, aiModel, user: req.user });
   res.status(201).json({ project: (await withSummary([project], req.user))[0] });
 }));
 
@@ -48,6 +60,7 @@ router.patch('/:id', wrap(async (req, res) => {
   if (body.name !== undefined && (body.name === null || (typeof body.name === 'string' && !body.name.trim()))) {
     return res.status(400).json({ error: 'Название не может быть пустым' });
   }
+  if (await badAiChoice(body, req, res)) return;
   res.json({ project: (await withSummary([projects.update(id, body)], req.user))[0] });
 }));
 

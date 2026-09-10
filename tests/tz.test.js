@@ -349,3 +349,138 @@ test('анализ ТЗ: подделка под PDF/DOCX — 422 «не явл�
   assert.strictEqual(docx.status, 422, JSON.stringify(docx.body));
   assert.match(docx.body.error, /DOCX|Word/);
 });
+
+
+/* ================= предложения по заполнению и редакция ТЗ (10.09.2026) ================= */
+
+test('анализ ТЗ: модель предлагает формулировки, человек выбирает или пишет свою, редакция собирается и скачивается', async () => {
+  // берём ЗАВЕРШЁННЫЙ прогон: в списке есть и упавшие (их заводят соседние тесты)
+  const project = await api(`/api/tz/projects/${projectId}`, { headers: asUser() });
+  let runId = '';
+  let run = null;
+  for (const r of project.body.runs) {
+    const got = (await api(`/api/tz/runs/${r.id}`, { headers: asUser() })).body.run;
+    if (got && got.status === 'done' && got.result) { runId = r.id; run = got; break; }
+  }
+  assert.ok(run, 'завершённого прогона нет');
+  const findings = run.result.findings;
+  // берём находку С ЦИТАТОЙ (правка встанет по месту) и находку полноты (уйдёт в дополнения)
+  const withQuote = findings.find((f) => f.quote);
+  const missing = findings.find((f) => f.category === 'полнота');
+  assert.ok(withQuote && missing, 'в прогоне нет подходящих находок');
+
+  analyze._setCallFn(async () => ({
+    text: JSON.stringify({
+      variants: [
+        { title: 'Минимальный', text: 'Класс энергоэффективности здания — не ниже [УКАЗАТЬ] согласно действующим нормам.', why: 'коротко закрывает требование', needs_check: true },
+        { title: 'Развёрнутый', text: 'Предусмотреть требования к энергоэффективности: класс не ниже [УКАЗАТЬ], перечень мероприятий и расчёт удельного расхода энергии.', why: 'когда нужен состав', needs_check: true },
+        { title: 'С оговоркой', text: 'Требования к энергоэффективности уточняются на стадии П по данным заказчика.', why: 'когда данных нет', needs_check: false },
+      ],
+    }),
+    truncated: false,
+  }));
+  try {
+    const sug = await api(`/api/tz/runs/${runId}/findings/${withQuote.id}/suggest`, { method: 'POST', ...json({}) });
+    assert.strictEqual(sug.status, 200, JSON.stringify(sug.body));
+    assert.strictEqual(sug.body.fix.variants.length, 3);
+    assert.ok(sug.body.fix.variants.every((v) => v.text && v.title && v.id), 'вариант без текста или имени');
+    assert.ok(sug.body.fix.variants.some((v) => v.needsCheck), 'place-holder не помечен needsCheck');
+    // чужой прогон и несуществующая находка — честные коды
+    const bad = await api(`/api/tz/runs/${runId}/findings/F-999/suggest`, { method: 'POST', ...json({}) });
+    assert.strictEqual(bad.status, 404);
+  } finally {
+    analyze._setCallFn(null);
+  }
+
+  // человек берёт вариант модели…
+  const chosen = (await api(`/api/tz/runs/${runId}/fixes`, { headers: asUser() })).body.fixes
+    .find((f) => f.findingId === withQuote.id);
+  const put1 = await api(`/api/tz/runs/${runId}/findings/${withQuote.id}/fix`, {
+    method: 'PUT', ...json({ text: chosen.variants[1].text, kind: 'variant' }),
+  });
+  assert.strictEqual(put1.status, 200, JSON.stringify(put1.body));
+  assert.strictEqual(put1.body.fix.chosenKind, 'variant');
+  assert.match(put1.body.fix.authorName, /\S/, 'ФИО автора правки пишет сервер');
+  // …а по второй находке пишет свою формулировку
+  const own = 'Раздел ТЭП дополнить: площадь застройки, этажность, строительный объём — по форме приложения.';
+  const put2 = await api(`/api/tz/runs/${runId}/findings/${missing.id}/fix`, {
+    method: 'PUT', ...json({ text: own, kind: 'own' }),
+  });
+  assert.strictEqual(put2.status, 200);
+  assert.strictEqual(put2.body.fix.chosenKind, 'own');
+
+  // редакция: одна правка встала по месту цитаты, другая — в дополнения
+  const rev = await api(`/api/tz/runs/${runId}/revision`, { method: 'POST', ...json({}) });
+  assert.strictEqual(rev.status, 200, JSON.stringify(rev.body));
+  assert.strictEqual(rev.body.applied, 2);
+  const places = rev.body.placement.map((p) => p.placed).sort();
+  assert.deepStrictEqual(places, ['в дополнения', 'по месту цитаты']);
+
+  // готовое ТЗ скачивается как DOCX и несёт обе формулировки
+  const res = await fetch(`${base}/api/tz/runs/${runId}/revision.docx`, { headers: asUser() });
+  assert.strictEqual(res.status, 200);
+  const zip = new AdmZip(Buffer.from(await res.arrayBuffer()));
+  const xml = zip.readAsText('word/document.xml');
+  assert.match(xml, /Задание на проектирование/);
+  assert.ok(xml.includes('энергоэффективности') || xml.includes('ТЭП'), 'принятых формулировок нет в документе');
+
+  // снятие правки: пустой текст убирает её из редакции
+  const off = await api(`/api/tz/runs/${runId}/findings/${missing.id}/fix`, { method: 'PUT', ...json({ text: '' }) });
+  assert.strictEqual(off.status, 200);
+  assert.strictEqual(off.body.fix.chosenText, '');
+  const rev2 = await api(`/api/tz/runs/${runId}/revision`, { method: 'POST', ...json({}) });
+  assert.strictEqual(rev2.body.applied, 1);
+});
+
+test('анализ ТЗ: редакция применяется к проекту и следующая проверка идёт по ней', async () => {
+  const project = await api(`/api/tz/projects/${projectId}`, { headers: asUser() });
+  let runId = '';
+  for (const r of project.body.runs) {
+    const got = (await api(`/api/tz/runs/${r.id}`, { headers: asUser() })).body.run;
+    if (got && got.status === 'done' && got.result) { runId = r.id; break; }
+  }
+  assert.ok(runId, 'завершённого прогона нет');
+  const before = (await api(`/api/tz/projects/${projectId}/document`, { headers: asUser() })).body.text;
+  const applied = await api(`/api/tz/runs/${runId}/revision?apply=1`, { method: 'POST', ...json({}) });
+  assert.strictEqual(applied.status, 200, JSON.stringify(applied.body));
+  assert.strictEqual(applied.body.applied_to_project, true);
+  const after = (await api(`/api/tz/projects/${projectId}/document`, { headers: asUser() })).body;
+  assert.notStrictEqual(after.text, before, 'документ проекта не изменился');
+  assert.ok(after.text.length > before.length, 'принятая формулировка не дописана');
+  assert.match(after.name, /редакция по проверке/);
+  // без единой принятой формулировки редакция не собирается — честный 422
+  const clean = await api('/api/tz/projects', { method: 'POST', ...json({ name: 'Пустое задание', checklist: 'production' }) });
+  const fresh = clean.body.project.id;
+  const noFix = await api(`/api/tz/runs/${runId}/revision`, { method: 'POST', ...json({}) });
+  assert.ok([200, 422].includes(noFix.status));
+  assert.ok(fresh, 'задание не создалось');
+});
+
+/*
+ * Текст из DOCX и PDF почти не содержит пустых строк: на боевом ТЗ АВИВАК
+ * двадцать «абзацев» по 2,5 тыс. знаков. Правка, поставленная «после абзаца»,
+ * уезжала на две страницы от своего места — в раздел ТЭП. Проверяем, что она
+ * встаёт сразу за СТРОКОЙ с цитатой, а исходный текст не переписан.
+ */
+test('анализ ТЗ: правка встаёт рядом с цитатой даже в сплошном тексте без пустых строк', () => {
+  const revision = require('../server/services/tz/revision');
+  const lines = [];
+  for (let i = 1; i <= 40; i += 1) lines.push(`${i}. Строка задания номер ${i}, обычный текст пункта.`);
+  lines[9] = '10. Инженерные изыскания (дополнительные, при необходимости, по согласованию с заказчиком).';
+  const text = lines.join('\n');            // ОДИН блок: пустых строк нет вовсе
+
+  const findings = [{ id: 'F-001', quote: 'Инженерные изыскания (дополнительные, при необходимости', znp_ref: 'п. 10' }];
+  const fixes = [{ findingId: 'F-001', chosenText: 'Изыскания выполняются в объёме, необходимом для стадии П.', chosenKind: 'variant', authorName: 'Проверяющий' }];
+  const out = revision.build(text, findings, fixes, '');
+
+  assert.equal(out.applied, 1);
+  assert.equal(out.byFinding[0].placed, 'по месту цитаты');
+  const at = out.text.indexOf('Изыскания выполняются в объёме');
+  const quoteAt = out.text.indexOf('10. Инженерные изыскания (дополнительные');
+  assert.ok(quoteAt >= 0 && at > quoteAt, 'правка ушла выше цитаты');
+  const between = out.text.slice(quoteAt, at);
+  assert.ok(!between.includes('11. Строка задания'), 'правка встала не рядом с цитатой, а в конце блока');
+  // исходные строки целы и идут по порядку
+  for (const l of lines) assert.ok(out.text.includes(l), `строка потеряна: ${l.slice(0, 30)}`);
+  assert.ok(out.text.indexOf('40. Строка задания') > at, 'хвост документа потерян');
+});

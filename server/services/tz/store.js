@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Модуль «Анализ ТЗ»: хранение проектов, текста ЗнП и прогонов проверки.
+ * Модуль «Анализ ТЗ»: хранение проектов, текста ТЗ и прогонов проверки.
  *
  * Таблицы модуль заводит сам (по образцу dataset/store.js): проверки ТЗ живут
  * ВНЕ сессий платформы и их TTL — заключение по заданию не имеет права
@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS tz_runs (
   finished_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_tz_runs_project ON tz_runs(project_id, created_at);
+CREATE TABLE IF NOT EXISTS tz_fixes (
+  run_id TEXT NOT NULL,
+  finding_id TEXT NOT NULL,
+  variants_json TEXT NOT NULL DEFAULT '',   -- предложения модели: [{title, text, why, needs_check}]
+  chosen_text TEXT NOT NULL DEFAULT '',     -- что человек выбрал или написал сам
+  chosen_kind TEXT NOT NULL DEFAULT '',     -- variant | own
+  author TEXT NOT NULL DEFAULT '',
+  author_name TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, finding_id)
+);
 CREATE TABLE IF NOT EXISTS tz_decisions (
   run_id TEXT NOT NULL,
   finding_id TEXT NOT NULL,
@@ -265,8 +276,77 @@ function setDecision(runId, findingId, decision, user) {
   return { decision, by: userName(user), at: now() };
 }
 
+/* ---------------- предложения по заполнению и правки ---------------- */
+
+/** Находка прогона по id — вместе с ней проверяется, что правка относится к делу. */
+function findingOf(run, findingId) {
+  return ((run.result && run.result.findings) || []).find((f) => f.id === findingId) || null;
+}
+
+/** Предложения модели по находке (перезаписываются при повторном запросе). */
+function saveSuggestions(runId, findingId, variants) {
+  const ts = now();
+  db.prepare(`INSERT INTO tz_fixes (run_id, finding_id, variants_json, updated_at) VALUES (?,?,?,?)
+      ON CONFLICT(run_id, finding_id) DO UPDATE SET variants_json = excluded.variants_json, updated_at = excluded.updated_at`)
+    .run(runId, findingId, JSON.stringify(variants || []), ts);
+  return fixOf(runId, findingId);
+}
+
+/**
+ * Выбранная формулировка. Пустая строка снимает правку: человек передумал, и
+ * пункт не должен молча уехать в итоговый документ.
+ */
+function saveFix(runId, findingId, { text, kind, user }) {
+  const ts = now();
+  const clean = String(text == null ? '' : text).trim().slice(0, 20000);
+  if (!clean) {
+    db.prepare('UPDATE tz_fixes SET chosen_text = \'\', chosen_kind = \'\', updated_at = ? WHERE run_id = ? AND finding_id = ?')
+      .run(ts, runId, findingId);
+    return fixOf(runId, findingId);
+  }
+  db.prepare(`INSERT INTO tz_fixes (run_id, finding_id, chosen_text, chosen_kind, author, author_name, updated_at)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(run_id, finding_id) DO UPDATE SET chosen_text = excluded.chosen_text,
+        chosen_kind = excluded.chosen_kind, author = excluded.author,
+        author_name = excluded.author_name, updated_at = excluded.updated_at`)
+    .run(runId, findingId, clean, kind === 'own' ? 'own' : 'variant', (user && user.id) || '', userName(user), ts);
+  return fixOf(runId, findingId);
+}
+
+function fixOf(runId, findingId) {
+  const row = db.prepare('SELECT * FROM tz_fixes WHERE run_id = ? AND finding_id = ?').get(runId, findingId);
+  if (!row) return null;
+  let variants = [];
+  try { variants = JSON.parse(row.variants_json || '[]'); } catch { variants = []; }
+  return {
+    findingId: row.finding_id,
+    variants,
+    chosenText: row.chosen_text || '',
+    chosenKind: row.chosen_kind || '',
+    authorName: row.author_name || '',
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Все правки прогона: клиенту — одним запросом вместе с отчётом. */
+function listFixes(runId) {
+  return db.prepare('SELECT * FROM tz_fixes WHERE run_id = ? ORDER BY finding_id').all(runId).map((row) => {
+    let variants = [];
+    try { variants = JSON.parse(row.variants_json || '[]'); } catch { variants = []; }
+    return {
+      findingId: row.finding_id,
+      variants,
+      chosenText: row.chosen_text || '',
+      chosenKind: row.chosen_kind || '',
+      authorName: row.author_name || '',
+      updatedAt: row.updated_at,
+    };
+  });
+}
+
 module.exports = {
   db, httpError, sha256, userName,
+  findingOf, saveSuggestions, saveFix, fixOf, listFixes,
   createProject, projectById, projectRowAny, listProjects, updateProject, setDocument, deleteProject,
   ensureServiceSession,
   createRun, runById, listRuns, setRunStatus, setRunProgress, recoverInterrupted, setDecision,

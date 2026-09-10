@@ -71,6 +71,8 @@ function createApp() {
   app.use('/api/projects', logErrorResponses, require('./routes/projects').router);
   // «Виртуальный офис» — демо-витрина: читает боевые данные, пишет только в office.db
   app.use('/api/office', logErrorResponses, require('./routes/office').router);
+  // обсуждение выделенного фрагмента — общее для всех модулей (замечание владельца 10.09.2026)
+  app.use('/api/fragment-chat', logErrorResponses, require('./routes/fragment-chat').router);
   app.use('/api', logErrorResponses, apiRouter);
   // всё, что заведено до проектов, переезжает в «Ранние работы» — таблицы модулей уже созданы
   require('./services/projects').migrateLegacy();

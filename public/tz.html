@@ -6,9 +6,9 @@
   <title>Анализ ТЗ — Enso-nexus</title>
   <meta name="description" content="Модуль анализа задания на проектирование: полнота состава по чек-листу, качество формулировок, противоречия и вердикт готовности">
   <meta name="theme-color" content="#f3efe6">
-  <link rel="stylesheet" href="styles.css?v=58">
-  <link rel="stylesheet" href="tz.css?v=7">
-  <link rel="stylesheet" href="shell.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=59">
+  <link rel="stylesheet" href="tz.css?v=9">
+  <link rel="stylesheet" href="shell.css?v=10">
   <!-- boot.js решает, что показать первым — вход или модуль; общий с платформой -->
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M30 15h32l14 14v56H30z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M62 15v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M40 48h22M40 60h16' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/></svg>">
@@ -33,8 +33,8 @@
         </div>
         <div id="tz-projects" class="tz-projects-grid" aria-live="polite"></div>
         <p id="tz-projects-empty" class="empty-state" hidden>
-          Заданий пока нет. Нажмите «Новое задание», выберите тип объекта и модель,
-          вставьте текст ЗнП — и запустите проверку.
+          Заданий пока нет. Нажмите «Новое задание», выберите тип объекта,
+          вставьте текст ТЗ — и запустите проверку.
         </p>
         <p id="tz-projects-error" class="tz-error" role="alert" hidden></p>
       </section>
@@ -48,19 +48,19 @@
 
         <div class="tz-cols">
           <div class="card">
-            <h2>Документ ЗнП</h2>
+            <h2>Документ ТЗ</h2>
             <div id="pj-doc-state" class="tz-doc-state"></div>
             <div id="pj-dropzone" class="dropzone" tabindex="0" role="button"
-                 aria-label="Файл ЗнП: перетащите сюда или нажмите для выбора">
+                 aria-label="Файл ТЗ: перетащите сюда или нажмите для выбора">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" class="dz-icon">
                 <path d="M12 15V5m0 0L8 9m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v1.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V17" stroke-linecap="round"/>
               </svg>
-              <p><strong>Перетащите файл ЗнП</strong> или нажмите для выбора</p>
+              <p><strong>Перетащите файл ТЗ</strong> или нажмите для выбора</p>
               <p class="hint">DOCX, PDF с текстовым слоем, TXT или MD. Сканы в этой версии не распознаются — вставьте текст ниже.</p>
               <input id="pj-file" type="file" accept=".docx,.pdf,.txt,.md" hidden>
             </div>
             <details class="tz-paste-fold">
-              <summary>Вставить текст ЗнП вручную</summary>
+              <summary>Вставить текст ТЗ вручную</summary>
               <textarea id="pj-text" rows="8" placeholder="Полный текст задания на проектирование…"></textarea>
               <button id="pj-text-save" class="btn btn-quiet btn-sm" type="button">Сохранить текст</button>
             </details>
@@ -73,14 +73,12 @@
               <select id="pj-checklist"></select>
               <p class="h2-note">Пилотный охват — производственные объекты и жилищный фонд (МР № 357, разделы II и IV). Выбор человека сильнее догадки модели.</p>
             </div>
+            <!-- Нейросеть выбирается один раз у ПРОЕКТА (как этап посадки берёт её
+                 из настроек сессии) — здесь только видно, какая работает. -->
             <div class="field">
-              <label for="pj-provider">Нейросеть</label>
-              <select id="pj-provider"></select>
-              <p id="pj-provider-note" class="hint" hidden></p>
-            </div>
-            <div class="field">
-              <label for="pj-model">Модель</label>
-              <select id="pj-model"></select>
+              <span class="field-label">Нейросеть</span>
+              <p id="pj-ai" class="tz-ai-line">—</p>
+              <p class="h2-note">Общая для всех модулей проекта. Меняется на главной: «Свойства проекта».</p>
             </div>
             <div class="field">
               <label for="pj-funding">Финансирование</label>
@@ -176,7 +174,7 @@
             <div class="tz-table-wrap">
               <table class="stat-table">
                 <thead><tr>
-                  <th>Пункт состава ЗнП</th><th>Статус</th><th>Где в ЗнП</th><th>Комментарий</th>
+                  <th>Пункт состава ТЗ</th><th>Статус</th><th>Где в ТЗ</th><th>Комментарий</th>
                 </tr></thead>
                 <tbody id="r-matrix"></tbody>
               </table>
@@ -194,6 +192,23 @@
             <p class="hint">Честный перечень пробелов прогона — не считать это «соответствием».</p>
             <ul id="r-unverified" class="tz-unverified"></ul>
           </details>
+
+          <!-- Что делать дальше: собрать исправленное ТЗ, скачать его и проверить заново.
+               Появляется, как только принята хотя бы одна формулировка (10.09.2026). -->
+          <div id="r-revision" class="card tz-revision" hidden>
+            <div class="tz-revision-head">
+              <h2>Исправленное ТЗ</h2>
+              <span id="r-revision-count" class="tz-revision-count"></span>
+            </div>
+            <p class="hint">Принятые формулировки встают после места замечания, а пункты, которых в ТЗ не было, —
+              в раздел «Дополнения по результатам проверки». Исходные пункты платформа не переписывает.</p>
+            <div class="tz-bar">
+              <button id="r-download-tz" class="btn btn-primary" type="button">Скачать готовое ТЗ (.docx)</button>
+              <button id="r-apply-revision" class="btn btn-quiet" type="button">Записать редакцию в задание</button>
+              <button id="r-recheck" class="btn btn-quiet" type="button">Проверить заново</button>
+            </div>
+            <p id="r-revision-note" class="hint" hidden></p>
+          </div>
 
           <div class="tz-bar">
             <button id="r-export-xlsx" class="btn btn-quiet" type="button">Реестр находок (.xlsx)</button>
@@ -223,14 +238,7 @@
           <label for="np-checklist">Тип объекта (чек-лист состава)</label>
           <select id="np-checklist"></select>
         </div>
-        <div class="field">
-          <label for="np-provider">Нейросеть</label>
-          <select id="np-provider"></select>
-        </div>
-        <div class="field">
-          <label for="np-model">Модель</label>
-          <select id="np-model"></select>
-        </div>
+        <p class="hint">Нейросеть у задания та же, что у проекта: она выбирается один раз в свойствах проекта.</p>
         <p id="np-error" class="tz-error" role="alert" hidden></p>
         <div class="tz-modal-foot">
           <button id="np-cancel" class="btn btn-quiet" type="button">Отмена</button>
@@ -295,7 +303,9 @@
   <div id="toast" class="toast" role="alert" hidden></div>
 
   <script src="auth.js?v=5"></script>
-  <script src="shell.js?v=9"></script>
-  <script src="tz.js?v=8"></script>
+  <script src="shell.js?v=10"></script>
+  <!-- обсуждение выделенного фрагмента: общее для всех страниц -->
+  <script src="frag-chat.js?v=2"></script>
+  <script src="tz.js?v=11"></script>
 </body>
 </html>
