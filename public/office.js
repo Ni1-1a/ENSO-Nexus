@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=8';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=8';
+import { OfficeScene } from './office-scene.js?v=9';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=9';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -1023,7 +1023,7 @@ state.pick = handlePick;
  * Модуль подгружается по требованию, в обычном показе он не нужен.
  */
 state.audit = async (kind = 'floating') => {
-  const a = await import('./office-audit.mjs?v=8');
+  const a = await import('./office-audit.mjs?v=9');
   const sc = state.scene;
   if (kind === 'overlap') {
     const items = [];

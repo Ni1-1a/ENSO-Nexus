@@ -16,16 +16,16 @@ import * as THREE from './vendor/three.module.min.js';
 import { RoomEnvironment } from './vendor/RoomEnvironment.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
 import { RectAreaLightUniformsLib } from './vendor/RectAreaLightUniformsLib.js';
-import * as P from './office-props.js?v=8';
-import { LifeDirector, makeSteam } from './office-life.js?v=8';
-import { WalkRig } from './office-walk.js?v=8';
-import { buildWings } from './office-wings.js?v=8';
-import { slotFree, stairSurface } from './office-geom.mjs?v=8';
-import { buildShell, buildAtrium, buildPavilionShell, stoneMat, TONE } from './office-ring.js?v=8';
+import * as P from './office-props.js?v=9';
+import { LifeDirector, makeSteam } from './office-life.js?v=9';
+import { WalkRig } from './office-walk.js?v=9';
+import { buildWings } from './office-wings.js?v=9';
+import { slotFree, stairSurface } from './office-geom.mjs?v=9';
+import { buildShell, buildAtrium, buildPavilionShell, stoneMat, TONE } from './office-ring.js?v=9';
 import {
   RING, FLOOR1, FLOOR2 as SECT2, PAVILIONS, CORES, ATRIUM,
   insideWalkable, floorHeight as planFloor, pt, sectorAt,
-} from './office-plan.mjs?v=8';
+} from './office-plan.mjs?v=9';
 
 /* палитра платформы + бренд (BRAND задаётся в office-data.js) */
 const PAL = {
@@ -252,6 +252,16 @@ export class OfficeScene {
           const f = norm(b.a0), t = norm(b.a1);
           hit = f <= t ? (a >= f && a <= t) : (a >= f || a <= t);
         }
+      } else if (b.w !== undefined) {
+        // ПОВЁРНУТЫЙ прямоугольник: длинная мебель на дуге кольца (стенка
+        // аквариума 12 м, стол переговорной 5,4 м) кругом не описывается —
+        // круг либо не закрывает предмет, либо перегораживает проход
+        const dx = x - b.cx, dz = z - b.cz;
+        // поворот Y в three.js: локальное +x → (cos θ, −sin θ) в (x, z),
+        // поэтому обратное преобразование берёт cos θ и sin θ, а не −θ
+        const c = Math.cos(b.rot), sn = Math.sin(b.rot);
+        const lx = dx * c - dz * sn, lz = dx * sn + dz * c;
+        hit = Math.abs(lx) < b.w / 2 && Math.abs(lz) < b.d / 2;
       } else hit = (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1);
       if (!hit) continue;
       if (this.debugBlockers) console.debug('[office] упёрлись в', b.name, b);
@@ -372,7 +382,25 @@ export class OfficeScene {
     P.air(screen, 'главный экран');
     this.scene.add(screen);
     this._pickable(screen, { kind: 'screen' });
-    const shell = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.07, R + 0.07, H + 0.32, 64, 1, true, Math.PI - arc / 2 - 0.012, arc + 0.024), P.MAT.graphite());
+    /*
+     * ЭКРАН ДВУСТОРОННИЙ. Он стоит на северной кромке атриума лицом на юг, а
+     * проектная — как раз за ним: пять мест северной дуги упирались в его
+     * тыльную сторону. Вторая матрица показывает тот же дашборд на север.
+     */
+    const backTex = texture.clone();
+    backTex.needsUpdate = true;
+    backTex.wrapS = THREE.RepeatWrapping;
+    backTex.repeat.x = 1;                       // тыльная сторона не зеркалит
+    this._screenBackTex = backTex;
+    const screenBack = new THREE.Mesh(
+      new THREE.CylinderGeometry(R + 0.16, R + 0.16, H, 64, 1, true, Math.PI - arc / 2, arc),
+      new THREE.MeshBasicMaterial({ map: backTex, side: THREE.FrontSide, toneMapped: false }),
+    );
+    screenBack.position.set(0, yc, 0);
+    P.air(screenBack, 'главный экран, север');
+    this.scene.add(screenBack);
+    this._pickable(screenBack, { kind: 'screen' });
+    const shell = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.075, R + 0.075, H + 0.32, 64, 1, true, Math.PI - arc / 2 - 0.012, arc + 0.024), P.MAT.graphite());
     shell.position.set(0, yc, 0);
     P.air(shell);
     this.scene.add(shell);
@@ -459,6 +487,8 @@ export class OfficeScene {
       c.fillText(data ? 'Выберите проект в лобби — сводка появится здесь' : 'Соединение с платформой…', W / 2, H / 2 + 20);
       c.textAlign = 'left';
       this.screenTexture.needsUpdate = true;
+    if (this._screenBackTex) this._screenBackTex.needsUpdate = true;
+      if (this._screenBackTex) this._screenBackTex.needsUpdate = true;
       return;
     }
 
@@ -780,24 +810,38 @@ export class OfficeScene {
    * дуга лицом к атриуму, наружная лицом к окну. Пол сектора ровный, все места
    * на одной отметке — ярусов больше нет.
    */
+  /**
+   * РАССТАНОВКА ПО ФЕНШУЮ И ЭРГОНОМИКЕ (правки владельца 10.09.2026).
+   *
+   * Обе дуги смотрят В АТРИУМ: спина каждого — к наружной стене («опора за
+   * спиной»), лицо — к простору и к главному экрану. Прежде внутренняя дуга
+   * сидела спиной к атриуму, то есть спиной к экрану и к открытому объёму, а
+   * половина проектной экрана вообще не видела.
+   *
+   * Раскладка по глубине корпуса 13,5 м:
+   *   10.5…12.3 кромка атриума с растениями
+   *   12.3…14.1 внутренний ряд мест
+   *   14.1…18.9 ГЛАВНЫЙ кольцевой проход, 4,8 м
+   *   18.9…21.1 наружный ряд мест
+   *   21.1…23.7 проход у окна, 2,6 м
+   */
   _deskPositions() {
     const out = [];
     const rnd = this._seeded(11);
     const sect = FLOOR1.find((x) => x.id === 'studio');
-    const pad = 0.14;                                   // отступ от перегородок
+    const pad = 0.16;                                   // отступ от перегородок
     const arcs = [
-      { r: RING.rIn + 3.4, face: 1, n: 12 },            // ближе к атриуму, лицом наружу
-      { r: RING.rOut - 4.2, face: -1, n: 12 },          // у окна, лицом в атриум
+      { r: 13.2, n: 12 },                               // внутренний ряд
+      { r: 20.0, n: 12 },                               // наружный ряд
     ];
     arcs.forEach((arc, ri) => {
       for (let i = 0; i < arc.n; i++) {
         const t = (i + 0.5) / arc.n;
         const a = sect.from + pad + t * ((sect.to - sect.from) - pad * 2);
-        const x = Math.sin(a) * arc.r + (rnd() - 0.5) * 0.16;
+        const x = Math.sin(a) * arc.r;
         const z = Math.cos(a) * arc.r;
-        // монитор смотрит от человека: yaw задаёт, куда развёрнут стол
-        const yaw = arc.face > 0 ? a + Math.PI : a;
-        out.push({ x, z, y: RING.floor1, yaw: yaw + (rnd() - 0.5) * 0.05, row: ri, col: i });
+        // лицом к центру: локальное −z стола смотрит в атриум при yaw = a
+        out.push({ x, z, y: RING.floor1, yaw: a + (rnd() - 0.5) * 0.03, row: ri, col: i });
       }
     });
     return out;
@@ -843,21 +887,37 @@ export class OfficeScene {
     g.rotation.y = pos.yaw;
     let mc = null;
     if (module) {
-      mc = P.canvasTexture(1024, 342, () => {});
+      // канва под пропорцию Pro Display XDR (16:9), а не под 32:9
+      mc = P.canvasTexture(1024, 576, () => {});
       this.monitors.set(module, mc);
     }
-    const mon = P.makeMonitor({ texture: module ? mc.texture : this._idle.texture });
-    mon.position.set(0, 1.2, 0.42); // ось группы — у человека, панель (−R) над задней третью стола, подошва на столешнице
+    /*
+     * Pro Display XDR на Pro Stand и Mac Studio под ним (правка владельца
+     * 10.09.2026). Подошва стойки стоит на столешнице (0.775), экран смотрит
+     * на человека, то есть в +z локальной системы стола.
+     */
+    const mon = P.makeProDisplayXDR({ texture: module ? mc.texture : this._idle.texture });
+    mon.position.set(0, 0.775, -0.16);
+    mon.rotation.y = Math.PI;
     g.add(mon);
-    const kb = P.makeKeyboard(); kb.position.set(-0.08, 0.775, 0.14); g.add(kb);
-    const mouse = P.makeMouse(); mouse.position.set(0.28, 0.775, 0.16); g.add(mouse);
-    const nb = P.makeNotebook(); nb.position.set(-0.56, 0.775, 0.1); nb.rotation.y = 0.2; g.add(nb);
-    const pen = P.makePen(); pen.position.set(-0.55, 0.78, 0.26); pen.rotation.y = 0.4; g.add(pen);
-    const pencil = P.makePerfectPencil(); pencil.position.set(-0.6, 0.78, 0.31); pencil.rotation.y = -0.2; g.add(pencil);
-    const mug = P.makeMug(); mug.position.set(0.62, 0.775, -0.05); g.add(mug);
+    const mac = P.makeMacStudio();
+    mac.position.set(0.62, 0.775, -0.22);
+    mac.rotation.y = Math.PI;
+    g.add(mac);
+    /*
+     * Раскладка столешницы 1,7 × 0,9 без наложений: клавиатура по оси перед
+     * человеком, мышь справа от неё, фишка (шахматы, кубик, го) — в ЛЕВОМ
+     * углу. Прежде фишка стояла в правом углу поверх мыши.
+     */
+    const kb = P.makeKeyboard(); kb.position.set(0, 0.775, 0.18); g.add(kb);
+    const mouse = P.makeMouse(); mouse.position.set(0.36, 0.775, 0.20); g.add(mouse);
+    const nb = P.makeNotebook(); nb.position.set(-0.62, 0.775, -0.14); nb.rotation.y = 0.2; g.add(nb);
+    const pen = P.makePen(); pen.position.set(-0.60, 0.78, 0.02); pen.rotation.y = 0.4; g.add(pen);
+    const pencil = P.makePerfectPencil(); pencil.position.set(-0.65, 0.78, 0.06); pencil.rotation.y = -0.2; g.add(pencil);
+    const mug = P.makeMug(); mug.position.set(0.72, 0.775, -0.10); g.add(mug);
     mug.traverse((m) => { m.userData.keep = true; });
-    if (index % 3 === 0) { const ph = P.makePhone(); ph.position.set(0.5, 0.775, 0.26); ph.rotation.y = -0.3; g.add(ph); }
-    if (index % 4 === 1) { const pl = P.makeFicus(0.28); pl.position.set(-0.72, 0.775, -0.2); g.add(pl); pl.traverse((m) => { if (m.userData.sway) { this.life.plants.push(m); m.userData.keep = true; } }); }
+    if (index % 3 === 0) { const ph = P.makePhone(); ph.position.set(0.62, 0.775, 0.30); ph.rotation.y = -0.3; g.add(ph); }
+    if (index % 4 === 1) { const pl = P.makeFicus(0.26); pl.position.set(-0.76, 0.775, -0.30); g.add(pl); pl.traverse((m) => { if (m.userData.sway) { this.life.plants.push(m); m.userData.keep = true; } }); }
     const chair = P.makeChair(); chair.position.set(0, 0, 0.62); g.add(chair);
     const cs = P.makeContactShadow(2.6, 1.7, 0.32); cs.position.set(0.05, 0.006, 0.2); g.add(cs);
     // ~40 мешей стола → несколько по материалам; человек добавляется после
@@ -892,12 +952,12 @@ export class OfficeScene {
 
   _placeItemAnchor(item, deskGroup) {
     const holder = new THREE.Group();
-    holder.position.set(0.55, 0.775, 0.34);
+    holder.position.set(-0.52, 0.775, 0.28);
     deskGroup.add(holder);
     deskGroup.updateMatrixWorld(true);
     const world = new THREE.Vector3(); holder.getWorldPosition(world);
-    const camPos = deskGroup.localToWorld(new THREE.Vector3(1.2, 1.3, 0.8));
-    this.itemAnchors.set(item, { group: holder, camPos: camPos.toArray(), camTgt: [world.x, world.y + 0.08, world.z], walk: deskGroup.localToWorld(new THREE.Vector3(1.3, 0, 0.9)), look: world });
+    const camPos = deskGroup.localToWorld(new THREE.Vector3(-1.15, 1.3, 0.8));
+    this.itemAnchors.set(item, { group: holder, camPos: camPos.toArray(), camTgt: [world.x, world.y + 0.08, world.z], walk: deskGroup.localToWorld(new THREE.Vector3(-1.25, 0, 0.95)), look: world });
     this._pickable(holder, { kind: 'item', item });
   }
 
@@ -1010,11 +1070,17 @@ export class OfficeScene {
     mat.position.set(0, y0 + 0.012, dr - 1.4);
     this.scene.add(mat);
 
-    /* --- приём: стойка вдоль западной перегородки сектора --- */
-    const seat = this._at(17.2, -16.0, { side: 1.1 });
+    /*
+     * ПРИЁМ В КОМАНДНОЙ ПОЗИЦИИ: секретарь смотрит НА ВХОД и видит входящего,
+     * но стойка стоит сбоку и не перегораживает ось «вход → атриум». Прежде
+     * стойка стояла вдоль перегородки, и секретарь смотрел поперёк движения.
+     */
+    // стойка стоит ПЕРЕД фирменной стеной, а не вплотную к ней: секретарь
+    // должен быть виден от входа, а не оказаться за чёрной панелью
+    const seat = { x: -4.6, z: 19.4, a: 0 };
     const g = new THREE.Group();
     g.position.set(seat.x, y0, seat.z);
-    g.rotation.y = seat.a + Math.PI / 2;
+    g.rotation.y = 0;                       // фронт стойки — на юг, ко входу
     const counter = new THREE.Mesh(new RoundedBoxGeometry(3.6, 1.08, 0.9, 4, 0.08), P.MAT.white());
     counter.position.y = 0.54; counter.castShadow = true;
     g.add(counter);
@@ -1044,12 +1110,14 @@ export class OfficeScene {
     s.group.rotation.y = Math.PI;                 // лицо модели смотрит в −z
     g.add(s.group);
     this.secretary = s;
-    const smon = P.makeMonitor({ texture: this._idle.texture }); smon.scale.setScalar(0.6); smon.position.set(-0.9, 1.37, -0.55); smon.rotation.y = Math.PI; g.add(smon);
+    const smon = P.makeProDisplayXDR({ texture: this._idle.texture }); smon.scale.setScalar(0.62); smon.position.set(-0.9, 1.11, -0.5); g.add(smon);
+    const smac = P.makeMacStudio(); smac.scale.setScalar(0.9); smac.position.set(-0.28, 1.11, -0.62); g.add(smac);
     const ph = P.makePhone(); ph.position.set(0.8, 1.15, -0.1); g.add(ph);
     this.scene.add(g);
     this._pickable(g, { kind: 'secretary' });
-    this.addBlocker({ name: 'стойка приёма', floor: 1, x: seat.x, z: seat.z, r: 2.1 });
-    const front = this._at(17.2, -16.0, { side: 3.0 });
+    // стойка 3,6 × 0,9 — прямоугольник, а не круг: круг r 2,1 съедал проход
+    this.addBlocker({ name: 'стойка приёма', floor: 1, cx: seat.x, cz: seat.z, w: 3.9, d: 1.9, rot: 0 });
+    const front = { x: seat.x, z: seat.z - 2.4 };
     this.itemAnchors.set('secretary', { group: g, camPos: [front.x, y0 + 1.7, front.z], camTgt: [seat.x, y0 + 1.4, seat.z], walk: [front.x, front.z], look: [seat.x, seat.z] });
 
     /*
@@ -1094,57 +1162,10 @@ export class OfficeScene {
     const bw = this._brandWall(-19.95, y0);
     this.scene.add(bw);
 
-    /* --- гардероб вдоль восточной перегородки --- */
-    const wr = this._at(17.0, 15.5, { side: -1.0 });
-    const rack = new THREE.Group();
-    rack.position.set(wr.x, y0, wr.z);
-    rack.rotation.y = wr.a - Math.PI / 2;
-    rack.add(box2(3.2, 0.06, 0.6, P.MAT.walnut(), 0, 2.05, 0));
-    for (const sx of [-1.5, 1.5]) rack.add(box2(0.06, 2.05, 0.06, P.MAT.brushed(), sx, 1.02, 0));
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 3.1, 8), P.MAT.chrome());
-    bar.rotation.z = Math.PI / 2; bar.position.y = 1.72;
-    P.air(bar);
-    rack.add(bar);
     /*
-     * Пальто на ПЛЕЧИКАХ: были капсулы, висящие на штанге без крючка и без
-     * плеч (скриншот 15 круга 3). Теперь у каждого — крючок, перекладина,
-     * плечи, рукава и полы.
+     * Гардероб убран по решению владельца 10.09.2026: он занимал восточную
+     * треть вестибюля и в кадре читался рядом капсул на штанге.
      */
-    for (let i = 0; i < 7; i++) {
-      const tone = [0x3a4a5a, 0x2b2622, 0x5a3f2c, 0x4a5a4a][i % 4];
-      const cloth = P.std(tone, { roughness: 0.92 });
-      const c = new THREE.Group();
-      c.position.set(-1.25 + i * 0.42, 0, 0.02);
-      // крючок плечиков на штанге
-      const hook = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.005, 6, 14, Math.PI * 1.4), P.MAT.chrome());
-      hook.position.set(0, 1.735, 0); hook.rotation.y = Math.PI / 2; c.add(hook);
-      c.add(box2(0.008, 0.09, 0.008, P.MAT.chrome(), 0, 1.66, 0));
-      // сами плечики: две наклонные планки
-      for (const sx of [-1, 1]) {
-        const bar = box2(0.20, 0.012, 0.026, P.MAT.walnut(), sx * 0.10, 1.605, 0);
-        bar.rotation.z = -sx * 0.18; c.add(bar);
-      }
-      // плечи и корпус
-      const body = new THREE.Mesh(new RoundedBoxGeometry(0.40, 0.52, 0.13, 3, 0.05), cloth);
-      body.position.set(0, 1.335, 0); c.add(body);
-      const skirt = new THREE.Mesh(new RoundedBoxGeometry(0.36, 0.40, 0.12, 3, 0.04), cloth);
-      skirt.position.set(0, 0.90, 0); c.add(skirt);
-      // рукава
-      for (const sx of [-1, 1]) {
-        const sleeve = new THREE.Mesh(new THREE.CapsuleGeometry(0.052, 0.42, 3, 8), cloth);
-        sleeve.position.set(sx * 0.215, 1.275, 0);
-        sleeve.rotation.z = -sx * 0.14;
-        c.add(sleeve);
-      }
-      // воротник и планка застёжки
-      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.022, 6, 16, Math.PI), cloth);
-      collar.position.set(0, 1.578, 0); collar.rotation.x = Math.PI / 2; c.add(collar);
-      c.add(box2(0.012, 0.9, 0.008, P.std(tone === 0x2b2622 ? 0x4a4a4a : 0x1f1c19, { roughness: 0.8 }), 0, 1.12, 0.066));
-      P.air(c, 'пальто');
-      rack.add(c);
-    }
-    this.scene.add(rack);
-    this.addBlocker({ name: 'гардероб', floor: 1, x: wr.x, z: wr.z, r: 1.6 });
 
     /* --- таблички: на наружной стене по обе стороны от входа --- */
     (window.OfficeData.plaques || []).forEach((pl, i) => {
@@ -1185,7 +1206,8 @@ export class OfficeScene {
     });
 
     /* --- диваны и растения --- */
-    for (const deg of [-13.5, 13.5]) {
+    // диваны по бокам, ОСЬ ВХОДА свободна: прямой путь вход → атриум
+    for (const deg of [-15.5, 15.5]) {
       const q = this._at(20.4, deg, {});
       const sofa = new THREE.Mesh(new RoundedBoxGeometry(2.4, 0.5, 0.95, 3, 0.1), P.MAT.terracotta());
       sofa.position.set(q.x, y0 + 0.25, q.z); sofa.rotation.y = q.a; sofa.castShadow = true; this.scene.add(sofa);
@@ -1199,11 +1221,15 @@ export class OfficeScene {
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8), P.MAT.chrome());
       leg.position.set(tq.x, y0 + 0.2, tq.z); this.scene.add(leg);
     }
-    for (const deg of [-18, 18, -6, 6]) {
-      const q = this._at(deg % 12 === 0 ? 12.6 : 22.2, deg, {});
+    /*
+     * Растения смягчают «стрелу» — прямой прострел от входа вглубь: два по
+     * бокам оси у кромки атриума и два в углах сектора у наружной стены.
+     */
+    for (const [r, deg] of [[13.4, -9], [13.4, 9], [23.0, -18], [23.0, 18]]) {
+      const q = this._at(r, deg, {});
       const pl = P.makeMonstera(1.1); pl.position.set(q.x, y0, q.z); this.scene.add(pl);
       pl.traverse((m) => { if (m.userData.sway) this.life.plants.push(m); });
-      this.addBlocker({ name: 'растение вестибюля', floor: 1, x: q.x, z: q.z, r: 0.5 });
+      this.addBlocker({ name: 'растение вестибюля', floor: 1, x: q.x, z: q.z, r: 0.55 });
     }
   }
 
@@ -1274,7 +1300,7 @@ export class OfficeScene {
   /** Чайная — свой сектор кольца на юго-западе, по плану «Чайная и переход». */
   _buildLounge() {
     const y0 = RING.floor1;
-    const q = this._at(17.4, 322, {});
+    const q = this._at(20.6, 322, {});   // к окну: на r 17,4 стол перекрывал кольцевую петлю
     const g = new THREE.Group();
     g.position.set(q.x, y0, q.z);
     g.rotation.y = q.a;
@@ -1303,7 +1329,7 @@ export class OfficeScene {
     this.scene.add(g);
     this._pickable(g, { kind: 'item', item: 'tea' });
     this.addBlocker({ name: 'чайный стол', floor: 1, x: q.x, z: q.z, r: 1.3 });
-    const w = this._at(14.6, 322, {});
+    const w = this._at(17.8, 322, {});
     this.itemAnchors.set('tea', { group: g, camPos: [w.x, y0 + 1.7, w.z], camTgt: [q.x, y0 + 0.8, q.z], walk: [w.x, w.z], look: [q.x, q.z] });
   }
 
@@ -1312,7 +1338,7 @@ export class OfficeScene {
   /** Кульман, макет и нивелир расставлены по секторам кольца. */
   _buildWallProps() {
     const y0 = RING.floor1;
-    const qd = this._at(RING.rOut - 3.2, 205, {});     // кульман — в проектной у окна
+    const qd = this._at(RING.rOut - 3.2, 115, {});     // у окна, в свободном конце дуги мест
     const g = new THREE.Group();
     g.position.set(qd.x, y0, qd.z);
     g.rotation.y = qd.a;
@@ -1360,11 +1386,11 @@ export class OfficeScene {
     this.scene.add(g);
     this._pickable(g, { kind: 'item', item: 'drafting' });
     this.addBlocker({ name: 'кульман', floor: 1, x: qd.x, z: qd.z, r: 1.1 });
-    const wd = this._at(RING.rOut - 5.4, 205, {});
+    const wd = this._at(RING.rOut - 5.4, 115, {});
     this.itemAnchors.set('drafting', { group: g, camPos: [wd.x, y0 + 1.8, wd.z], camTgt: [qd.x, y0 + 1.4, qd.z], walk: [wd.x, wd.z], look: [qd.x, qd.z] });
 
     // макет на подиуме под стеклом
-    const qm = this._at(RING.rIn + 2.2, 8, {});        // макет — в вестибюле у кромки атриума
+    const qm = this._at(RING.rIn + 3.5, 8, {});   // из полосы внутреннего обхода r 12        // макет — в вестибюле у кромки атриума
     const shelf = new THREE.Group();
     shelf.position.set(qm.x, y0, qm.z);
     shelf.rotation.y = qm.a + Math.PI;
@@ -1379,11 +1405,11 @@ export class OfficeScene {
     this.scene.add(shelf);
     this._pickable(shelf, { kind: 'item', item: 'model' });
     this.addBlocker({ name: 'макет АВИВАК-2', floor: 1, x: qm.x, z: qm.z, r: 0.9 });
-    const wm = this._at(RING.rIn + 4.4, 8, {});
+    const wm = this._at(RING.rIn + 5.7, 8, {});
     this.itemAnchors.set('model', { group: shelf, camPos: [wm.x, y0 + 1.6, wm.z], camTgt: [qm.x, y0 + 1.1, qm.z], walk: [wm.x, wm.z], look: [qm.x, qm.z] });
 
     // нивелир на штативе
-    const ql = this._at(RING.rOut - 3.0, 128, {});     // нивелир — на входе в проектную
+    const ql = this._at(RING.rOut - 3.0, 246, {});     // второй свободный конец дуги
     const level = new THREE.Group();
     level.position.set(ql.x, y0, ql.z);
     for (let i = 0; i < 3; i++) {
@@ -1397,7 +1423,7 @@ export class OfficeScene {
     this.scene.add(level);
     this._pickable(level, { kind: 'item', item: 'level' });
     this.addBlocker({ name: 'нивелир', floor: 1, x: ql.x, z: ql.z, r: 0.5 });
-    const wl = this._at(RING.rOut - 5.2, 128, {});
+    const wl = this._at(RING.rOut - 5.2, 246, {});
     this.itemAnchors.set('level', { group: level, camPos: [wl.x, y0 + 1.6, wl.z], camTgt: [ql.x, y0 + 1.3, ql.z], walk: [wl.x, wl.z], look: [ql.x, ql.z] });
   }
 

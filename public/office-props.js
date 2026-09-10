@@ -728,6 +728,114 @@ export function makePoster({ width = 0.8, draw, frame = 'red', pickInfo = null }
   return g;
 }
 
+/**
+ * Apple Pro Display XDR на Pro Stand. Габариты настоящие: экран 32″, корпус
+ * 718 × 410 × 27 мм, алюминий с решёткой охлаждения сзади, стойка с
+ * регулировкой по высоте. Заменяет прежний монитор 32:9 (правка владельца
+ * 10.09.2026).
+ */
+export function makeProDisplayXDR({ texture = null } = {}) {
+  const g = new THREE.Group();
+  const alu = std(0xd9dade, { roughness: 0.32, metalness: 0.85 });
+  const W = 0.718, H = 0.410, T = 0.027;
+  const SCREEN_Y = 0.395;                      // центр экрана над столешницей
+
+  // корпус экрана
+  const body = new THREE.Mesh(new RoundedBoxGeometry(W, H, T, 3, 0.008), alu);
+  body.position.set(0, SCREEN_Y, 0);
+  body.castShadow = true;
+  g.add(body);
+  // решётка охлаждения на тыльной стороне
+  const lattice = canvasTexture(256, 152, (c, w, h) => {
+    c.fillStyle = '#c9cace'; c.fillRect(0, 0, w, h);
+    c.fillStyle = '#8f9195';
+    const step = 13;
+    for (let y = step / 2; y < h; y += step) {
+      for (let x = (Math.round(y / step) % 2) * step / 2 + step / 2; x < w; x += step) {
+        c.beginPath(); c.arc(x, y, 4.2, 0, Math.PI * 2); c.fill();
+      }
+    }
+  }).texture;
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.03, H - 0.03), new THREE.MeshStandardMaterial({ map: lattice, roughness: 0.5, metalness: 0.4 }));
+  back.position.set(0, SCREEN_Y, T / 2 + 0.001);
+  back.rotation.y = Math.PI;
+  g.add(back);
+  // рамка и матрица
+  const bezel = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.018, H - 0.018), std(0x0d0d0e, { roughness: 0.35 }));
+  bezel.position.set(0, SCREEN_Y, -T / 2 - 0.0012);
+  bezel.rotation.y = Math.PI;
+  g.add(bezel);
+  const panel = new THREE.Mesh(
+    new THREE.PlaneGeometry(W - 0.038, H - 0.038),
+    texture ? new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }) : std(0x101012),
+  );
+  panel.position.set(0, SCREEN_Y, -T / 2 - 0.0026);
+  panel.rotation.y = Math.PI;
+  panel.userData.keep = true;
+  g.add(panel);
+  // логотип на тыльной крышке
+  const logo = new THREE.Mesh(new THREE.CircleGeometry(0.024, 20), std(0xf2f3f5, { roughness: 0.2, metalness: 0.6 }));
+  logo.position.set(0, SCREEN_Y, T / 2 + 0.003);
+  g.add(logo);
+
+  /* Pro Stand: основание, стойка, шарнир */
+  const foot = new THREE.Mesh(new RoundedBoxGeometry(0.24, 0.018, 0.20, 3, 0.006), alu);
+  foot.position.set(0, 0.009, 0.055);
+  foot.receiveShadow = true;
+  g.add(foot);
+  const column = new THREE.Mesh(new RoundedBoxGeometry(0.072, 0.30, 0.042, 3, 0.012), alu);
+  column.position.set(0, 0.16, 0.055);
+  g.add(column);
+  const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.086, 16), alu);
+  hinge.rotation.z = Math.PI / 2;
+  hinge.position.set(0, SCREEN_Y - 0.09, 0.038);
+  g.add(hinge);
+  const armToBody = new THREE.Mesh(new RoundedBoxGeometry(0.06, 0.1, 0.06, 3, 0.01), alu);
+  armToBody.position.set(0, SCREEN_Y - 0.06, 0.022);
+  g.add(armToBody);
+  g.add(makeContactShadow(0.5, 0.4, 0.3));
+  return g;
+}
+
+/**
+ * Mac Studio: алюминиевая коробка 197 × 95 × 197 мм, круглая решётка снизу,
+ * два USB-C и слот SD спереди, порты сзади.
+ */
+export function makeMacStudio() {
+  const g = new THREE.Group();
+  const alu = std(0xd2d4d8, { roughness: 0.34, metalness: 0.85 });
+  const S = 0.197, Hh = 0.095;
+  const body = new THREE.Mesh(new RoundedBoxGeometry(S, Hh, S, 4, 0.012), alu);
+  body.position.y = Hh / 2 + 0.008;
+  body.castShadow = true;
+  g.add(body);
+  // приподнятое основание с круглой решёткой
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(S * 0.42, S * 0.42, 0.016, 28), std(0x9a9da2, { roughness: 0.6 }));
+  foot.position.y = 0.008;
+  g.add(foot);
+  // порты спереди
+  for (const dx of [-0.03, 0.03]) {
+    const usb = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.005, 0.004), std(0x3a3d42));
+    usb.position.set(dx, 0.03, -S / 2 - 0.001);
+    g.add(usb);
+  }
+  const sd = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.004, 0.004), std(0x3a3d42));
+  sd.position.set(0, 0.045, -S / 2 - 0.001);
+  g.add(sd);
+  // порты сзади
+  for (let i = 0; i < 4; i++) {
+    const port = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.008, 0.004), std(0x2c2f33));
+    port.position.set(-0.055 + i * 0.037, 0.052, S / 2 + 0.001);
+    g.add(port);
+  }
+  const logo = new THREE.Mesh(new THREE.CircleGeometry(0.014, 18), std(0xf2f3f5, { roughness: 0.25, metalness: 0.6 }));
+  logo.position.set(0, Hh + 0.009, 0);
+  logo.rotation.x = -Math.PI / 2;
+  g.add(logo);
+  g.add(makeContactShadow(0.34, 0.34, 0.28));
+  return g;
+}
+
 /* ---------- люди ---------- */
 
 /**
@@ -857,12 +965,25 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
     const elbow = new THREE.Group();
     elbow.position.y = -0.27;
     shoulder.add(elbow);
-    const fore = new THREE.Mesh(new THREE.CapsuleGeometry(0.038, 0.2, 4, 8), skinMat);
-    fore.position.y = -0.12;
+    // манжета рукава на границе ткани и кожи
+    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.041, 0.03, 10), poloMat);
+    cuff.position.y = -0.018;
+    elbow.add(cuff);
+    const fore = new THREE.Mesh(new THREE.CapsuleGeometry(0.037, 0.2, 4, 8), skinMat);
+    fore.position.y = -0.125;
     elbow.add(fore);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), skinMat);
-    hand.scale.set(0.8, 0.5, 1.1);
-    hand.position.y = -0.25;
+    // КИСТЬ: ладонь, пальцы и отставленный большой вместо сплюснутого шара
+    const hand = new THREE.Group();
+    hand.position.y = -0.252;
+    const palm = new THREE.Mesh(new RoundedBoxGeometry(0.052, 0.10, 0.086, 3, 0.024), skinMat);
+    hand.add(palm);
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.038, 3, 6), skinMat);
+    thumb.position.set(side * -0.032, 0.012, 0.028);
+    thumb.rotation.z = side * 0.6; thumb.rotation.x = -0.5;
+    hand.add(thumb);
+    const fingers = new THREE.Mesh(new RoundedBoxGeometry(0.046, 0.052, 0.078, 3, 0.02), skinMat);
+    fingers.position.y = -0.062;
+    hand.add(fingers);
     elbow.add(hand);
     return { shoulder, elbow, hand };
   };

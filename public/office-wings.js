@@ -11,9 +11,9 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
-import * as P from './office-props.js?v=8';
-import { railPose, stairSurface, stairStep, inStair } from './office-geom.mjs?v=8';
-import { RING, FLOOR1, FLOOR2 as SECT2, PAVILIONS, CORES, pt } from './office-plan.mjs?v=8';
+import * as P from './office-props.js?v=9';
+import { railPose, stairSurface, stairStep, inStair } from './office-geom.mjs?v=9';
+import { RING, FLOOR1, FLOOR2 as SECT2, PAVILIONS, CORES, pt } from './office-plan.mjs?v=9';
 
 /*
  * Отметки берутся из плана здания (ТЗ №2): кольцо 0.00, кольцо +4.20, яма
@@ -838,8 +838,10 @@ function buildAquarium(scene, ctx) {
   const [wx, wz] = toWorld(x1 + 3.2, 0);
   const [tx, tz] = toWorld(x1 - 0.4, 0);
   ctx.itemAnchors.set('aquarium', { group: g, camPos: [wx, 2.2, wz], camTgt: [tx, 2.6, tz], walk: [wx, wz], look: [tx, tz] });
+  // стенка 12 × 2,4 м описывается ПРЯМОУГОЛЬНИКОМ по дуге: круг r 3,4 не
+  // закрывал её концы и при этом съедал проход посреди галереи
   const [bx, bz] = toWorld((x0 + x1) / 2, 0);
-  ctx.block({ name: 'аквариум', floor: 1, x: bx, z: bz, r: 3.4 });
+  ctx.block({ name: 'аквариум', floor: 1, cx: bx, cz: bz, w: x1 - x0 + 0.6, d: z1 - z0 + 0.4, rot: g.rotation.y });
   return {
     update(dt, t) {
       // каустика: бегущие блики
@@ -972,12 +974,14 @@ function buildMeeting(scene, ctx) {
 
   P.mergeStatic(g);          // Р5.4: статика комнаты — в несколько мешей
   scene.add(g);
-  const toWorld = placeRoom(g, RING.rOut - RING.wallT - W / 2 - 0.4, 87.5);
+  // отодвинута от наружной стены: между столом и стеной было 0,9 м
+  const toWorld = placeRoom(g, RING.rOut - RING.wallT - W / 2 - 1.4, 87.5);
   ctx.pickable(table, { kind: 'room', id: 'meeting' });
   const [ax, az] = toWorld(W / 2 + 2.6, 0);
   const [tx, tz] = toWorld(0, 0);
   ctx.itemAnchors.set('meeting', { group: g, camPos: [ax, 2.2, az], camTgt: [tx, 0.9, tz], walk: [ax, az], look: [tx, tz] });
-  ctx.block({ name: 'стол переговорной', floor: 1, x: tx, z: tz, r: 3.4 });
+  // стол 2,0 × 5,4 плюс кресла: прямоугольник, а не круг r 3,4
+  ctx.block({ name: 'стол переговорной', floor: 1, cx: tx, cz: tz, w: 3.6, d: 6.8, rot: g.rotation.y });
   return { update() {} };
 }
 
@@ -1128,7 +1132,7 @@ function buildGarage(scene, ctx) {
   }
   // Акцентный свет на каждую машину: общего потолочного не хватало —
   // интерьер выходил ровно-серым, и кузова читались плоскими пятнами (К15).
-  for (const [sx, sz] of [[-30, 24.2], [-30, 30.4], [-21.5, 23.8], [-20, 29.6], [-17.6, 32.2]]) {
+  for (const [sx, sz] of [[-30, 24.2], [-30, 30.4], [-25.5, 24.4], [-20, 29.6], [-17.6, 32.2]]) {
     const spot = new THREE.SpotLight(0xfff4e2, 3.0, 13, 0.75, 0.72, 1.5);
     spot.position.set(sx + 1.2, LEVEL + 4.8, sz - 0.8);
     spot.target.position.set(sx, LEVEL + 0.5, sz);
@@ -1144,10 +1148,11 @@ function buildGarage(scene, ctx) {
   // машины
   const gto = makeCar('gto'); gto.position.set(-30, LEVEL, 24.2); gto.rotation.y = 0.25; g.add(gto);
   const sl = makeCar('sl300'); sl.position.set(-30, LEVEL, 30.4); sl.rotation.y = -0.4; g.add(sl);
-  const p918 = makeCar('p918'); p918.position.set(-21.5, LEVEL, 23.8); p918.rotation.y = Math.PI - 0.2; g.add(p918);
+  // из створа перехода вглубь: машина стояла прямо в дверях мастерской
+  const p918 = makeCar('p918'); p918.position.set(-25.5, LEVEL, 24.4); p918.rotation.y = Math.PI - 0.2; g.add(p918);
   const gs = makeBike('r1300gs'); gs.position.set(-20, LEVEL, 29.6); gs.rotation.y = Math.PI / 2 + 0.3; g.add(gs);
   const vrod = makeBike('vrod'); vrod.position.set(-17.6, LEVEL, 32.2); vrod.rotation.y = Math.PI / 2 - 0.5; g.add(vrod);
-  for (const [obj, id, lx, lz] of [[gto, 'gto', -30, 21.6], [sl, 'sl300', -30, 27.6], [p918, 'p918', -21.5, 21.2], [gs, 'r1300gs', -20, 27.2], [vrod, 'vrod', -17.6, 29.8]]) {
+  for (const [obj, id, lx, lz] of [[gto, 'gto', -30, 21.6], [sl, 'sl300', -30, 27.6], [p918, 'p918', -25.5, 21.6], [gs, 'r1300gs', -20, 27.2], [vrod, 'vrod', -17.6, 29.8]]) {
     ctx.pickable(obj, { kind: 'vehicle', id });
     const spec = obj.userData.spec;
     const lb = label(spec.name, spec.year, 1.2, true); lb.position.set(lx, LEVEL + 0.9, lz); lb.rotation.y = 0; g.add(lb);
@@ -1229,7 +1234,7 @@ function buildGarage(scene, ctx) {
   P.mergeStatic(g);
   scene.add(g);
   ctx.itemAnchors.set('garage', { group: g, camPos: [-18.4, LEVEL + 2.4, 21.6], camTgt: [-28, LEVEL + 0.9, 27], walk: [-18.4, 21.6], look: [-28, 27] });
-  for (const [cx, cz, w, d] of [[-30, 24.2, 6.4, 4.6], [-30, 30.4, 5.4, 4.2], [-21.5, 23.8, 6.2, 4.4], [-20, 29.6, 2.6, 1.6], [-17.6, 32.2, 2.8, 1.6], [x1 - 1.0, 26.0, 1.2, 3.2], [x1 - 0.9, 30.0, 1.0, 3.2], [x0 + 1.6, z1 - 0.9, 1.2, 2.8], [x0 + 2.0, 21.4, 1.2, 1.2]]) {
+  for (const [cx, cz, w, d] of [[-30, 24.2, 6.4, 4.6], [-30, 30.4, 5.4, 4.2], [-25.5, 24.4, 6.2, 4.4], [-20, 29.6, 2.6, 1.6], [-17.6, 32.2, 2.8, 1.6], [x1 - 1.0, 26.0, 1.2, 3.2], [x1 - 0.9, 30.0, 1.0, 3.2], [x0 + 1.6, z1 - 0.9, 1.2, 2.8], [x0 + 2.0, 21.4, 1.2, 1.2]]) {
     ctx.block({ name: 'оборудование мастерской', floor: 1, x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 });
   }
   return { update() {} };
@@ -1569,6 +1574,70 @@ function buildRingLounge(scene, ctx) {
     const ch = P.makeChair(); ch.position.set(0.2, 0, 0); ch.rotation.y = -Math.PI / 2; cab.add(ch);
     g.add(cab);
     ctx.block({ name: 'кабина', floor: 2, x: q.x, z: q.z, r: 1.2 });
+  }
+
+  /*
+   * ГАЛЕРЕЯ НАД ВХОДОМ, БАЛКОН РЕАКТОРА И АНТРЕСОЛЬ МАСТЕРСКОЙ были пусты:
+   * три сектора из шести стояли голыми. Наполняем тем, ради чего они и есть —
+   * местом посидеть с видом и стендом о том, на что смотришь.
+   */
+  const bench = (deg, r, faceIn = true) => {
+    const q = at(r, deg);
+    const bg = new THREE.Group();
+    bg.position.set(q.x, Y, q.z);
+    bg.rotation.y = q.a + (faceIn ? 0 : Math.PI);
+    const seat = rbox(2.0, 0.09, 0.46, P.MAT.walnut(), 0.02);
+    seat.position.y = 0.44; seat.castShadow = true; bg.add(seat);
+    const back = rbox(2.0, 0.36, 0.07, P.MAT.walnut(), 0.02);
+    back.position.set(0, 0.66, 0.20); bg.add(back);
+    for (const sx of [-0.8, 0.8]) bg.add(box(0.07, 0.44, 0.42, P.MAT.graphite(), sx, 0.22, 0));
+    bg.add(P.makeContactShadow(2.4, 1.0, 0.3));
+    g.add(bg);
+    ctx.block({ name: 'скамья второго этажа', floor: 2, cx: q.x, cz: q.z, w: 2.2, d: 1.0, rot: bg.rotation.y });
+    return q;
+  };
+  const standAt = (deg, r, title, sub) => {
+    const q = at(r, deg);
+    const lb = label(title, sub, 1.5);
+    lb.position.set(q.x, Y + 1.15, q.z);
+    lb.rotation.y = q.a + Math.PI;
+    g.add(lb);
+    const post = box(0.07, 1.15, 0.07, P.MAT.graphite(), q.x, Y + 0.575, q.z);
+    g.add(post);
+    g.add(box(0.34, 0.03, 0.24, P.MAT.graphite(), q.x, Y + 0.015, q.z));
+    ctx.block({ name: 'стенд', floor: 2, x: q.x, z: q.z, r: 0.5 });
+  };
+
+  const gallery = SECT2.find((x) => x.id === 'gallery');
+  const glo = gallery.from * 180 / Math.PI, ghi = gallery.to * 180 / Math.PI;
+  bench(glo + 12, RING.rIn + 2.2);
+  bench(ghi - 12, RING.rIn + 2.2);
+  standAt((glo + ghi) / 2, RING.rOut - 2.0, 'Галерея над входом', 'вид на вестибюль и атриум');
+  for (const deg of [glo + 8, ghi - 8]) {
+    const q = at(RING.rOut - 2.6, deg);
+    const pl = P.makeFicus(1.15); pl.position.set(q.x, Y, q.z); g.add(pl); ctx.life.plants.push(pl);
+    ctx.block({ name: 'растение галереи', floor: 2, x: q.x, z: q.z, r: 0.5 });
+  }
+
+  const rb = SECT2.find((x) => x.id === 'reactorBalcony');
+  standAt((rb.from + rb.to) / 2 * 180 / Math.PI, RING.rOut - 2.2, 'Зал реактора', 'вход в павильон сверху, спуск к пульту');
+  bench(rb.from * 180 / Math.PI + 14, RING.rIn + 2.4);
+  const wb = SECT2.find((x) => x.id === 'workshopBalcony');
+  standAt((wb.from + wb.to) / 2 * 180 / Math.PI, RING.rOut - 2.2, 'Антресоль мастерской', 'вид на подъёмник и разрез мотора');
+  bench(wb.to * 180 / Math.PI - 14, RING.rIn + 2.4);
+  // витрина с деталями на антресоли
+  {
+    const q = at(RING.rOut - 3.4, (wb.from + wb.to) / 2 * 180 / Math.PI + 8);
+    const case_ = new THREE.Group();
+    case_.position.set(q.x, Y, q.z); case_.rotation.y = q.a;
+    case_.add(rbox(1.4, 0.95, 0.6, P.MAT.white(), 0.03)).position.y = 0;
+    const plinth = rbox(1.4, 0.95, 0.6, P.MAT.white(), 0.03); plinth.position.y = 0.475; case_.add(plinth);
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 0.52), appleGlass(0.14));
+    glass.position.y = 1.22; P.air(glass); case_.add(glass);
+    const w1 = wheel(0.2, 0.12); w1.position.set(-0.36, 1.16, 0); w1.rotation.z = Math.PI / 2; case_.add(w1);
+    const eng = engineBlock(); eng.scale.setScalar(0.42); eng.position.set(0.3, 1.16, 0); case_.add(eng);
+    g.add(case_);
+    ctx.block({ name: 'витрина антресоли', floor: 2, cx: q.x, cz: q.z, w: 1.7, d: 0.9, rot: q.a });
   }
 
   /* --- растения по кромке парапета --- */

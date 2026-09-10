@@ -14,12 +14,12 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
-import * as P from './office-props.js?v=8';
+import * as P from './office-props.js?v=9';
 import {
   RING, FLOOR1, FLOOR2, PAVILIONS, CORES, ATRIUM, pt,
   OPENINGS, openingHalfAngle, openingOnFloor, wallGaps, coreLink, structuralBlockers,
-} from './office-plan.mjs?v=8';
-import { stairStep, railPose } from './office-geom.mjs?v=8';
+} from './office-plan.mjs?v=9';
+import { stairStep, railPose } from './office-geom.mjs?v=9';
 
 /* ---------- Н1: три градации светлого ---------- */
 

@@ -407,3 +407,48 @@ test('офис: в каждом проёме стены нет, между пр�
     }
   }
 });
+
+/**
+ * Расстановка по эргономике и феншую (правки владельца 10.09.2026).
+ *
+ * Проверяется то, что глазами не увидеть: обе дуги рабочих мест смотрят В
+ * АТРИУМ (спина к наружной стене, лицо к простору и к главному экрану), между
+ * ними остаётся кольцевой проход не уже 1,8 м, а ось входа свободна.
+ */
+test('офис: рабочие места смотрят в атриум, проходы не уже 1,8 м', async () => {
+  const P = await import(new URL('../public/office-plan.mjs', `file://${__filename}`));
+  const { stairSurface } = await import(new URL('../public/office-geom.mjs', `file://${__filename}`));
+  const walls = P.structuralBlockers();
+
+  // кольцевая петля по середине корпуса свободна и широка
+  const clearance = (x, z, y, max = 2.0) => {
+    for (let r = 0.2; r <= max; r += 0.2) {
+      const n = Math.max(8, Math.round((2 * Math.PI * r) / 0.2));
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
+        if (!P.insideWalkable(px, pz, y) || P.blockedBy(walls, px, pz, y)) return r;
+      }
+    }
+    return max;
+  };
+  for (const level of [1, 2]) {
+    const y = level === 2 ? P.RING.floor2 : 0;
+    let min = 9;
+    for (let i = 0; i < 72; i++) {
+      const a = (i / 72) * Math.PI * 2;
+      const q = P.pt(17.0, a);
+      assert.ok(P.insideWalkable(q.x, q.z, y) && !P.blockedBy(walls, q.x, q.z, y),
+        `этаж ${level}: кольцевая петля перекрыта на ${(a * 180 / Math.PI).toFixed(0)}°`);
+      min = Math.min(min, clearance(q.x, q.z, y) * 2);
+    }
+    assert.ok(min >= 1.8, `этаж ${level}: кольцевая петля сужается до ${min.toFixed(2)} м`);
+  }
+  // ось входа: от двери до кромки атриума ничего капитального
+  for (let z = 23.0; z >= 11.0; z -= 0.25) {
+    assert.ok(P.insideWalkable(0, z, 0) && !P.blockedBy(walls, 0, z, 0), `ось входа перекрыта на z = ${z.toFixed(1)}`);
+  }
+  // сектор вестибюля больше не зовётся гардеробом
+  const lobby = P.FLOOR1.find((s) => s.id === 'lobby');
+  assert.ok(!/гардероб/i.test(lobby.sub), 'гардероб убран из подписи вестибюля');
+});

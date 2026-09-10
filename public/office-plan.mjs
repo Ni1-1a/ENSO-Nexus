@@ -45,7 +45,7 @@ function sectors(list) {
 
 /** Первый этаж, отметка 0.00. Обход по часовой стрелке от входа. */
 export const FLOOR1 = sectors([
-  { id: 'lobby', name: 'Вестибюль', area: 168, sub: 'приём · макет · гардероб' },
+  { id: 'lobby', name: 'Вестибюль', area: 168, sub: 'приём · макет · зона ожидания' },
   { id: 'aquarium', name: 'Аквариум-галерея', area: 189, sub: 'стена 12 × 4 м' },
   { id: 'meeting', name: 'Переговорные', area: 189, sub: '12 мест и две малые' },
   { id: 'studio', name: 'Проектная', area: 588, sub: '24 места двумя дугами' },
@@ -285,6 +285,11 @@ export function blockedBy(list, x, z, floorY = 0) {
         const f = norm(b.a0), t = norm(b.a1);
         hit = f <= t ? (a >= f && a <= t) : (a >= f || a <= t);
       }
+    } else if (b.w !== undefined) {
+      const dx = x - b.cx, dz = z - b.cz;
+      const c = Math.cos(b.rot), sn = Math.sin(b.rot);
+      const lx = dx * c - dz * sn, lz = dx * sn + dz * c;
+      hit = Math.abs(lx) < b.w / 2 && Math.abs(lz) < b.d / 2;
     } else hit = x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1;
     if (hit) return b;
   }
