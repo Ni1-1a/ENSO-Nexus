@@ -27,6 +27,8 @@
 
   const state = {
     fixes: {},          // правки прогона: findingId → {variants, chosenText, …}
+    fixDrafts: {},      // ненабранное «своё» по замечаниям: перерисовка списка его не стирает
+    fixesLoaded: false, // правки прогона уже пришли с сервера (иначе блок не рисуем)
     route: { name: 'projects' },
     providers: [],          // из /api/health — уже отфильтровано по человеку и адресу
     checklists: [],         // из /api/tz/meta
@@ -229,6 +231,9 @@
 
   async function showProjects() {
     showScreen('tz-s-projects');
+    // место обсуждения снимается вместе с уходом: иначе выделение в списке
+    // заданий уходило бы моделью как «замечание из прошлого прогона»
+    if (window.FragChat) FragChat.setContext();
     crumbs(null);
     const box = $('tz-projects');
     const errBox = $('tz-projects-error');
@@ -268,6 +273,7 @@
 
   async function showProject(id) {
     showScreen('tz-s-project');
+    if (window.FragChat) FragChat.setContext();
     const errBox = $('pj-error');
     errBox.hidden = true;
     // экран не должен показывать прошлое задание, пока грузится новое
@@ -456,6 +462,15 @@
     }
     state.run = data.run;
     const run = state.run;
+    /*
+     * Правки — СВОИ у каждого прогона, а идентификаторы находок сквозные
+     * (F-001, F-002…) и повторяются в каждом. Без сброса на карточке свежего
+     * прогона висела бы формулировка из прошлого — и «Записать редакцию»
+     * записала бы чужой текст (рецензия 10.09.2026).
+     */
+    state.fixes = {};
+    state.fixDrafts = {};
+    state.fixesLoaded = false;
     // место обсуждения фрагментов на этой странице (frag-chat.js)
     if (window.FragChat) FragChat.setContext({ entityId: run.id, anchor: `задание «${run.project_name || ''}»` });
     crumbs([{ label: 'Задания', href: '#/' }, { label: run.project_name || 'Задание', href: `#/p/${run.project_id}` }, { label: 'Результат' }]);
@@ -618,6 +633,8 @@
    * в исправленную редакцию ТЗ.
    */
   function renderFix(f) {
+    // правки ещё не пришли — блока нет вовсе: пустой блок читался бы как «правок нет»
+    if (!state.fixesLoaded) return h('div', { class: 'tz-fix-wait' }, 'Формулировки загружаются…');
     const fix = state.fixes[f.id] || null;
     const box = h('div', { class: 'tz-fix' });
     const head = h('div', { class: 'tz-fix-head' },
@@ -630,14 +647,25 @@
       class: 'tz-fix-own', rows: '3',
       placeholder: 'Свой вариант: напишите текст пункта так, как он должен стоять в ТЗ',
     });
-    if (fix && fix.chosenKind === 'own') own.value = fix.chosenText;
+    /*
+     * Ненабранное «своё» держится в state: renderFindings() пересобирает ВЕСЬ
+     * список, и текст, набранный в замечании A, пропадал от любого действия в
+     * замечании B — на боевом ТЗ с полусотней замечаний это потеря работы.
+     */
+    if (state.fixDrafts[f.id] !== undefined) own.value = state.fixDrafts[f.id];
+    else if (fix && fix.chosenKind === 'own') own.value = fix.chosenText;
+    own.addEventListener('input', () => { state.fixDrafts[f.id] = own.value; });
 
     const apply = async (text, kind) => {
       try {
         const res = await api(`/runs/${state.run.id}/findings/${f.id}/fix`, { method: 'PUT', json: { text, kind } });
         state.fixes[f.id] = res.fix;
+        delete state.fixDrafts[f.id];       // принятое стало сохранённым
         toast(text ? 'Формулировка принята — войдёт в исправленное ТЗ' : 'Формулировка снята');
         renderFindings();
+        // полоса «дальше» рисовалась только при загрузке: кнопки «Скачать» и
+        // «Проверить заново» появлялись лишь после F5 (рецензия 10.09.2026)
+        renderRevisionBar();
       } catch (err) { toast(err.message, 'error'); }
     };
 
@@ -673,6 +701,7 @@
         const res = await api(`/runs/${state.run.id}/findings/${f.id}/suggest`, { method: 'POST', json: {} });
         state.fixes[f.id] = res.fix;
         renderFindings();
+        renderRevisionBar();
       } catch (err) {
         toast(err.message, 'error');
         ask.textContent = was;
@@ -693,13 +722,21 @@
   /** Правки прогона: их держит сервер, клиент только показывает и меняет. */
   async function loadFixes() {
     if (!state.run) return;
+    const runId = state.run.id;
     try {
-      const data = await api(`/runs/${state.run.id}/fixes`);
+      const data = await api(`/runs/${runId}/fixes`);
+      if (!state.run || state.run.id !== runId) return;   // ушли на другой прогон
       state.fixes = {};
       for (const fx of data.fixes || []) state.fixes[fx.findingId] = fx;
+      state.fixesLoaded = true;
       renderFindings();
       renderRevisionBar();
-    } catch { /* правок может не быть — не повод рушить отчёт */ }
+    } catch (err) {
+      // молчать нельзя: человек увидел бы пустой блок правок и решил, что их нет
+      state.fixesLoaded = false;
+      renderFindings();
+      toast(`Не удалось загрузить принятые формулировки: ${err.message}`, 'error');
+    }
   }
 
   /**

@@ -212,6 +212,8 @@
   }
 
   async function showProjects() {
+    // место обсуждения снимается вместе с уходом с маршрута
+    if (window.FragChat) FragChat.setContext();
     showScreen('projects');
     setCrumbs(null);
     const grid = $('nm-projects');
@@ -263,6 +265,7 @@
   }
 
   async function showProject(id) {
+    if (window.FragChat) FragChat.setContext();
     showScreen('project');
     const errBox = $('pj-error');
     errBox.hidden = true;

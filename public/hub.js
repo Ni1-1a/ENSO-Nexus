@@ -202,6 +202,10 @@
     stageSel.innerHTML = ['<option value="">не указана</option>', ...STAGES.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`)].join('');
     if (project && project.stage && !STAGES.includes(project.stage)) stageSel.insertAdjacentHTML('beforeend', `<option value="${esc(project.stage)}">${esc(project.stage)}</option>`);
     stageSel.value = project ? project.stage || '' : 'П';
+    // список провайдеров приходит запросом: до ответа пикер НЕ ГОТОВ, и его
+    // значение в тело сохранения не кладётся (иначе «Сохранить» сразу после
+    // открытия стирало нейросеть проекта — рецензия 10.09.2026)
+    aiReady = false;
     fillAiSelects(project ? project.ai_provider || '' : '', project ? project.ai_model || '' : '');
     $('pm-error').hidden = true;
     $('pm-submit').textContent = project ? 'Сохранить' : 'Создать проект';
@@ -215,14 +219,25 @@
    * (/api/health). У недоступных названа причина, как в пикере посадки.
    */
   let providersCache = null;
+  let aiReady = false;            // список пришёл и пикер отражает сохранённый выбор
   async function fillAiSelects(provider, model) {
     const provSel = $('pm-provider'); const modelSel = $('pm-model');
     if (!provSel || !modelSel) return;
+    provSel.innerHTML = '<option value="">загрузка…</option>';
+    modelSel.innerHTML = '';
+    modelSel.disabled = true;
     if (!providersCache) {
       try {
         const data = await S.getJson('/api/health');
-        providersCache = (data && data.providers) || [];
-      } catch { providersCache = []; }
+        // пустой ответ НЕ кэшируем: иначе один сбой связи делал бы пикер
+        // пустым до конца сессии, и каждое сохранение стирало бы выбор
+        const list = (data && data.providers) || [];
+        if (list.length) providersCache = list;
+        else { provSel.innerHTML = '<option value="">список нейросетей недоступен</option>'; return; }
+      } catch {
+        provSel.innerHTML = '<option value="">список нейросетей недоступен</option>';
+        return;
+      }
     }
     provSel.innerHTML = '<option value="">— не выбрана —</option>';
     for (const p of providersCache) {
@@ -233,19 +248,31 @@
       if (p.id === provider) o.selected = true;
       provSel.append(o);
     }
+    /*
+     * Сохранённый выбор показываем, даже если его нет в списке: на .ru
+     * Claude/ChatGPT/Gemini вырезаны совсем, и проект, настроенный на .com,
+     * иначе выглядел бы как «не выбрана» — а сохранение стёрло бы настройку.
+     */
+    if (provider && !providersCache.some((p) => p.id === provider)) {
+      const o = new Option(`${provider} — недоступна на этом адресе`, provider, true, true);
+      o.disabled = false;
+      provSel.append(o);
+    }
     const fillModels = () => {
       const p = providersCache.find((x) => x.id === provSel.value) || null;
       const models = (p && p.models) || [];
       modelSel.innerHTML = '';
       if (!models.length) {
-        modelSel.append(new Option(p ? 'модель по умолчанию' : '—', ''));
+        modelSel.append(new Option(p || !provSel.value ? 'модель по умолчанию' : model || '—', p ? '' : model || ''));
       } else {
         for (const m of models) modelSel.append(new Option(m, m, false, m === model));
+        if (model && !models.includes(model)) modelSel.append(new Option(`${model} — нет в списке`, model, true, true));
       }
-      modelSel.disabled = !p;
+      modelSel.disabled = !provSel.value;
     };
     provSel.onchange = fillModels;
     fillModels();
+    aiReady = true;
   }
 
   function closeProjectModal() {
@@ -264,9 +291,12 @@
       fullName: $('pm-full').value.trim(),
       client: $('pm-client').value.trim(),
       stage: $('pm-stage').value,
-      aiProvider: $('pm-provider') ? $('pm-provider').value : '',
-      aiModel: $('pm-provider') && $('pm-provider').value ? $('pm-model').value : '',
     };
+    // пикер не готов — ключей в теле нет вовсе, и сервер не трогает выбор
+    if (aiReady && $('pm-provider')) {
+      body.aiProvider = $('pm-provider').value;
+      body.aiModel = $('pm-provider').value ? $('pm-model').value : '';
+    }
     if (!body.name) { err.textContent = 'Дайте проекту короткое имя.'; err.hidden = false; $('pm-name').focus(); return; }
     const btn = $('pm-submit');
     btn.disabled = true;

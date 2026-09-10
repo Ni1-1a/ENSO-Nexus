@@ -220,6 +220,8 @@
   /* ---------------- экран: списки ---------------- */
 
   async function showList() {
+    // место обсуждения снимается вместе с уходом с маршрута
+    if (window.FragChat) FragChat.setContext();
     showScreen('dc-s-list');
     crumbs(null);
     const errBox = $('dc-list-error');
@@ -314,6 +316,7 @@
 
   async function showCheck(id) {
     showScreen('dc-s-check');
+    if (window.FragChat) FragChat.setContext();
     const errBox = $('c-error');
     errBox.hidden = true;
     $('c-name').textContent = 'Загрузка…';

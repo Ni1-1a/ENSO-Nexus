@@ -77,8 +77,7 @@ function place(text, items) {
 function label(item, checklistId) {
   const list = checklists.CHECKLISTS[checklistId];
   const ci = list && item.checklist_item ? list.items.find((x) => x.id === item.checklist_item) : null;
-  const source = item.requirement_source || (ci && checklists.findingSource ? '' : '');
-  return [ci ? ci.label : (item.znp_ref || 'замечание'), source].filter(Boolean).join(', ');
+  return [ci ? ci.label : (item.znp_ref || 'замечание'), item.requirement_source || ''].filter(Boolean).join(', ');
 }
 
 /**

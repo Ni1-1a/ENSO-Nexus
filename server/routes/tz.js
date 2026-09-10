@@ -435,9 +435,15 @@ router.post('/runs/:rid/revision', wrap(async (req, res) => {
   }
   const apply = String(req.query.apply || '') === '1';
   if (apply) {
+    // тот же потолок, что у загрузки: иначе через редакцию в проект ложится
+    // документ больше предела, который руками туда положить нельзя
+    const tooBig = require('../services/validation').docSizeError(revision.text);
+    if (tooBig) return res.status(422).json({ error: tooBig });
+    // имя не растёт «(редакция) (редакция) (редакция)» при каждом нажатии
+    const base = String(project.document_name || 'ТЗ').replace(/(\s*\(редакция по проверке\))+$/u, '');
     store.setDocument(project.id, {
       text: revision.text,
-      name: `${project.document_name || 'ТЗ'} (редакция по проверке)`,
+      name: `${base} (редакция по проверке)`.slice(0, 200),
       note: `собрано платформой ${new Date().toLocaleDateString('ru-RU')}: принято формулировок ${revision.applied}`,
     });
   }

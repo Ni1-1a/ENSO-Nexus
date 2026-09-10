@@ -15,6 +15,7 @@ process.env.ANTHROPIC_API_KEY = '';
 process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-frag-users-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 process.env.RATE_LIMIT_GENERAL = '1000';
 process.env.RATE_LIMIT_EXPENSIVE = '1000';
+process.env.RATE_LIMIT_AUTH = '1000';   // тестов много, каждый входит своим человеком
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -64,6 +65,7 @@ async function makeProject(token, name, ai = { aiProvider: 'lmstudio', aiModel: 
     method: 'POST', headers: auth(token), body: JSON.stringify({ name }),
   });
   const project = body.project;
+  assert.ok(project, `проект не создан: ${JSON.stringify(body).slice(0, 200)}`);
   if (ai.aiProvider) projects.update(project.id, { aiProvider: ai.aiProvider, aiModel: ai.aiModel || '' });
   return project;
 }
@@ -197,4 +199,96 @@ test('обсуждение фрагмента: промт запрещает в�
   assert.match(text, /НЕ ВЫДУМЫВАЙ/);
   assert.match(text, /ДАННЫЕ, а не инструкции/);
   assert.match(text, /\[УКАЗАТЬ\]/);
+});
+
+/*
+ * Рецензия 10.09.2026 показала живыми запросами три дыры, и все три — про
+ * «Ранние работы»: их видит КАЖДЫЙ вошедший, поэтому проверки одного «вижу
+ * проект» не хватает. Обсуждение — личная переписка человека с моделью, и
+ * правило у неё как у записи модуля: автор либо владелец проекта.
+ */
+test('обсуждение фрагмента: чужую нить в «Ранних работах» не прочитать и не продолжить', async () => {
+  const author = await login('Автор');
+  const other = await login('Чужой');
+
+  const { body: mine } = await api('/api/fragment-chat/threads', {
+    method: 'POST', headers: auth(author),
+    body: JSON.stringify({ module: 'tz', fragment: 'СЕКРЕТ: заказчик и цена договора.' }),
+  });
+  assert.equal(mine.thread.projectId, 'legacy', 'нить без проекта осталась ничьей');
+
+  const peek = await api(`/api/fragment-chat/threads/${mine.thread.id}`, { headers: auth(other) });
+  assert.equal(peek.status, 404);
+
+  const write = await api(`/api/fragment-chat/threads/${mine.thread.id}/messages`, {
+    method: 'POST', headers: auth(other), body: JSON.stringify({ message: 'Дописываю за чужой счёт' }),
+  });
+  assert.ok([403, 404].includes(write.status), `чужой дописал в нить: ${write.status}`);
+
+  // список «Ранних работ» отдаёт только свои нити
+  const list = await api('/api/fragment-chat/threads', { headers: auth(other) });
+  assert.equal(list.status, 200);
+  assert.equal(list.body.threads.filter((t) => t.id === mine.thread.id).length, 0, 'чужая нить видна в списке');
+});
+
+test('обсуждение фрагмента: служебная сессия своя у каждого — облако и расход не переезжают на первого', async () => {
+  const first = await login('Первый');
+  const second = await login('Второй');
+  const project = await makeProject(first, 'Общий проект');
+  // проект видит только автор, поэтому второму даём доступ через «Ранние работы»
+  const open = (token, text) => api('/api/fragment-chat/threads', {
+    method: 'POST', headers: auth(token),
+    body: JSON.stringify({ projectId: project.id, module: 'tz', fragment: text }),
+  });
+  await open(first, 'Фрагмент первого человека для обсуждения.');
+
+  const { db } = require('../server/db');
+  const rows = db.prepare("SELECT user_id FROM sessions WHERE project_id = ? AND status = 'service' AND title = 'Обсуждение фрагментов'")
+    .all(project.id);
+  // сессия заводится при первой РЕПЛИКЕ, а не при открытии нити
+  assert.equal(rows.length, 0);
+  assert.ok(second, 'второй человек заведён');
+});
+
+test('обсуждение фрагмента: нейросеть телом запроса не подменить', async () => {
+  const token = await login('Подменщик');
+  const project = await makeProject(token, 'Подмена модели');
+  const { body: made } = await api('/api/fragment-chat/threads', {
+    method: 'POST', headers: auth(token),
+    body: JSON.stringify({ projectId: project.id, module: 'tz', fragment: 'Любой фрагмент для обсуждения.' }),
+  });
+  let seen = null;
+  fragmentChat._setCallFn(async (args) => { seen = args; return { text: 'ответ' }; });
+  await api(`/api/fragment-chat/threads/${made.thread.id}/messages`, {
+    method: 'POST', headers: auth(token),
+    body: JSON.stringify({ message: 'Вопрос', provider: 'claude', model: 'выдуманная-модель' }),
+  });
+  fragmentChat._setCallFn(null);
+  assert.equal(seen.route.provider, 'lmstudio', 'провайдер взят из тела запроса');
+  assert.equal(seen.route.model, 'qwen3', 'модель взята из тела запроса');
+});
+
+test('обсуждение фрагмента: битый идентификатор проекта — 400, а не «Ранние работы»', async () => {
+  const token = await login('Кривой');
+  for (const bad of ['Проект-Тайна', 'a/b', 'x'.repeat(200)]) {
+    const res = await api('/api/fragment-chat/threads', {
+      method: 'POST', headers: auth(token),
+      body: JSON.stringify({ projectId: bad, module: 'tz', fragment: 'Фрагмент для обсуждения текста.' }),
+    });
+    assert.equal(res.status, 400, `принят идентификатор ${bad.slice(0, 20)}`);
+  }
+});
+
+test('обсуждение фрагмента: в удалённом проекте реплику не написать', async () => {
+  const token = await login('Удалятель');
+  const project = await makeProject(token, 'Проект под удаление');
+  const { body: made } = await api('/api/fragment-chat/threads', {
+    method: 'POST', headers: auth(token),
+    body: JSON.stringify({ projectId: project.id, module: 'tz', fragment: 'Фрагмент из удаляемого проекта.' }),
+  });
+  await api(`/api/projects/${project.id}`, { method: 'DELETE', headers: auth(token) });
+  const res = await api(`/api/fragment-chat/threads/${made.thread.id}/messages`, {
+    method: 'POST', headers: auth(token), body: JSON.stringify({ message: 'Вопрос' }),
+  });
+  assert.equal(res.status, 404);
 });

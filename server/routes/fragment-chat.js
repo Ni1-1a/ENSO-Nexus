@@ -7,11 +7,13 @@
  * бюджет проекта; правила доступа к проекту проверяет служба.
  */
 const express = require('express');
-const { userAuth, logErrorResponses } = require('../middleware');
+const { userAuth, logErrorResponses, rateLimit } = require('../middleware');
+const config = require('../config');
 const fragmentChat = require('../services/fragment-chat');
 
 const router = express.Router();
 router.use(logErrorResponses);
+router.use(rateLimit(config.rateLimitGeneral, 'fragment-chat'));
 
 // только Host: клиентский X-Forwarded-Host обходил разделение доменов
 const hostOf = (req) => String(req.headers.host || '').split(':')[0].toLowerCase();
@@ -46,28 +48,31 @@ router.get('/threads', userAuth, (req, res, next) => {
 
 router.get('/threads/:id', userAuth, (req, res, next) => {
   try {
-    const thread = fragmentChat.threadView(req.params.id);
-    fragmentChat.assertThreadAccess(thread.projectId, req.user);
-    res.json({ ok: true, thread });
+    res.json({ ok: true, thread: fragmentChat.threadFor(req.params.id, req.user) });
   } catch (err) { next(err); }
 });
 
-router.post('/threads/:id/messages', userAuth, express.json({ limit: '64kb' }), async (req, res, next) => {
-  try {
-    const b = req.body || {};
-    if (!strings(b, ['message', 'provider', 'model'])) {
-      return res.status(422).json({ error: 'Текстовые поля должны быть строками' });
-    }
-    const out = await fragmentChat.reply({
-      threadId: req.params.id,
-      message: b.message || '',
-      provider: b.provider || '',
-      model: b.model || '',
-      user: req.user,
-      host: hostOf(req),
-    });
-    res.json({ ok: true, ...out });
-  } catch (err) { next(err); }
-});
+/*
+ * Реплика — самое дорогое здесь действие: обращение к модели за счёт проекта.
+ * Поэтому свой ограничитель частоты, а нейросеть берётся у проекта и телом
+ * запроса не задаётся (решение владельца 10.09.2026).
+ */
+router.post('/threads/:id/messages', userAuth,
+  rateLimit(config.rateLimitExpensive, 'fragment-chat-reply'),
+  express.json({ limit: '64kb' }), async (req, res, next) => {
+    try {
+      const b = req.body || {};
+      if (!strings(b, ['message'])) {
+        return res.status(422).json({ error: 'Текстовые поля должны быть строками' });
+      }
+      const out = await fragmentChat.reply({
+        threadId: req.params.id,
+        message: b.message || '',
+        user: req.user,
+        host: hostOf(req),
+      });
+      res.json({ ok: true, ...out });
+    } catch (err) { next(err); }
+  });
 
 module.exports = { router };

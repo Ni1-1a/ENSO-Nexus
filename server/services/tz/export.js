@@ -122,10 +122,20 @@ function run_(text, { bold = false } = {}) {
   return `<w:r><w:rPr>${bold ? '<w:b/>' : ''}</w:rPr><w:t xml:space="preserve">${esc(text)}</w:t></w:r>`;
 }
 
+/**
+ * Абзац. Переводы строк внутри превращаются в <w:br/>: Word игнорирует «\n»
+ * в <w:t> и показывает его пробелом, поэтому текст ТЗ, вынутый из DOCX (там
+ * почти нет пустых строк, зато полно переносов), слипался в одну простыню —
+ * пункты 1.1, 1.2, 1.3 вставали в строку (рецензия 10.09.2026).
+ */
 function para(text, { bold = false, size = null, before = 0, after = 120 } = {}) {
   const sz = size ? `<w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/>` : '';
+  const rpr = `<w:rPr>${bold ? '<w:b/>' : ''}${sz}</w:rPr>`;
+  const body = String(text == null ? '' : text).split('\n')
+    .map((line, i) => (i ? '<w:br/>' : '') + `<w:t xml:space="preserve">${esc(line)}</w:t>`)
+    .join('');
   return `<w:p><w:pPr><w:spacing w:before="${before}" w:after="${after}"/></w:pPr>`
-    + `<w:r><w:rPr>${bold ? '<w:b/>' : ''}${sz}</w:rPr><w:t xml:space="preserve">${esc(text)}</w:t></w:r></w:p>`;
+    + `<w:r>${rpr}${body}</w:r></w:p>`;
 }
 
 const heading = (text, size = 14) => para(text, { bold: true, size, before: 260, after: 140 });

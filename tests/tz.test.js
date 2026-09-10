@@ -513,3 +513,36 @@ test('анализ ТЗ: карточка задания показывает н
   const card = list.body.projects.find((p) => p.id === tzId);
   assert.equal(card.ai_provider, 'lmstudio', 'в списке осталась старая модель задания');
 });
+
+/*
+ * Word игнорирует «\n» внутри <w:t> и показывает его пробелом. Текст ТЗ,
+ * вынутый из DOCX, почти не содержит пустых строк, зато полон переносов —
+ * без <w:br/> готовый файл слипался в одну простыню, и пункты 1.1, 1.2, 1.3
+ * вставали в строку (рецензия 10.09.2026).
+ */
+test('анализ ТЗ: в готовом DOCX переносы строк остаются переносами', () => {
+  const AdmZip = require('adm-zip');
+  const exporter = require('../server/services/tz/export');
+  const text = '1. Первый пункт задания.\n2. Второй пункт задания.\n3. Третий пункт задания.';
+  const buf = exporter.revisionDocx({
+    project: { name: 'Проверка переносов' },
+    run: { created_at: '2026-09-10T00:00:00.000Z' },
+    revision: { text, applied: 0, byFinding: [] },
+  });
+  const xml = new AdmZip(buf).readAsText('word/document.xml');
+  const brs = (xml.match(/<w:br\/>/g) || []).length;
+  assert.ok(brs >= 2, `переносов в файле ${brs}, а строк три`);
+  assert.ok(!/<w:t[^>]*>[^<]*\n/.test(xml), 'сырой перевод строки остался внутри <w:t>');
+  for (const part of ['Первый пункт', 'Второй пункт', 'Третий пункт']) {
+    assert.ok(xml.includes(part), `потерян текст: ${part}`);
+  }
+});
+
+/* Имя не должно расти «(редакция) (редакция) (редакция)» при каждом нажатии. */
+test('анализ ТЗ: повторная запись редакции не удлиняет имя документа', () => {
+  const base = 'ТЗ АВИВАК (PDF)';
+  const strip = (name) => String(name || 'ТЗ').replace(/(\s*\(редакция по проверке\))+$/u, '');
+  let name = base;
+  for (let i = 0; i < 3; i += 1) name = `${strip(name)} (редакция по проверке)`;
+  assert.equal(name, 'ТЗ АВИВАК (PDF) (редакция по проверке)');
+});

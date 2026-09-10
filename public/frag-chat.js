@@ -112,7 +112,15 @@
     return { entityId: out.entityId || '', anchor: out.anchor || '' };
   }
 
-  /** Абзацы вокруг фрагмента: модель должна видеть, из чего он вырван. */
+  /**
+   * Абзацы вокруг фрагмента: модель должна видеть, из чего он вырван.
+   *
+   * Ищем НОРМАЛИЗОВАННОЕ в НОРМАЛИЗОВАННОМ. Выделение уже склеено по пробелам
+   * (onSelection), а текст карточки полон переносов строк и границ элементов,
+   * поэтому прямой поиск промахивался на любом выделении длиннее строки — и
+   * вместо окружения модели уходило начало СОВСЕМ ДРУГОЙ находки (рецензия
+   * 10.09.2026). Не нашли — отдаём пустоту: без окружения лучше, чем с чужим.
+   */
   function aroundOf(range, fragment) {
     let el = range.commonAncestorContainer;
     if (el.nodeType !== 1) el = el.parentElement;
@@ -122,13 +130,28 @@
       if (scope.scrollHeight > 40 && scope.innerText && scope.innerText.length > fragment.length + 80) break;
       scope = scope.parentElement;
     }
-    const text = ((scope && scope.innerText) || '').replace(/ /g, ' ');
-    if (!text) return '';
-    const at = text.indexOf(fragment.slice(0, 60));
-    if (at < 0) return text.slice(0, AROUND * 2);
-    const from = Math.max(0, at - AROUND);
-    const to = Math.min(text.length, at + fragment.length + AROUND);
-    return (from > 0 ? '…' : '') + text.slice(from, to) + (to < text.length ? '…' : '');
+    const raw = ((scope && scope.innerText) || '').replace(/ /g, ' ');
+    if (!raw) return '';
+    /* Карта «позиция в склеенном → позиция в исходном»: искать надо в склеенном,
+       а резать исходный, иначе в промпт уйдёт текст без единого перевода строки. */
+    const map = [];
+    let flat = '';
+    let space = false;
+    for (let i = 0; i < raw.length; i += 1) {
+      if (/\s/.test(raw[i])) {
+        if (flat && !space) { flat += ' '; map.push(i); space = true; }
+        continue;
+      }
+      flat += raw[i]; map.push(i); space = false;
+    }
+    const needle = fragment.replace(/\s+/g, ' ').trim();
+    const key = needle.slice(0, 60);
+    const at = key ? flat.indexOf(key) : -1;
+    if (at < 0) return '';
+    const from = map[Math.max(0, at - AROUND)] ?? 0;
+    const endFlat = Math.min(flat.length - 1, at + needle.length + AROUND);
+    const to = (map[endFlat] ?? raw.length - 1) + 1;
+    return (from > 0 ? '…' : '') + raw.slice(from, to) + (to < raw.length ? '…' : '');
   }
 
   /* ---------------- капсула у выделения ---------------- */
@@ -200,6 +223,31 @@
   let quote = null;
   let openerFocus = null;
 
+  /**
+   * Панель начинается ПОД шапкой: она не модальная, затемнения под ней нет, и
+   * накрытая ею капсула с бургером (единственный вход в настройки и выход)
+   * переставала нажиматься. Высота считается по факту — на узком экране
+   * капсула переносится в несколько строк.
+   */
+  function placePanel() {
+    if (!panel) return;
+    let bottom = 0;
+    for (const sel of ['#banners', '#topbar', '.topbar', '.mobile-bar']) {
+      const el = document.querySelector(sel);
+      if (!el || el.hidden || !el.offsetParent) continue;
+      // считаем только ЗАКРЕПЛЁННЫЕ элементы шапки: они и остаются поверх
+      const pos = getComputedStyle(el).position;
+      if (pos !== 'fixed' && pos !== 'sticky') continue;
+      const r = el.getBoundingClientRect();
+      if (r.height) bottom = Math.max(bottom, r.bottom);
+    }
+    // шапка выше трети экрана — значит мерить нечего, панели нужно место
+    // (высота окна бывает нулевой в скрытой вкладке — тогда берём разумную)
+    const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    const cap = vh * 0.34;
+    panel.style.setProperty('--fc-top', `${Math.round(bottom > 0 && bottom < cap ? bottom + 8 : 12)}px`);
+  }
+
   function buildPanel() {
     panel = document.createElement('aside');
     panel.id = 'fc-panel';
@@ -269,9 +317,12 @@
     if (!panel) buildPanel();
     openerFocus = document.activeElement;
     hidePill();
+    // боковое меню платформы и панель обсуждения занимают одно место
+    if (window.EnsoShell && EnsoShell.closeDrawer) { try { EnsoShell.closeDrawer(); } catch { /* нет каркаса */ } }
     window.getSelection().removeAllRanges();
     state.open = true;
     panel.hidden = false;
+    placePanel();
     quote.textContent = sel.fragment;
     renderPlace(sel);
     state.thread = null;
@@ -303,8 +354,9 @@
     const text = input.value.trim();
     if (!text) return;
     state.sending = true;
-    state.thread.messages = (state.thread.messages || []).concat([{ role: 'user', content: text, author_name: 'Вы' }]);
-    input.value = '';
+    const shown = { role: 'user', content: text, author_name: 'Вы' };
+    state.thread.messages = (state.thread.messages || []).concat([shown]);
+    input.disabled = true;
     renderMessages();
     try {
       const out = await api(`/api/fragment-chat/threads/${encodeURIComponent(state.thread.id)}/messages`, {
@@ -312,12 +364,22 @@
         body: JSON.stringify({ message: text }),
       });
       state.sending = false;
+      input.disabled = false;
+      input.value = '';                       // чистим ТОЛЬКО после успеха
       state.thread.messages.push({ role: 'assistant', content: out.reply, provider: out.provider, model: out.model });
       renderMessages();
     } catch (err) {
+      /*
+       * Сервер при неудаче не сохранил ничего — значит и в ленте реплики быть
+       * не должно, а набранный вопрос обязан остаться в поле: иначе после 429
+       * от облака или обрыва его приходилось набирать заново.
+       */
       state.sending = false;
+      input.disabled = false;
+      state.thread.messages = state.thread.messages.filter((m) => m !== shown);
       renderMessages();
       setError(err.message);
+      input.focus();
     }
   }
 
@@ -331,19 +393,38 @@
   /* ---------------- подписки ---------------- */
 
   document.addEventListener('mouseup', () => setTimeout(onSelection, 0));
-  document.addEventListener('keyup', (e) => { if (e.shiftKey || e.key.startsWith('Arrow')) setTimeout(onSelection, 0); });
+  document.addEventListener('keyup', (e) => { if (e.shiftKey || (e.key || '').startsWith('Arrow')) setTimeout(onSelection, 0); });
+  /*
+   * На тач-экране выделяют долгим нажатием и перетаскиванием маркеров, а
+   * `mouseup` при этом не приходит вовсе — по одному ему функция «на всей
+   * платформе» на телефоне не работала (рецензия 10.09.2026). Поэтому капсулу
+   * показывает и `selectionchange`, с задержкой: пока маркер тащат, событие
+   * летит десятками в секунду.
+   */
+  let selTimer = 0;
   document.addEventListener('selectionchange', () => {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) hidePill();
+    if (!sel || sel.isCollapsed) { hidePill(); return; }
+    clearTimeout(selTimer);
+    selTimer = setTimeout(onSelection, 220);
   });
+  document.addEventListener('touchend', () => setTimeout(onSelection, 60));
   window.addEventListener('scroll', hidePill, true);
-  window.addEventListener('resize', hidePill);
+  window.addEventListener('resize', () => { hidePill(); if (state.open) placePanel(); });
+  /*
+   * Escape закрывает ОДНО окно. Обработчик стоит на перехвате и глушит
+   * остальные: у главной свой обработчик, который иначе тем же нажатием
+   * схлопывал полноэкранный план под панелью.
+   */
   document.addEventListener('keydown', (e) => {
-    // Escape закрывает только верхнее окно: у диалогов каркаса свой обработчик
-    if (e.key === 'Escape' && state.open && !document.querySelector('.modal-backdrop:not([hidden])')) close();
-  });
+    if (e.key !== 'Escape' || !state.open) return;
+    if (document.querySelector('.modal-backdrop:not([hidden])')) return;  // диалог каркаса выше
+    e.stopImmediatePropagation();
+    close();
+  }, true);
 
   window.FragChat = {
+    /** Место страницы. Без аргументов — сброс: уходя с маршрута, страница обязана его снять. */
     setContext({ entityId = '', anchor = '' } = {}) { state.entityId = entityId; state.anchor = anchor; },
     open: openFor,
     close,

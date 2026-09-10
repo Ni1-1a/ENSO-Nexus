@@ -784,7 +784,12 @@ a.proj-new, a.proj-new:hover { text-decoration: none; color: inherit; }
 @keyframes fc-pill-in { from { transform: translateY(4px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 .fc-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: 132;
+  /* НИЖЕ плавающей капсулы: панель не модальная, затемнения под ней нет, и
+     накрытый ею бургер #tb-more (единственный вход в настройки и выход)
+     переставал нажиматься — страница при этом выглядела рабочей. Отступ
+     считает frag-chat.js по фактической высоте шапки: на узком экране капсула
+     переносится в несколько строк, и фиксированное число не спасает. */
+  position: fixed; top: var(--fc-top, 68px); right: 0; bottom: 0; z-index: 132;
   width: min(420px, 94vw);
   display: flex; flex-direction: column;
   padding: 14px 16px 16px;
@@ -841,3 +846,8 @@ a.proj-new, a.proj-new:hover { text-decoration: none; color: inherit; }
   border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text) 6%, transparent);
   font-family: var(--font-mono); font-size: 12.5px;
 }
+
+/* Тост сообщает результат действия, сделанного в панели обсуждения, — значит
+   и лежать обязан выше неё; на телефоне панель занимает весь экран, и при
+   z-index 130 «Формулировка принята» не было видно вовсе. */
+.toast { z-index: 136; }

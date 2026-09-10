@@ -431,3 +431,56 @@ test('встроенных скриптов в index.html нет — CSP script-
     'встроенный <script> запрещён политикой безопасности');
   assert.ok(!/\son(click|input|change|load|submit)=/.test(html), 'обработчиков в атрибутах быть не должно');
 });
+
+/* ---------------- обсуждение выделенного фрагмента (10.09.2026) ---------------- */
+
+/*
+ * Правило платформы: правка public/* без поднятой версии выглядит как «кнопка
+ * есть, но не работает». Здесь это проверяется механически: общий модуль
+ * обязан быть подключён на всех страницах и ОДНОЙ версией — разные версии на
+ * разных страницах означают, что про одну забыли.
+ */
+test('frag-chat.js подключён на всех страницах модулей и одной версией', () => {
+  const pages = ['index.html', 'tz.html', 'doccheck.html', 'normo.html', 'gge.html', 'akty.html'];
+  const versions = new Set();
+  for (const page of pages) {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'public', page), 'utf8');
+    const tag = /frag-chat\.js\?v=(\d+)/.exec(html);
+    assert.ok(tag, `${page}: frag-chat.js не подключён`);
+    versions.add(tag[1]);
+    const shellAt = html.indexOf('shell.js');
+    assert.ok(shellAt >= 0 && html.indexOf('frag-chat.js') > shellAt, `${page}: frag-chat.js стоит раньше shell.js`);
+  }
+  assert.equal(versions.size, 1, `версии разъехались: ${[...versions].join(', ')}`);
+});
+
+test('обсуждение фрагмента: ответ модели экранируется до разбора разметки', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'frag-chat.js'), 'utf8');
+  const md = /function md\(text\) \{([\s\S]*?)\n  \}/.exec(src);
+  assert.ok(md, 'функция md не найдена');
+  const body = md[1];
+  const escAt = body.indexOf('esc(text)');
+  assert.ok(escAt >= 0, 'разметка строится без экранирования');
+  // подстановки в HTML идут только ПОСЛЕ esc: иначе ответ модели вставит тег
+  assert.ok(escAt < body.indexOf('<strong>'), 'жирный собирается раньше экранирования');
+  // каждое употребление текста реплики обёрнуто: сырым в разметку он не попадает
+  const raw = [...src.matchAll(/(.{6})m\.content/g)].map((m) => m[1]);
+  for (const before of raw) {
+    assert.ok(/md\($|esc\($/.test(before), `текст реплики вставляется без обёртки: «…${before}m.content»`);
+  }
+});
+
+test('обсуждение фрагмента: окружение не берётся наугад при промахе поиска', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'frag-chat.js'), 'utf8');
+  const fn = /function aroundOf\(range, fragment\) \{([\s\S]*?)\n  \}/.exec(src);
+  assert.ok(fn, 'функция aroundOf не найдена');
+  assert.ok(/if \(at < 0\) return '';/.test(fn[1]),
+    'при ненайденном фрагменте отдаётся чужой текст вместо пустоты');
+});
+
+test('обсуждение фрагмента: капсулу показывает не только мышь', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'frag-chat.js'), 'utf8');
+  assert.ok(/addEventListener\('touchend'/.test(src), 'нет обработчика touchend — на телефоне капсулы не будет');
+  assert.ok(/selectionchange[\s\S]{0,400}setTimeout\(onSelection/.test(src),
+    'selectionchange только прячет капсулу, а показать её на тач-экране больше нечему');
+});
