@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=3';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=3';
+import { OfficeScene } from './office-scene.js?v=4';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=4';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -394,12 +394,12 @@ function secretaryContext() {
       return `<p>${esc(state.data ? state.data.personas.secretary.blurb : '')}</p>
         <div class="dock-actions">
           <button class="btn" id="sec-project" type="button">Сменить проект</button>
-          <button class="btn" id="sec-tour" type="button">Пролёт по залу</button>
+          <button class="btn" id="sec-tour" type="button">Показать зал</button>
         </div>`;
     },
     afterInfo(el) {
       el.querySelector('#sec-project').onclick = showProjectPick;
-      el.querySelector('#sec-tour').onclick = () => { closeDock(); runIntroFlight(false); };
+      el.querySelector('#sec-tour').onclick = () => { closeDock(); setView('hall'); state.scene.goTo('hall'); };
     },
   };
 }
@@ -412,6 +412,20 @@ function posterContext(info) {
     chatKind: null,
     renderInfo() {
       return `<p>${esc(p.text)}</p><p class="muted">Композиция построена по золотому сечению: предмет стоит в точке φ, рама — прямоугольник 1 : 1,618.</p>`;
+    },
+  };
+}
+
+function bookContext(info) {
+  const bases = (info.bases || []).map((b) => (b === 'verified' ? 'верифицированная' : 'общая')).join(', ');
+  return {
+    title: info.name,
+    sub: `норматив базы знаний · ${info.chunks} фрагментов`,
+    chatKind: null,
+    renderInfo() {
+      return `<p>Этот корешок — настоящий документ базы знаний платформы: по нему ищут выдержки нормоконтроль, «Проверка документа» и извлечение ограничений.</p>
+        <dl class="dock-kv"><dt>Фрагментов</dt><dd>${info.chunks}</dd><dt>База</dt><dd>${esc(bases || 'общая')}</dd></dl>
+        <p class="muted">Толщина корешка на полке пропорциональна числу фрагментов.</p>`;
     },
   };
 }
@@ -727,24 +741,25 @@ async function pickupAuth() {
   } catch { /* гость */ }
 }
 
+/**
+ * Вход: секретарь здоровается в лобби, дальше человек идёт сам.
+ * Вступительный пролёт камеры убран по решению владельца 10.09.2026 —
+ * он отнимал семь секунд у каждого показа и мешал сразу осмотреться.
+ */
 async function runIntroFlight(withGreeting = true) {
   const hint = $('intro-hint');
+  state.scene.goTo('lobby', 0);
+  setView('lobby');
   if (withGreeting) {
-    state.scene.goTo('lobby', 0);
     state.scene.wave(3);
     const text = (state.user ? D.greetings.named : D.greetings.guest).replace('{name}', userFirstName());
     $('intro-text').textContent = text;
     hint.hidden = false;
     speak(text);
-    await new Promise((r) => setTimeout(r, state.scene.reducedMotion ? 400 : 2600));
+    setTimeout(() => { hint.hidden = true; }, 6000);
   } else {
-    state.scene.goTo('lobby', 0);
-    hint.hidden = false;
-    $('intro-text').textContent = 'Пролетаем в зал…';
+    hint.hidden = true;
   }
-  setView('hall');
-  await state.scene.flythrough();
-  hint.hidden = true;
 }
 
 function setView(view) {
@@ -786,6 +801,8 @@ function hoverLabel(info) {
     case 'aquarium': return 'Аквариум';
     case 'reactor': return 'Реактор · макет';
     case 'room': return D.places[info.id] ? D.places[info.id].title : 'помещение';
+    case 'book': return `${info.name} · ${info.chunks} фрагментов`;
+    case 'art': return D.arts && D.arts[info.id] ? D.arts[info.id].title : 'картина';
     case 'walker': return (D.walkers && D.walkers[info.index]) || 'коллега';
     case 'chess-square': return 'Шахматы';
     case 'go-point': return 'Го';
@@ -874,7 +891,7 @@ async function main() {
     $('chat-input').value = '';
     sendChat(text);
   };
-  $('intro-skip').onclick = () => state.scene.skipFlythrough();
+  $('intro-skip').onclick = () => { $('intro-hint').hidden = true; state.scene.skipFlythrough(); };
   $('project-pick').onclick = (e) => { if (e.target === $('project-pick')) $('project-pick').hidden = true; };
 
   // кадры — ДО пролёта: его завершение живёт внутри update(), и цикл,
@@ -904,6 +921,9 @@ async function main() {
   // rAF замирает в фоновой вкладке (превью, второй монитор): запасной таймер
   // держит анимацию и пролёт живыми, пока вкладка скрыта
   setInterval(() => { if (document.hidden) tick(); }, 33);
+
+  // корешки библиотеки — документы базы знаний платформы
+  api('/api/office/kb-docs').then((r) => state.scene.setBooks(r.docs || [])).catch(() => {});
 
   // первый заход
   await refresh(true);
@@ -974,6 +994,12 @@ function handlePick(info) {
       break;
     case 'room':
       openDock(placeContext(D.places[info.id], info.id));
+      break;
+    case 'book':
+      openDock(bookContext(info));
+      break;
+    case 'art':
+      openDock(placeContext(D.arts[info.id] || { title: 'Картина', sub: '', text: '' }, 'reactor'));
       break;
     case 'walker':
       toast(`${(D.walkers && D.walkers[info.index]) || 'Коллега'} — идёт по делам`);

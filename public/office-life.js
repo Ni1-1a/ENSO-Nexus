@@ -130,38 +130,38 @@ export class LifeDirector {
 
     switch (a.state) {
       case 'typing':
-        lerp(r.armL.shoulder, 'x', -0.95); lerp(r.armR.shoulder, 'x', -0.95);
-        lerp(r.armL.elbow, 'x', -0.85 + Math.sin(t * 14 + ph) * 0.06);
-        lerp(r.armR.elbow, 'x', -0.85 + Math.cos(t * 12 + ph * 2) * 0.06, dt * 12);
+        lerp(r.armL.shoulder, 'x', 0.95); lerp(r.armR.shoulder, 'x', 0.95);
+        lerp(r.armL.elbow, 'x', 0.62 + Math.sin(t * 14 + ph) * 0.06);
+        lerp(r.armR.elbow, 'x', 0.62 + Math.cos(t * 12 + ph * 2) * 0.06, dt * 12);
         lerp(r.head, 'y', Math.sin(t * 0.6 + ph) * 0.08);
         lerp(r.head, 'x', 0.08);
         break;
       case 'reading':
-        lerp(r.armL.shoulder, 'x', -0.7); lerp(r.armR.shoulder, 'x', -0.7);
-        lerp(r.armL.elbow, 'x', -1.5); lerp(r.armR.elbow, 'x', -1.5);
+        lerp(r.armL.shoulder, 'x', 0.7); lerp(r.armR.shoulder, 'x', 0.7);
+        lerp(r.armL.elbow, 'x', 1.35); lerp(r.armR.elbow, 'x', 1.35);
         lerp(r.head, 'x', 0.32); lerp(r.head, 'y', Math.sin(t * 0.3 + ph) * 0.1);
         break;
       case 'sipping': {
         const k = Math.min(1, (t - a.t0) / 0.8);
-        lerp(r.armR.shoulder, 'x', -0.6 - k * 0.5); lerp(r.armR.elbow, 'x', -2.2 * k - 0.4);
-        lerp(r.armL.shoulder, 'x', -0.8); lerp(r.armL.elbow, 'x', -0.9);
+        lerp(r.armR.shoulder, 'x', 0.6 + k * 0.35); lerp(r.armR.elbow, 'x', 1.9 * k + 0.4);
+        lerp(r.armL.shoulder, 'x', 0.85); lerp(r.armL.elbow, 'x', 0.7);
         lerp(r.head, 'x', -0.15 * k);
         break;
       }
       case 'stretch':
-        lerp(r.armL.shoulder, 'x', -2.9); lerp(r.armR.shoulder, 'x', -2.9);
-        lerp(r.armL.elbow, 'x', -0.2); lerp(r.armR.elbow, 'x', -0.2);
+        lerp(r.armL.shoulder, 'x', 2.8); lerp(r.armR.shoulder, 'x', 2.8);
+        lerp(r.armL.elbow, 'x', 0.2); lerp(r.armR.elbow, 'x', 0.2);
         lerp(r.head, 'x', -0.35);
         lerp(r.torso, 'x', -0.12);
         break;
       case 'phone':
-        lerp(r.armR.shoulder, 'x', -0.5); lerp(r.armR.shoulder, 'z', -0.9); lerp(r.armR.elbow, 'x', -2.6);
-        lerp(r.armL.shoulder, 'x', -0.8); lerp(r.armL.elbow, 'x', -0.9);
+        lerp(r.armR.shoulder, 'x', 0.5); lerp(r.armR.shoulder, 'z', -0.9); lerp(r.armR.elbow, 'x', 2.3);
+        lerp(r.armL.shoulder, 'x', 0.85); lerp(r.armL.elbow, 'x', 0.7);
         lerp(r.head, 'y', 0.4 + Math.sin(t * 0.9) * 0.1); lerp(r.head, 'z', 0.12);
         break;
       default: // look
-        lerp(r.armL.shoulder, 'x', -0.8); lerp(r.armR.shoulder, 'x', -0.8);
-        lerp(r.armL.elbow, 'x', -0.9); lerp(r.armR.elbow, 'x', -0.9);
+        lerp(r.armL.shoulder, 'x', 0.85); lerp(r.armR.shoulder, 'x', 0.85);
+        lerp(r.armL.elbow, 'x', 0.7); lerp(r.armR.elbow, 'x', 0.7);
         lerp(r.head, 'y', Math.sin(t * 0.35 + ph) * 0.6); lerp(r.head, 'x', 0.02);
     }
     if (a.state !== 'phone') { lerp(r.armR.shoulder, 'z', 0); lerp(r.head, 'z', 0); }
@@ -201,11 +201,11 @@ export class LifeDirector {
     const s = Math.sin(t * 6.5 + w.phase);
     r.legL.hip.rotation.x = s * 0.55;
     r.legR.hip.rotation.x = -s * 0.55;
-    r.legL.knee.rotation.x = Math.max(0, -s) * 0.9;
-    r.legR.knee.rotation.x = Math.max(0, s) * 0.9;
-    r.armL.shoulder.rotation.x = -s * 0.4;
-    r.armR.shoulder.rotation.x = w.mug ? -0.9 : s * 0.4;
-    r.armR.elbow.rotation.x = w.mug ? -1.4 : -0.2;
+    r.legL.knee.rotation.x = -Math.max(0, -s) * 0.9;
+    r.legR.knee.rotation.x = -Math.max(0, s) * 0.9;
+    r.armL.shoulder.rotation.x = s * 0.4;
+    r.armR.shoulder.rotation.x = w.mug ? 0.9 : -s * 0.4;
+    r.armR.elbow.rotation.x = w.mug ? 1.3 : 0.2;
     r.hips.position.y = 0.92 + Math.abs(Math.cos(t * 6.5 + w.phase)) * 0.025;
     r.head.rotation.y *= 0.95;
   }

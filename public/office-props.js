@@ -753,14 +753,22 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
   const legL = mkLeg(-1);
   const legR = mkLeg(1);
 
+  /*
+   * КОНВЕНЦИЯ КОНЕЧНОСТЕЙ. Лицо модели смотрит в −z, а конечность висит вниз
+   * (−y). Поворот вокруг X на угол θ уводит её в (0, −cosθ, −sinθ), поэтому
+   * ВПЕРЁД (к −z, туда же, куда лицо) — это ПОЛОЖИТЕЛЬНЫЙ угол. Прежние
+   * отрицательные значения задирали руки и колени НАЗАД: человек за столом
+   * читался как сидящий задом наперёд, хотя корпус был развёрнут верно.
+   */
   if (standing) {
-    armL.shoulder.rotation.x = 0.1; armR.shoulder.rotation.x = 0.1;
+    armL.shoulder.rotation.x = 0.12; armR.shoulder.rotation.x = 0.12;
+    armL.elbow.rotation.x = 0.15; armR.elbow.rotation.x = 0.15;
   } else {
-    // сидя: бёдра вперёд, колени вниз
-    legL.hip.rotation.x = -Math.PI / 2 + 0.15; legR.hip.rotation.x = -Math.PI / 2 + 0.15;
-    legL.knee.rotation.x = Math.PI / 2 - 0.2; legR.knee.rotation.x = Math.PI / 2 - 0.2;
-    armL.shoulder.rotation.x = -0.9; armR.shoulder.rotation.x = -0.9;
-    armL.elbow.rotation.x = -0.9; armR.elbow.rotation.x = -0.9;
+    // сидя: бёдра вперёд горизонтально, колени сгибают голень вниз (назад — минус)
+    legL.hip.rotation.x = Math.PI / 2 - 0.15; legR.hip.rotation.x = Math.PI / 2 - 0.15;
+    legL.knee.rotation.x = -Math.PI / 2 + 0.2; legR.knee.rotation.x = -Math.PI / 2 + 0.2;
+    armL.shoulder.rotation.x = 0.9; armR.shoulder.rotation.x = 0.9;
+    armL.elbow.rotation.x = 0.6; armR.elbow.rotation.x = 0.6;
   }
 
   return { group: g, hips, head, torso, armL, armR, legL, legR, phase: Math.random() * Math.PI * 2, standing };

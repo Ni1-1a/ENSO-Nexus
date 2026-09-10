@@ -13,49 +13,96 @@ import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
 import * as P from './office-props.js';
 
-export const LEVEL = 1.02;   // фойе, лобби и крылья
-export const MEZZ = 4.4;     // антресоль библиотеки
+export const LEVEL = 1.02;    // первый этаж: лобби, фойе, крылья
+export const FLOOR2 = 5.2;    // кольцевой лаундж и библиотека — вровень с низом окон
+export const PIT = -1.9;      // дно зала реактора
+export const MEZZ = FLOOR2;   // старое имя антресоли: библиотека переехала на второй этаж
 
 /* прямоугольники проходимости: [x0, x1, z0, z1] */
 export const ROOMS = {
   hall: [-15.4, 15.4, -9.6, 10.7],
   lobby: [-15.4, 15.4, 11.3, 20.6],
-  door: [-4.4, 4.4, 10.4, 11.6],
+  door: [-6.0, 6.0, 10.2, 11.8],
   meeting: [16.6, 25.4, 11.6, 20.4],
   meetingDoor: [15.3, 16.7, 13.0, 15.2],
   garage: [16.6, 33.4, -10.2, 7.4],
   garageDoor: [15.3, 16.7, -1.2, 1.6],
-  reactor: [-33.4, -16.6, -10.2, 7.4],
+  // зал реактора: балкон входа на уровне 1, лестница вниз, дно на PIT
+  reactorBalcony: [-21.0, -15.3, -3.6, 3.9],
+  reactorStair: [-23.6, -21.0, -1.2, 3.6],
+  reactorFloor: [-33.4, -21.0, -10.2, 7.4],
   reactorDoor: [-16.7, -15.3, -1.2, 1.6],
-  stair: [16.6, 18.4, 12.6, 19.6],
-  mezz: [18.4, 25.4, 11.6, 20.4],
-  mezzLanding: [16.6, 18.4, 19.6, 20.4],
+  // второй этаж: кольцо вокруг зала
+  ringW: [-15.4, -11.9, -10.6, 10.6],
+  ringE: [11.9, 15.4, -10.6, 10.6],
+  ringN: [-15.4, 15.4, -10.6, -7.4],
+  ringS: [-15.4, 15.4, 7.6, 10.6],
+  stairMain: [2.6, 5.6, 12.6, 19.8],
+  stairBridge: [2.6, 5.6, 10.4, 12.6],
+  library: [16.6, 25.4, 11.6, 20.4],
+  libraryBridge: [15.3, 16.7, 13.0, 15.2],
 };
 const inRect = (x, z, r) => x > r[0] && x < r[1] && z > r[2] && z < r[3];
 
+const FIRST = ['hall', 'lobby', 'door', 'meeting', 'meetingDoor', 'garage', 'garageDoor', 'reactorBalcony', 'reactorDoor'];
+const SECOND = ['ringW', 'ringE', 'ringN', 'ringS', 'library', 'libraryBridge'];
+
 export function insideWalkable(x, z) {
-  for (const k of ['hall', 'lobby', 'door', 'meeting', 'meetingDoor', 'garage', 'garageDoor', 'reactor', 'reactorDoor', 'mezzLanding']) {
+  for (const k of [...FIRST, ...SECOND, 'reactorStair', 'reactorFloor', 'stairMain', 'stairBridge']) {
     if (inRect(x, z, ROOMS[k])) return true;
   }
   return false;
 }
 
-/** высота пола с учётом этажа: из кандидатов берётся ближайший к прежнему полу */
+/**
+ * Высота пола: собираются кандидаты этой точки (первый этаж, лестницы, второй
+ * этаж, дно реактора) и берётся САМЫЙ ВЫСОКИЙ из достижимых (шаг ≤ 0.45 м) —
+ * так лестница поднимает, а под неё не подлезешь.
+ */
 export function floorHeight(x, z, prevY, base) {
-  const cands = [base(x, z)];
-  if (inRect(x, z, ROOMS.stair)) {
-    const t = Math.max(0, Math.min(1, (z - ROOMS.stair[2]) / (ROOMS.stair[3] - ROOMS.stair[2])));
-    cands.push(LEVEL + t * (MEZZ - LEVEL));
+  const cands = [];
+  if (FIRST.some((k) => inRect(x, z, ROOMS[k]))) cands.push(base(x, z));
+  if (inRect(x, z, ROOMS.reactorFloor)) cands.push(PIT);
+  if (inRect(x, z, ROOMS.reactorStair)) {
+    const t = Math.max(0, Math.min(1, (ROOMS.reactorStair[1] - x) / (ROOMS.reactorStair[1] - ROOMS.reactorStair[0])));
+    cands.push(LEVEL + t * (PIT - LEVEL));
   }
-  if (inRect(x, z, ROOMS.mezz) || inRect(x, z, ROOMS.mezzLanding)) cands.push(MEZZ);
-  // из досягаемых (в пределах ступени 0.45 м) берётся самый высокий — так по лестнице
-  // поднимаются, а не идут «под ней»; недосягаемые не рассматриваются
+  if (inRect(x, z, ROOMS.stairMain)) {
+    const t = Math.max(0, Math.min(1, (ROOMS.stairMain[3] - z) / (ROOMS.stairMain[3] - ROOMS.stairMain[2])));
+    cands.push(LEVEL + t * (FLOOR2 - LEVEL));
+  }
+  if (SECOND.some((k) => inRect(x, z, ROOMS[k])) || inRect(x, z, ROOMS.stairBridge)) cands.push(FLOOR2);
+  if (!cands.length) cands.push(base(x, z));
   const reach = cands.filter((c) => Math.abs(c - prevY) < 0.45);
   if (reach.length) return Math.max(...reach);
   return cands.reduce((best, c) => (Math.abs(c - prevY) < Math.abs(best - prevY) ? c : best), cands[0]);
 }
 
 /* ================= общие помощники ================= */
+
+/** светлый камень Apple Park: крупные плиты со швами и лёгким крапом */
+function stoneTexture(size = 1024) {
+  const { texture } = P.canvasTexture(size, size, (c) => {
+    c.fillStyle = '#e8e3d9'; c.fillRect(0, 0, size, size);
+    const tile = size / 4;
+    for (let r = 0; r < 4; r++) for (let col = 0; col < 4; col++) { c.fillStyle = `hsl(40, 14%, ${89 + Math.random() * 4}%)`; c.fillRect(col * tile + 2, r * tile + 2, tile - 4, tile - 4); }
+    for (let i = 0; i < 5200; i++) { c.fillStyle = `rgba(120,110,95,${0.02 + Math.random() * 0.05})`; c.beginPath(); c.arc(Math.random() * size, Math.random() * size, 0.6 + Math.random() * 1.8, 0, 7); c.fill(); }
+    c.strokeStyle = 'rgba(120,110,95,.22)'; c.lineWidth = 2;
+    for (let i = 0; i <= 4; i++) { c.beginPath(); c.moveTo(i * tile, 0); c.lineTo(i * tile, size); c.stroke(); c.beginPath(); c.moveTo(0, i * tile); c.lineTo(size, i * tile); c.stroke(); }
+  });
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  return texture;
+}
+let _stone = null;
+export function stoneMaterial(repeat = 6) {
+  if (!_stone) _stone = stoneTexture();
+  const t = _stone.clone(); t.needsUpdate = true; t.repeat.set(repeat, repeat);
+  return new THREE.MeshStandardMaterial({ map: t, bumpMap: t, bumpScale: 0.012, roughness: 0.62, metalness: 0.02 });
+}
+/** цельное стекло Apple Park: почти без цвета и без рам */
+export function appleGlass(opacity = 0.12) {
+  return new THREE.MeshPhysicalMaterial({ color: 0xeaf2f6, transparent: true, opacity, roughness: 0.03, metalness: 0.1, side: THREE.DoubleSide, depthWrite: false });
+}
 
 function box(w, h, d, mat, x = 0, y = 0, z = 0) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -76,6 +123,38 @@ function label(text, sub = '', w = 0.9, dark = false) {
   });
   const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w / 3), new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }));
   return m;
+}
+
+/** лестница: каменные ступени + цельное стеклянное ограждение */
+function stairs({ x0, x1, z0, z1, yFrom, yTo, steps = 22, axis = 'z', railSide = 1 }) {
+  const g = new THREE.Group();
+  const stepMat = stoneMaterial(2);
+  const rise = (yTo - yFrom) / steps;
+  const w = axis === 'z' ? x1 - x0 : z1 - z0;
+  const len = axis === 'z' ? z1 - z0 : x1 - x0;
+  const run = len / steps;
+  for (let i = 0; i < steps; i++) {
+    const st = axis === 'z'
+      ? box(w - 0.06, Math.abs(rise) + 0.02, run + 0.02, stepMat, (x0 + x1) / 2, yFrom + rise * (i + 0.5), z1 - run * (i + 0.5))
+      : box(run + 0.02, Math.abs(rise) + 0.02, w - 0.06, stepMat, x1 - run * (i + 0.5), yFrom + rise * (i + 0.5), (z0 + z1) / 2);
+    st.receiveShadow = true; st.castShadow = true;
+    g.add(st);
+  }
+  const railLen = Math.hypot(len, yTo - yFrom);
+  const midY = (yFrom + yTo) / 2 + 0.5;
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(railLen, 1.0), appleGlass(0.14));
+  const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, railLen, 10), P.MAT.chrome());
+  if (axis === 'z') {
+    const x = railSide > 0 ? x1 : x0;
+    glass.position.set(x, midY, (z0 + z1) / 2); glass.rotation.y = Math.PI / 2; glass.rotation.x = Math.atan2(yTo - yFrom, len);
+    rail.position.set(x, midY + 0.5, (z0 + z1) / 2); rail.rotation.x = Math.PI / 2 - Math.atan2(yTo - yFrom, len);
+  } else {
+    const z = railSide > 0 ? z1 : z0;
+    glass.position.set((x0 + x1) / 2, midY, z); glass.rotation.z = -Math.atan2(yTo - yFrom, len);
+    rail.position.set((x0 + x1) / 2, midY + 0.5, z); rail.rotation.z = Math.PI / 2 + Math.atan2(yTo - yFrom, len);
+  }
+  g.add(glass, rail);
+  return g;
 }
 
 /* ================= машины и мотоциклы ================= */
@@ -332,11 +411,7 @@ function bigAnimal(kind) {
 function buildAquarium(scene, ctx) {
   const x0 = -30, x1 = -16.2, z0 = 11.0, z1 = 20.9, y0 = LEVEL, y1 = 6.3;  // z0 вплотную к перегородке лобби: иначе в щель виден сад
   const g = new THREE.Group();
-  // стенки бассейна тёмно-синие, дно песок
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0x0f2a3d, roughness: 0.9 });
-  g.add(box(0.2, y1 - y0, z1 - z0, wallMat, x0, (y0 + y1) / 2, (z0 + z1) / 2));
-  g.add(box(x1 - x0, y1 - y0, 0.2, wallMat, (x0 + x1) / 2, (y0 + y1) / 2, z0));
-  g.add(box(x1 - x0, y1 - y0, 0.2, wallMat, (x0 + x1) / 2, (y0 + y1) / 2, z1));
+  // задняя и боковые стенки — стекло: сквозь бассейн виден сад за окнами
   const sand = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ color: 0xc9b98a, roughness: 1 }));
   sand.rotation.x = -Math.PI / 2; sand.position.set((x0 + x1) / 2, y0 + 0.01, (z0 + z1) / 2);
   g.add(sand);
@@ -362,20 +437,21 @@ function buildAquarium(scene, ctx) {
     k.userData.phase = Math.random() * 6;
     g.add(k); kelp.push(k);
   }
+  const backGlass = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0, y1 - y0), appleGlass(0.08));
+  backGlass.position.set(x0, (y0 + y1) / 2, (z0 + z1) / 2); backGlass.rotation.y = Math.PI / 2; g.add(backGlass);
+  for (const zz of [z0, z1]) {
+    const side = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, y1 - y0), appleGlass(0.1));
+    side.position.set((x0 + x1) / 2, (y0 + y1) / 2, zz); g.add(side);
+  }
   // вода: голубая толща (без transmission — она дорогая на такой коробке) + тонирующий слой у стекла
   const water = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0 - 0.1, y1 - y0 - 0.3, z1 - z0 - 0.1), new THREE.MeshPhysicalMaterial({ color: 0x1f6f9a, transparent: true, opacity: 0.42, roughness: 0.15, metalness: 0, side: THREE.BackSide, depthWrite: false }));
   water.position.set((x0 + x1) / 2, (y0 + y1) / 2 - 0.15, (z0 + z1) / 2);
   g.add(water);
-  const tint = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0, y1 - y0), new THREE.MeshBasicMaterial({ color: 0x2a7fa8, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide }));
-  tint.position.set(x1 - 0.25, (y0 + y1) / 2, (z0 + z1) / 2); tint.rotation.y = Math.PI / 2; g.add(tint);
   // поверхность воды и крыша над бассейном — сквозь него не должен быть виден сад
   const surface = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshPhysicalMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.1, side: THREE.DoubleSide }));
   surface.rotation.x = -Math.PI / 2; surface.position.set((x0 + x1) / 2, y1 - 0.12, (z0 + z1) / 2); g.add(surface);
-  g.add(box(x1 - x0 + 0.4, 0.3, z1 - z0 + 0.4, new THREE.MeshStandardMaterial({ color: 0x0b1a26, roughness: 0.9 }), (x0 + x1) / 2, y1 + 0.35, (z0 + z1) / 2));
-  g.add(box(x1 - x0 + 0.4, 9 - y1, 0.3, wallMat, (x0 + x1) / 2, (y1 + 9) / 2, z1 + 0.1));
-  g.add(box(x1 - x0 + 0.4, 9 - y1, 0.3, wallMat, (x0 + x1) / 2, (y1 + 9) / 2, z0 - 0.1));
-  g.add(box(0.3, 9 - y1, z1 - z0 + 0.4, wallMat, x0 - 0.1, (y1 + 9) / 2, (z0 + z1) / 2));
-  const lobbyBand = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0 + 0.4, 9 - y1), new THREE.MeshStandardMaterial({ color: 0xf3efe6, roughness: 0.95 }));
+  g.add(box(x1 - x0 + 0.4, 0.25, z1 - z0 + 0.4, stoneMaterial(3), (x0 + x1) / 2, y1 + 0.3, (z0 + z1) / 2));
+  const lobbyBand = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0 + 0.4, 9 - y1), stoneMaterial(4));
   lobbyBand.position.set(x1 + 0.1, (y1 + 9) / 2, (z0 + z1) / 2); lobbyBand.rotation.y = Math.PI / 2; g.add(lobbyBand);
   // лучи света сверху
   for (let i = 0; i < 8; i++) {
@@ -389,9 +465,7 @@ function buildAquarium(scene, ctx) {
   glass.position.set(x1, (y0 + y1) / 2, (z0 + z1) / 2); glass.rotation.y = Math.PI / 2;
   g.add(glass);
   const frameMat = P.MAT.graphite();
-  g.add(box(0.16, 0.25, z1 - z0 + 0.3, frameMat, x1 + 0.02, y1 + 0.1, (z0 + z1) / 2));
-  g.add(box(0.16, 0.25, z1 - z0 + 0.3, frameMat, x1 + 0.02, y0 + 0.1, (z0 + z1) / 2));
-  for (const zz of [z0, z1]) g.add(box(0.16, y1 - y0 + 0.4, 0.14, frameMat, x1 + 0.02, (y0 + y1) / 2, zz));
+  for (const yy of [y0 + 0.07, y1 - 0.07]) g.add(box(0.12, 0.14, z1 - z0 + 0.2, frameMat, x1 + 0.02, yy, (z0 + z1) / 2));
   const ledA = box(0.03, 0.03, z1 - z0, new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.8 }), x1 + 0.06, y1 + 0.02, (z0 + z1) / 2);
   g.add(ledA); ctx.life.strips.push(ledA);
   // синий свет из аквариума в лобби
@@ -464,57 +538,26 @@ function buildAquarium(scene, ctx) {
 function buildMeetingAndLibrary(scene, ctx) {
   const [x0, x1, z0, z1] = [16.2, 25.6, 11.2, 20.8];
   const g = new THREE.Group();
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xf3efe6, roughness: 0.95 });
-  // пол переговорной, антресоль библиотеки, наружные стены, крыша
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ color: 0x5a5f66, roughness: 0.9 }));
-  floor.rotation.x = -Math.PI / 2; floor.position.set((x0 + x1) / 2, LEVEL + 0.002, (z0 + z1) / 2); floor.receiveShadow = true; g.add(floor);
-  g.add(box(0.2, 9, z1 - z0, wallMat, x1, 4.5, (z0 + z1) / 2));
-  g.add(box(x1 - x0, 9, 0.2, wallMat, (x0 + x1) / 2, 4.5, z1));
-  g.add(box(x1 - x0, 9, 0.2, wallMat, (x0 + x1) / 2, 4.5, z0));
+  const stone = stoneMaterial(4);
+  const floor1 = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), stoneMaterial(5));
+  floor1.rotation.x = -Math.PI / 2; floor1.position.set((x0 + x1) / 2, LEVEL + 0.002, (z0 + z1) / 2); floor1.receiveShadow = true; g.add(floor1);
+  g.add(box(0.2, 9, z1 - z0, stone, x1, 4.5, (z0 + z1) / 2));
+  g.add(box(x1 - x0, 9, 0.2, stone, (x0 + x1) / 2, 4.5, z1));
+  g.add(box(x1 - x0, 9, 0.2, stone, (x0 + x1) / 2, 4.5, z0));
   const roof = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ color: 0xe4dfd5, roughness: 0.9 }));
-  roof.rotation.x = Math.PI / 2; roof.position.set((x0 + x1) / 2, 7.6, (z0 + z1) / 2); g.add(roof);
-  // стеклянная стена к лобби с дверным проёмом
-  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xdde8ee, transparent: true, opacity: 0.16, roughness: 0.04, metalness: 0.1, side: THREE.DoubleSide, depthWrite: false });
-  for (const [za, zb] of [[z0, 13.0], [15.2, z1]]) {
-    const pane = new THREE.Mesh(new THREE.PlaneGeometry(zb - za, 6.5), glassMat);
-    pane.position.set(x0, LEVEL + 3.25, (za + zb) / 2); pane.rotation.y = Math.PI / 2; g.add(pane);
-  }
-  const lintel = box(0.16, 2.3, 2.2, P.MAT.graphite(), x0, LEVEL + 5.4, 14.1); g.add(lintel);
-  for (const zz of [z0, 13.0, 15.2, z1]) g.add(box(0.12, 6.6, 0.12, P.MAT.graphite(), x0, LEVEL + 3.3, zz));
-  // антресоль: плита с вырезом под лестницу
-  const slabMat = new THREE.MeshStandardMaterial({ color: 0xece6da, roughness: 0.6 });
-  const slabA = rbox(x1 - ROOMS.mezz[0], 0.22, z1 - z0, slabMat, 0.02); slabA.position.set((ROOMS.mezz[0] + x1) / 2, MEZZ - 0.11, (z0 + z1) / 2); g.add(slabA);
-  const slabB = rbox(ROOMS.mezz[0] - x0, 0.22, z1 - ROOMS.stair[3], slabMat, 0.02); slabB.position.set((x0 + ROOMS.mezz[0]) / 2, MEZZ - 0.11, (ROOMS.stair[3] + z1) / 2); g.add(slabB);
-  const slabC = rbox(ROOMS.mezz[0] - x0, 0.22, ROOMS.stair[2] - z0, slabMat, 0.02); slabC.position.set((x0 + ROOMS.mezz[0]) / 2, MEZZ - 0.11, (z0 + ROOMS.stair[2]) / 2); g.add(slabC);
-  // лестница: 20 ступеней вдоль z
-  const steps = 20, run = (ROOMS.stair[3] - ROOMS.stair[2]) / steps, rise = (MEZZ - LEVEL) / steps;
-  const stepMat = new THREE.MeshStandardMaterial({ color: 0x2b2622, roughness: 0.6 });
-  for (let i = 0; i < steps; i++) {
-    const st = box(ROOMS.stair[1] - ROOMS.stair[0] - 0.1, rise, run + 0.02, stepMat, (ROOMS.stair[0] + ROOMS.stair[1]) / 2, LEVEL + rise * (i + 0.5), ROOMS.stair[2] + run * (i + 0.5));
-    st.receiveShadow = true; g.add(st);
-  }
-  const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, Math.hypot(ROOMS.stair[3] - ROOMS.stair[2], MEZZ - LEVEL), 8), P.MAT.chrome());
-  rail.position.set(ROOMS.stair[1] + 0.05, (LEVEL + MEZZ) / 2 + 0.9, (ROOMS.stair[2] + ROOMS.stair[3]) / 2);
-  rail.rotation.x = -Math.atan2(MEZZ - LEVEL, ROOMS.stair[3] - ROOMS.stair[2]) + Math.PI / 2; g.add(rail);
-  for (let i = 0; i <= 6; i++) {
-    const zz = ROOMS.stair[2] + i * (ROOMS.stair[3] - ROOMS.stair[2]) / 6;
-    const h = LEVEL + (zz - ROOMS.stair[2]) / (ROOMS.stair[3] - ROOMS.stair[2]) * (MEZZ - LEVEL);
-    g.add(box(0.03, 0.9, 0.03, P.MAT.graphite(), ROOMS.stair[1] + 0.05, h + 0.45, zz));
-  }
-  // ограждение антресоли вдоль лестничного проёма и лобби
-  const balMat = new THREE.MeshPhysicalMaterial({ color: 0xdde8ee, transparent: true, opacity: 0.2, roughness: 0.05, side: THREE.DoubleSide, depthWrite: false });
-  const bal1 = new THREE.Mesh(new THREE.PlaneGeometry(ROOMS.stair[3] - ROOMS.stair[2] - 0.3, 1.0), balMat);
-  bal1.position.set(ROOMS.mezz[0], MEZZ + 0.5, (ROOMS.stair[2] + ROOMS.stair[3]) / 2); bal1.rotation.y = Math.PI / 2; g.add(bal1);
-  const bal2 = new THREE.Mesh(new THREE.PlaneGeometry(ROOMS.stair[3] - ROOMS.stair[2] - 0.3, 0.3), balMat);
-  bal2.position.set(ROOMS.mezz[0], MEZZ + 0.5, (ROOMS.stair[2] + ROOMS.stair[3]) / 2); g.add(bal2);
-  g.add(box(0.03, 0.03, ROOMS.stair[3] - ROOMS.stair[2], P.MAT.chrome(), ROOMS.mezz[0], MEZZ + 1.02, (ROOMS.stair[2] + ROOMS.stair[3]) / 2));
+  roof.rotation.x = Math.PI / 2; roof.position.set((x0 + x1) / 2, 9, (z0 + z1) / 2); g.add(roof);
 
-  // ---- переговорная: стол на 12, экран, растения ----
-  const table = rbox(6.0, 0.08, 1.6, new THREE.MeshPhysicalMaterial({ color: 0x5a3f2c, roughness: 0.35, clearcoat: 0.4 }), 0.03);
+  /* ---- первый этаж: переговорная на 12 (лестницы внутри больше нет) ---- */
+  for (const [za, zb] of [[z0, 13.0], [15.2, z1]]) {
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(zb - za, FLOOR2 - LEVEL - 0.3), appleGlass(0.12));
+    pane.position.set(x0, LEVEL + (FLOOR2 - LEVEL - 0.3) / 2, (za + zb) / 2); pane.rotation.y = Math.PI / 2; g.add(pane);
+  }
+  g.add(box(0.12, 0.1, z1 - z0, P.MAT.graphite(), x0, FLOOR2 - 0.3, (z0 + z1) / 2));
+  const table = rbox(6.0, 0.08, 1.6, new THREE.MeshPhysicalMaterial({ color: 0xd9c9a8, roughness: 0.35, clearcoat: 0.4 }), 0.03);
   table.position.set(21, LEVEL + 0.75, 16.3); table.castShadow = true; g.add(table);
   for (const dx of [-2.2, 2.2]) g.add(box(0.1, 0.72, 1.2, P.MAT.graphite(), 21 + dx, LEVEL + 0.36, 16.3));
   const tableShadow = P.makeContactShadow(7, 3, 0.35); tableShadow.position.set(21, LEVEL + 0.006, 16.3); g.add(tableShadow);
-  // поворот кресла = поворот человека: спинка кресла в +z, лицо человека в −z
+  // поворот кресла = поворот человека: спинка в +z, лицо в −z
   const seats = [];
   for (let i = 0; i < 5; i++) { seats.push([18.7 + i * 1.15, 15.2, Math.PI]); seats.push([18.7 + i * 1.15, 17.4, 0]); }
   seats.push([17.7, 16.3, -Math.PI / 2]); seats.push([24.3, 16.3, Math.PI / 2]);
@@ -522,10 +565,10 @@ function buildMeetingAndLibrary(scene, ctx) {
   seats.forEach(([sx, sz, ry], i) => {
     const ch = P.makeChair(); ch.position.set(sx, LEVEL, sz); ch.rotation.y = ry; g.add(ch);
     if (i < 3) {
-      const p = P.makePerson({ ...looks[i], polo: ctx.brand.poloHex || 0xb95740 });
-      p.group.position.set(sx, LEVEL, sz); p.group.rotation.y = ry; g.add(p.group);
-      ctx.life.addAgent(`meeting${i}`, p, {});
-      const fx = -Math.sin(ry), fz = -Math.cos(ry); // куда смотрит человек
+      const person = P.makePerson({ ...looks[i], polo: ctx.brand.poloHex || 0xb95740 });
+      person.group.position.set(sx, LEVEL, sz); person.group.rotation.y = ry; g.add(person.group);
+      ctx.life.addAgent(`meeting${i}`, person, {});
+      const fx = -Math.sin(ry), fz = -Math.cos(ry);
       const laptop = box(0.3, 0.015, 0.22, P.MAT.brushed(), sx + fx * 0.55, LEVEL + 0.8, sz + fz * 0.55); laptop.rotation.y = ry; g.add(laptop);
       const lid = box(0.3, 0.2, 0.01, P.MAT.brushed(), sx + fx * 0.66, LEVEL + 0.9, sz + fz * 0.66); lid.rotation.y = ry; lid.rotation.x = -0.3; g.add(lid);
     }
@@ -541,73 +584,126 @@ function buildMeetingAndLibrary(scene, ctx) {
   tvMesh.position.set(x1 - 0.12, LEVEL + 2.0, 16.3); tvMesh.rotation.y = -Math.PI / 2; g.add(tvMesh);
   g.add(box(0.06, 1.6, 2.75, P.MAT.graphite(), x1 - 0.1, LEVEL + 2.0, 16.3));
   const pl = P.makeMonstera(1.0); pl.position.set(x1 - 0.9, LEVEL, z1 - 0.9); g.add(pl); ctx.life.plants.push(pl);
-  const light1 = new THREE.PointLight(0xfff0dd, 1.2, 9, 1.8); light1.position.set(21, LEVEL + 3.6, 16.3); g.add(light1);
-  const mLabel = label('Переговорная', '12 мест · стекло · экран', 1.2); mLabel.position.set(x0 + 0.05, LEVEL + 2.3, 12.2); mLabel.rotation.y = -Math.PI / 2; g.add(mLabel);
+  const l1 = new THREE.PointLight(0xfff0dd, 1.2, 9, 1.8); l1.position.set(21, LEVEL + 3.6, 16.3); g.add(l1);
+  const mLabel = label('Переговорная', '12 мест · экран повестки', 1.2); mLabel.position.set(x0 + 0.05, LEVEL + 2.6, 12.2); mLabel.rotation.y = -Math.PI / 2; g.add(mLabel);
 
-  // ---- библиотека на антресоли ----
-  const shelfMat = P.MAT.walnut();
-  const bookGeo = new THREE.BoxGeometry(0.035, 0.24, 0.16);
-  const bookMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
-  const books = new THREE.InstancedMesh(bookGeo, bookMat, 720);
-  const bm = new THREE.Matrix4(); const bc = new THREE.Color(); let bi = 0;
-  const palette = [0xb95740, 0x26211b, 0x4a6b8a, 0x4f7d58, 0xb07e36, 0xf3efe6, 0x7a5aa8, 0xa93e2c];
-  const shelfAt = (cx, cz, ry, w) => {
+  /* ---- второй этаж: библиотека нормативов (отдельная комната) ---- */
+  const slab = rbox(x1 - x0, 0.24, z1 - z0, new THREE.MeshStandardMaterial({ color: 0xece6da, roughness: 0.6 }), 0.02);
+  slab.position.set((x0 + x1) / 2, FLOOR2 - 0.12, (z0 + z1) / 2); g.add(slab);
+  const libTex = P.woodTexture(); libTex.repeat.set(3, 3);
+  const libFloor = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ map: libTex, bumpMap: libTex, bumpScale: 0.005, roughness: 0.35 }));
+  libFloor.rotation.x = -Math.PI / 2; libFloor.position.set((x0 + x1) / 2, FLOOR2 + 0.004, (z0 + z1) / 2); libFloor.receiveShadow = true; g.add(libFloor);
+  // стеклянная стена библиотеки к переходу, проём двери 13.0…15.2
+  for (const [za, zb] of [[z0, 13.0], [15.2, z1]]) {
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(zb - za, 3.4), appleGlass(0.12));
+    pane.position.set(x0, FLOOR2 + 1.7, (za + zb) / 2); pane.rotation.y = Math.PI / 2; g.add(pane);
+  }
+
+  const shelves = [];
+  const spineGroup = new THREE.Group();
+  g.add(spineGroup);
+  const mkShelf = (cx, cz, ry, w) => {
     const sh = new THREE.Group();
-    sh.add(box(w, 2.4, 0.05, shelfMat, 0, 1.2, -0.14));
-    for (const sx of [-w / 2 + 0.025, w / 2 - 0.025]) sh.add(box(0.05, 2.4, 0.32, shelfMat, sx, 1.2, 0));
-    for (let r = 0; r < 6; r++) sh.add(box(w - 0.06, 0.025, 0.3, new THREE.MeshStandardMaterial({ color: 0x8b6a4a }), 0, 0.2 + r * 0.46, 0));
-    sh.position.set(cx, MEZZ, cz); sh.rotation.y = ry;
+    sh.add(box(w, 2.3, 0.05, P.MAT.walnut(), 0, 1.15, -0.19));
+    for (const sx of [-w / 2 + 0.03, w / 2 - 0.03]) sh.add(box(0.06, 2.3, 0.42, P.MAT.walnut(), sx, 1.15, 0));
+    for (let r = 0; r < 5; r++) sh.add(box(w - 0.06, 0.035, 0.4, new THREE.MeshStandardMaterial({ color: 0xb08d63, roughness: 0.7 }), 0, 0.3 + r * 0.5, 0));
+    sh.position.set(cx, FLOOR2, cz); sh.rotation.y = ry;
     g.add(sh);
-    for (let r = 0; r < 5; r++) {
-      let x = -w / 2 + 0.08;
-      while (x < w / 2 - 0.08 && bi < 720) {
-        const h = 0.18 + Math.random() * 0.1, wdt = 0.03 + Math.random() * 0.03;
-        bm.makeScale(wdt / 0.035, h / 0.24, 1);
-        const local = new THREE.Vector3(x, 0.2 + r * 0.46 + h / 2 + 0.012, 0.02);
-        local.applyAxisAngle(new THREE.Vector3(0, 1, 0), ry).add(new THREE.Vector3(cx, MEZZ, cz));
-        bm.setPosition(local);
-        const rot = new THREE.Matrix4().makeRotationY(ry);
-        bm.multiplyMatrices(new THREE.Matrix4().makeTranslation(local.x, local.y, local.z), new THREE.Matrix4().multiplyMatrices(rot, new THREE.Matrix4().makeScale(wdt / 0.035, h / 0.24, 1)));
-        books.setMatrixAt(bi, bm);
-        books.setColorAt(bi, bc.set(palette[Math.floor(Math.random() * palette.length)]));
-        bi += 1; x += wdt + 0.006;
-      }
-    }
+    shelves.push({ cx, cz, ry, w });
   };
-  shelfAt(x1 - 0.2, 14.0, -Math.PI / 2, 4.6);
-  shelfAt(x1 - 0.2, 18.8, -Math.PI / 2, 3.4);
-  shelfAt(22.2, z1 - 0.2, Math.PI, 5.6);
-  books.count = bi; books.instanceMatrix.needsUpdate = true;
-  g.add(books);
-  // читальные столы, лампы, читатель
-  for (const [tx, tz] of [[20.5, 14.3], [20.5, 18.2]]) {
-    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.05, 28), new THREE.MeshPhysicalMaterial({ color: 0x5a3f2c, roughness: 0.35, clearcoat: 0.4 }));
-    t.position.set(tx, MEZZ + 0.74, tz); g.add(t);
-    g.add(box(0.08, 0.72, 0.08, P.MAT.graphite(), tx, MEZZ + 0.36, tz));
-    const lampArm = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.5, 8), P.MAT.brushed()); lampArm.position.set(tx + 0.4, MEZZ + 1.0, tz); g.add(lampArm);
-    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.16, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x4f7d58, side: THREE.DoubleSide })); shade.position.set(tx + 0.4, MEZZ + 1.3, tz); g.add(shade);
-    const lamp = new THREE.PointLight(0xffe4b8, 0.8, 3, 2); lamp.position.set(tx + 0.4, MEZZ + 1.2, tz); g.add(lamp);
-    for (const a of [0.8, 2.4]) { const ch = P.makeChair(); ch.position.set(tx + Math.cos(a) * 1.0, MEZZ, tz + Math.sin(a) * 1.0); ch.rotation.y = -a + Math.PI / 2; g.add(ch); }
-    const shadow = P.makeContactShadow(2.6, 2.6, 0.3); shadow.position.set(tx, MEZZ + 0.006, tz); g.add(shadow);
+  mkShelf(x1 - 0.22, 14.6, -Math.PI / 2, 3.2);
+  mkShelf(x1 - 0.22, 18.6, -Math.PI / 2, 3.2);
+  mkShelf(21.4, z1 - 0.22, Math.PI, 3.6);
+
+  for (const [tx, tz] of [[19.4, 14.4], [19.4, 18.4]]) {
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.05, 28), new THREE.MeshPhysicalMaterial({ color: 0xd9c9a8, roughness: 0.35, clearcoat: 0.4 }));
+    t.position.set(tx, FLOOR2 + 0.74, tz); g.add(t);
+    g.add(box(0.08, 0.72, 0.08, P.MAT.graphite(), tx, FLOOR2 + 0.36, tz));
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.16, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x2f5f3a, side: THREE.DoubleSide }));
+    shade.position.set(tx + 0.4, FLOOR2 + 1.3, tz); g.add(shade);
+    g.add(box(0.02, 0.5, 0.02, P.MAT.brushed(), tx + 0.4, FLOOR2 + 1.05, tz));
+    const lamp = new THREE.PointLight(0xffe4b8, 0.9, 3.5, 2); lamp.position.set(tx + 0.4, FLOOR2 + 1.2, tz); g.add(lamp);
+    for (const a of [0.8, 2.4]) { const ch = P.makeChair(); ch.position.set(tx + Math.cos(a) * 1.05, FLOOR2, tz + Math.sin(a) * 1.05); ch.rotation.y = -a - Math.PI / 2; g.add(ch); }
+    const shadow = P.makeContactShadow(2.8, 2.8, 0.3); shadow.position.set(tx, FLOOR2 + 0.006, tz); g.add(shadow);
   }
   const reader = P.makePerson({ hair: 0x8a3b2a, skin: 0xf0cdaa, female: true, polo: ctx.brand.poloHex || 0xb95740 });
-  reader.group.position.set(20.5 + Math.cos(0.8) * 1.0, MEZZ, 14.3 + Math.sin(0.8) * 1.0); reader.group.rotation.y = -0.8 + Math.PI / 2 + Math.PI;
+  reader.group.position.set(19.4 + Math.cos(0.8) * 1.05, FLOOR2, 14.4 + Math.sin(0.8) * 1.05);
+  reader.group.rotation.y = -0.8 - Math.PI / 2;
   g.add(reader.group); ctx.life.addAgent('reader', reader, {});
-  const carpet = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 8.6), new THREE.MeshStandardMaterial({ color: 0x8a3b2a, roughness: 1, transparent: true, opacity: 0.55 }));
-  carpet.rotation.x = -Math.PI / 2; carpet.position.set(22, MEZZ + 0.004, 16); g.add(carpet);
-  const libLabel = label('Библиотека', 'второй этаж · читальные столы', 1.3); libLabel.position.set(ROOMS.mezz[0] + 0.02, MEZZ + 2.2, 13.2); libLabel.rotation.y = -Math.PI / 2; g.add(libLabel);
-  const light2 = new THREE.PointLight(0xfff0dd, 1.0, 10, 1.8); light2.position.set(22, MEZZ + 2.8, 16); g.add(light2);
+  const libLabel = label('Библиотека нормативов', 'корешок = документ базы знаний', 1.5);
+  libLabel.position.set(x0 + 0.05, FLOOR2 + 2.5, 14.1); libLabel.rotation.y = -Math.PI / 2; g.add(libLabel);
+  const l2 = new THREE.PointLight(0xfff0dd, 1.1, 12, 1.8); l2.position.set(21, FLOOR2 + 2.6, 16); g.add(l2);
 
   scene.add(g);
   ctx.pickable(table, { kind: 'room', id: 'meeting' });
-  ctx.pickable(books, { kind: 'room', id: 'library' });
   ctx.itemAnchors.set('meeting', { group: g, camPos: [14.4, LEVEL + 2.2, 17.4], camTgt: [22.5, LEVEL + 0.9, 16.2], walk: [17.6, 14.1], look: [21, 16.3] });
-  ctx.itemAnchors.set('library', { group: g, camPos: [17.2, MEZZ + 1.7, 20.1], camTgt: [23.5, MEZZ + 0.9, 14.5], walk: [18.9, 19.9], look: [23, 15.5], floorY: MEZZ });
+  ctx.itemAnchors.set('library', { group: g, camPos: [17.0, FLOOR2 + 1.7, 16.2], camTgt: [24.5, FLOOR2 + 1.2, 16.2], walk: [17.4, 14.1], look: [24, 16.2], floorY: FLOOR2 });
   ctx.blockers.push({ x0: 17.9, x1: 24.1, z0: 15.4, z1: 17.2, below: 3 });
-  ctx.blockers.push({ x0: x1 - 0.6, x1: x1, z0: z0, z1: z1 });
-  ctx.blockers.push({ x0: 19.6, x1: 21.4, z0: 13.4, z1: 15.2, above: 3 });
-  ctx.blockers.push({ x0: 19.6, x1: 21.4, z0: 17.3, z1: 19.1, above: 3 });
-  return { update() {} };
+  ctx.blockers.push({ x0: x1 - 0.7, x1, z0, z1, above: 3 });
+  ctx.blockers.push({ x0, x1, z0: z1 - 0.7, z1, above: 3 });
+  ctx.blockers.push({ x0, x1, z0, z1: z0 + 0.7, above: 3 });
+  ctx.blockers.push({ x: 19.4, z: 14.4, r: 1.5, above: 3 });
+  ctx.blockers.push({ x: 19.4, z: 18.4, r: 1.5, above: 3 });
+
+  /** корешки — НАСТОЯЩИЕ документы базы знаний (/api/office/kb-docs) */
+  function setBooks(docs) {
+    spineGroup.clear();
+    if (!docs || !docs.length) return;
+    const palette = [0xb95740, 0x26211b, 0x4a6b8a, 0x4f7d58, 0xb07e36, 0x7a5aa8, 0xa93e2c, 0x5a3f2c];
+    // книги раскладываются равномерно по полкам; остаток полки занимают архивные
+    // короба — они не притворяются нормативами, книга здесь всегда документ базы
+    const rows = shelves.length * 4;
+    const perRow = Math.ceil(docs.length / rows);
+    const boxMat = new THREE.MeshStandardMaterial({ color: 0xcfc4ad, roughness: 0.95 });
+    let di = 0;
+    for (const sh of shelves) {
+      for (let r = 0; r < 4; r++) {
+        const stop = Math.min(docs.length, di + perRow);
+        let off = -sh.w / 2 + 0.12;
+        while (off < sh.w / 2 - 0.2 && di < stop) {
+          const doc = docs[di];
+          // толщина корешка — по числу фрагментов документа в базе
+          const wdt = Math.max(0.055, Math.min(0.13, 0.05 + doc.chunks / 700));
+          const hgt = 0.3 + Math.min(0.12, doc.chunks / 1200);
+          const color = palette[di % palette.length];
+          const spine = new THREE.Group();
+          spine.add(box(wdt, hgt, 0.36, new THREE.MeshStandardMaterial({ color, roughness: 0.8 })));
+          const { texture } = P.canvasTexture(512, 64, (c) => {
+            c.fillStyle = `#${color.toString(16).padStart(6, '0')}`; c.fillRect(0, 0, 512, 64);
+            c.fillStyle = 'rgba(255,255,255,.94)'; c.font = '600 34px -apple-system, sans-serif'; c.textBaseline = 'middle';
+            let name = doc.name;
+            if (c.measureText(name).width > 470) { while (name.length > 4 && c.measureText(name + '…').width > 470) name = name.slice(0, -1); name += '…'; }
+            c.fillText(name, 14, 34);
+          });
+          const face = new THREE.Mesh(new THREE.PlaneGeometry(hgt * 0.94, wdt * 0.92), new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }));
+          face.position.z = 0.181; face.rotation.z = Math.PI / 2;
+          spine.add(face);
+          const local = new THREE.Vector3(off + wdt / 2, 0.3 + r * 0.5 + hgt / 2 + 0.02, 0.02);
+          local.applyAxisAngle(new THREE.Vector3(0, 1, 0), sh.ry).add(new THREE.Vector3(sh.cx, FLOOR2, sh.cz));
+          spine.position.copy(local);
+          spine.rotation.y = sh.ry;
+          spine.userData.pick = { kind: 'book', name: doc.name, chunks: doc.chunks, bases: doc.bases };
+          spine.traverse((m) => { m.userData.pick = spine.userData.pick; });
+          spineGroup.add(spine);
+          ctx.pickables.push(spine);
+          off += wdt + 0.012;
+          di += 1;
+        }
+        // хвост полки — короба
+        while (off < sh.w / 2 - 0.24) {
+          const bw = 0.22 + Math.random() * 0.1;
+          const bx = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.3, 0.34), boxMat);
+          const lp = new THREE.Vector3(off + bw / 2, 0.3 + r * 0.5 + 0.17, 0.0);
+          lp.applyAxisAngle(new THREE.Vector3(0, 1, 0), sh.ry).add(new THREE.Vector3(sh.cx, FLOOR2, sh.cz));
+          bx.position.copy(lp); bx.rotation.y = sh.ry;
+          spineGroup.add(bx);
+          off += bw + 0.02;
+        }
+      }
+    }
+  }
+
+  return { update() {}, setBooks };
 }
 
 /* ================= крыло: гараж ================= */
@@ -686,10 +782,56 @@ function buildGarage(scene, ctx) {
 
 /* ================= крыло: зал-макет реактора ================= */
 
+function drawNppPoster(c, w, h, kind) {
+  const sky = c.createLinearGradient(0, 0, 0, h);
+  if (kind === 'night') { sky.addColorStop(0, '#0a1626'); sky.addColorStop(1, '#22405c'); }
+  else { sky.addColorStop(0, '#8fb8d8'); sky.addColorStop(1, '#dfe9ef'); }
+  c.fillStyle = sky; c.fillRect(0, 0, w, h);
+  const ground = h * 0.78;
+  const tower = (x, tw, th) => {
+    c.beginPath();
+    c.moveTo(x - tw, ground);
+    c.quadraticCurveTo(x - tw * 0.42, ground - th * 0.62, x - tw * 0.55, ground - th);
+    c.lineTo(x + tw * 0.55, ground - th);
+    c.quadraticCurveTo(x + tw * 0.42, ground - th * 0.62, x + tw, ground);
+    c.closePath();
+    const gr = c.createLinearGradient(x - tw, 0, x + tw, 0);
+    gr.addColorStop(0, kind === 'night' ? '#2c3d4f' : '#b9c3ca');
+    gr.addColorStop(0.5, kind === 'night' ? '#44586c' : '#e6ecef');
+    gr.addColorStop(1, kind === 'night' ? '#22303e' : '#98a5ad');
+    c.fillStyle = gr; c.fill();
+    c.fillStyle = kind === 'night' ? 'rgba(180,210,235,.3)' : 'rgba(255,255,255,.75)';
+    for (let i = 0; i < 8; i++) { c.beginPath(); c.arc(x + (Math.random() - 0.5) * tw, ground - th - 20 - i * 26, 26 + i * 9, 0, Math.PI * 2); c.fill(); }
+  };
+  if (kind === 'domes') {
+    for (const [x, r] of [[w * 0.32, w * 0.11], [w * 0.6, w * 0.09]]) {
+      c.fillStyle = '#cfd8dd'; c.beginPath(); c.arc(x, ground - r * 0.9, r, Math.PI, 0); c.fill();
+      c.fillRect(x - r, ground - r * 0.9, r * 2, r * 0.9);
+      c.strokeStyle = 'rgba(60,80,95,.5)'; c.lineWidth = 3; c.stroke();
+    }
+    tower(w * 0.82, w * 0.09, h * 0.4);
+  } else {
+    tower(w * 0.3, w * 0.13, h * 0.52);
+    tower(w * 0.62, w * 0.1, h * 0.4);
+    c.fillStyle = kind === 'night' ? '#1b2c3c' : '#a8b4bb';
+    c.fillRect(w * 0.05, ground - h * 0.16, w * 0.18, h * 0.16);
+  }
+  c.fillStyle = kind === 'night' ? '#0d1a12' : '#4f7d58';
+  c.fillRect(0, ground, w, h - ground);
+  if (kind === 'night') { c.fillStyle = 'rgba(255,220,150,.8)'; for (let i = 0; i < 40; i++) c.fillRect(Math.random() * w, ground - Math.random() * 30, 3, 4); }
+  c.strokeStyle = 'rgba(0,0,0,.25)'; c.lineWidth = 8; c.strokeRect(4, 4, w - 8, h - 8);
+}
+
+/**
+ * Зал реактора занимает уровни 1 и −1: со стороны зала входишь на смотровой
+ * балкон и смотришь на ядро СВЕРХУ, потом спускаешься по лестнице к пульту
+ * и картинам. Крыша ниже низа окон второго этажа — вид на природу не закрыт.
+ */
 function buildReactor(scene, ctx) {
   const [x0, x1, z0, z1] = [-34, -16.2, -11.2, 8];
   const g = new THREE.Group();
-  const cx = -25.2, cz = -1.6;
+  const cx = -27.0, cz = -1.6;
+  const CEIL = LEVEL + 3.9;
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.95 });
   const floorTex = P.canvasTexture(512, 512, (c) => {
     c.fillStyle = '#1b1e24'; c.fillRect(0, 0, 512, 512);
@@ -698,26 +840,44 @@ function buildReactor(scene, ctx) {
   });
   floorTex.texture.wrapS = floorTex.texture.wrapT = THREE.RepeatWrapping; floorTex.texture.repeat.set(6, 6);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ map: floorTex.texture, roughness: 0.4, metalness: 0.3 }));
-  floor.rotation.x = -Math.PI / 2; floor.position.set((x0 + x1) / 2, LEVEL + 0.002, (z0 + z1) / 2); g.add(floor);
-  g.add(box(0.2, 8, z1 - z0, wallMat, x0, LEVEL + 4, (z0 + z1) / 2));
-  g.add(box(x1 - x0, 8, 0.2, wallMat, (x0 + x1) / 2, LEVEL + 4, z0));
-  g.add(box(x1 - x0, 8, 0.2, wallMat, (x0 + x1) / 2, LEVEL + 4, z1));
+  floor.rotation.x = -Math.PI / 2; floor.position.set((x0 + x1) / 2, PIT + 0.002, (z0 + z1) / 2); g.add(floor);
+  g.add(box(0.2, CEIL - PIT, z1 - z0, wallMat, x0, (PIT + CEIL) / 2, (z0 + z1) / 2));
+  g.add(box(x1 - x0, CEIL - PIT, 0.2, wallMat, (x0 + x1) / 2, (PIT + CEIL) / 2, z0));
+  g.add(box(x1 - x0, CEIL - PIT, 0.2, wallMat, (x0 + x1) / 2, (PIT + CEIL) / 2, z1));
   const roof = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), wallMat);
-  roof.rotation.x = Math.PI / 2; roof.position.set((x0 + x1) / 2, LEVEL + 7.2, (z0 + z1) / 2); g.add(roof);
-  // приямок с ограждением
-  const pit = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.2, 1.4, 48, 1, true), new THREE.MeshStandardMaterial({ color: 0x0c0f14, roughness: 0.6, side: THREE.BackSide }));
-  pit.position.set(cx, LEVEL - 0.7, cz); g.add(pit);
-  const pitFloor = new THREE.Mesh(new THREE.CircleGeometry(4.2, 48), new THREE.MeshStandardMaterial({ color: 0x0a0d12, roughness: 0.5, metalness: 0.4 }));
-  pitFloor.rotation.x = -Math.PI / 2; pitFloor.position.set(cx, LEVEL - 1.4, cz); g.add(pitFloor);
-  const railRing = new THREE.Mesh(new THREE.TorusGeometry(4.35, 0.03, 8, 64), P.MAT.chrome());
-  railRing.rotation.x = Math.PI / 2; railRing.position.set(cx, LEVEL + 1.05, cz); g.add(railRing);
-  for (let i = 0; i < 24; i++) { const a = (i / 24) * Math.PI * 2; g.add(box(0.04, 1.05, 0.04, P.MAT.graphite(), cx + Math.cos(a) * 4.35, LEVEL + 0.52, cz + Math.sin(a) * 4.35)); }
-  // ядро: светящаяся сфера, каркас, кольца, лучи
+  roof.rotation.x = Math.PI / 2; roof.position.set((x0 + x1) / 2, CEIL, (z0 + z1) / 2); g.add(roof);
+  const lawn = P.canvasTexture(512, 512, (c) => {
+    c.fillStyle = '#5f9b62'; c.fillRect(0, 0, 512, 512);
+    for (let i = 0; i < 2600; i++) { c.fillStyle = `hsl(${100 + Math.random() * 25}, ${30 + Math.random() * 20}%, ${28 + Math.random() * 22}%)`; c.fillRect(Math.random() * 512, Math.random() * 512, 3, 6); }
+  });
+  lawn.texture.wrapS = lawn.texture.wrapT = THREE.RepeatWrapping; lawn.texture.repeat.set(8, 8);
+  const roofTop = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ map: lawn.texture, roughness: 1 }));
+  roofTop.rotation.x = -Math.PI / 2; roofTop.position.set((x0 + x1) / 2, CEIL + 0.06, (z0 + z1) / 2); g.add(roofTop);
+  for (let i = 0; i < 16; i++) {
+    const r = 0.5 + Math.random() * 0.9;
+    const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), new THREE.MeshStandardMaterial({ color: [0x3f6b47, 0x4f8a52, 0x6aa35c][i % 3], roughness: 0.9 }));
+    bush.position.set(x0 + 2 + Math.random() * (x1 - x0 - 4), CEIL + 0.06 + r * 0.55, z0 + 2 + Math.random() * (z1 - z0 - 4));
+    bush.scale.y = 0.7; g.add(bush);
+  }
+
+  const B = ROOMS.reactorBalcony;
+  const balcony = rbox(B[1] - B[0], 0.22, B[3] - B[2], stoneMaterial(3), 0.02);
+  balcony.position.set((B[0] + B[1]) / 2, LEVEL - 0.11, (B[2] + B[3]) / 2); balcony.castShadow = true; g.add(balcony);
+  const balGlass = new THREE.Mesh(new THREE.PlaneGeometry(B[3] - B[2], 1.05), appleGlass(0.16));
+  balGlass.position.set(B[0], LEVEL + 0.52, (B[2] + B[3]) / 2); balGlass.rotation.y = Math.PI / 2; g.add(balGlass);
+  const balRail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, B[3] - B[2], 10), P.MAT.chrome());
+  balRail.position.set(B[0], LEVEL + 1.06, (B[2] + B[3]) / 2); balRail.rotation.x = Math.PI / 2; g.add(balRail);
+  const S = ROOMS.reactorStair;
+  g.add(stairs({ x0: S[0], x1: S[1], z0: S[2], z1: S[3], yFrom: PIT, yTo: LEVEL, steps: 18, axis: 'x', railSide: -1 }));
+
+  const ring0 = new THREE.Mesh(new THREE.TorusGeometry(4.35, 0.035, 8, 64), P.MAT.chrome());
+  ring0.rotation.x = Math.PI / 2; ring0.position.set(cx, PIT + 1.05, cz); g.add(ring0);
+  for (let i = 0; i < 24; i++) { const a = (i / 24) * Math.PI * 2; g.add(box(0.04, 1.05, 0.04, P.MAT.graphite(), cx + Math.cos(a) * 4.35, PIT + 0.52, cz + Math.sin(a) * 4.35)); }
   const coreMat = new THREE.MeshStandardMaterial({ color: 0x6fc4f5, emissive: 0x2f9fe8, emissiveIntensity: 1.5, roughness: 0.2 });
-  const core = new THREE.Mesh(new THREE.SphereGeometry(1.5, 32, 24), coreMat); core.position.set(cx, LEVEL + 2.2, cz); g.add(core);
-  const cage = new THREE.Mesh(new THREE.IcosahedronGeometry(1.9, 1), new THREE.MeshBasicMaterial({ color: 0xbfe6ff, wireframe: true, transparent: true, opacity: 0.35 })); cage.position.copy(core.position); g.add(cage);
+  const core = new THREE.Mesh(new THREE.SphereGeometry(1.6, 32, 24), coreMat); core.position.set(cx, PIT + 2.4, cz); g.add(core);
+  const cage = new THREE.Mesh(new THREE.IcosahedronGeometry(2.0, 1), new THREE.MeshBasicMaterial({ color: 0xbfe6ff, wireframe: true, transparent: true, opacity: 0.35 })); cage.position.copy(core.position); g.add(cage);
   const rings = [];
-  [[2.5, 0.4, 0], [3.1, -0.5, 0.6], [3.7, 0.2, -0.8]].forEach(([r, rx, rz]) => {
+  [[2.6, 0.4, 0], [3.2, -0.5, 0.6], [3.8, 0.2, -0.8]].forEach(([r, rx, rz]) => {
     const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.07, 10, 90), new THREE.MeshStandardMaterial({ color: 0x8ad0ff, emissive: 0x3fa8ff, emissiveIntensity: 1.4, roughness: 0.3, metalness: 0.4 }));
     ring.position.copy(core.position); ring.rotation.set(rx, 0, rz); g.add(ring); rings.push(ring);
   });
@@ -729,30 +889,97 @@ function buildReactor(scene, ctx) {
     rays.add(ray);
   }
   rays.position.copy(core.position); g.add(rays);
-  const glowDisc = new THREE.Mesh(new THREE.CircleGeometry(4.0, 48), new THREE.MeshBasicMaterial({ color: 0x3fa8ff, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
-  glowDisc.rotation.x = -Math.PI / 2; glowDisc.position.set(cx, LEVEL - 1.38, cz); g.add(glowDisc);
-  // трубопроводы к потолку
+  // восходящие частицы над ядром
+  const N = 260;
+  const sparkGeo = new THREE.BufferGeometry();
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+  const seeds = [];
+  for (let i = 0; i < N; i++) seeds.push({ a: Math.random() * 6.28, r: 0.6 + Math.random() * 3.4, y: Math.random(), sp: 0.25 + Math.random() * 0.5 });
+  const sparks = new THREE.Points(sparkGeo, new THREE.PointsMaterial({ color: 0x9fe0ff, size: 0.07, transparent: true, opacity: 0.75, depthWrite: false, blending: THREE.AdditiveBlending }));
+  g.add(sparks);
+  const glowDisc = new THREE.Mesh(new THREE.CircleGeometry(4.2, 48), new THREE.MeshBasicMaterial({ color: 0x3fa8ff, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
+  glowDisc.rotation.x = -Math.PI / 2; glowDisc.position.set(cx, PIT + 0.02, cz); g.add(glowDisc);
+
+  // трубопроводы: от ядра к потолку и вдоль стен, с хомутами и вентилями
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
-    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4.2, 12), P.MAT.brushed());
-    pipe.position.set(cx + Math.cos(a) * 1.2, LEVEL + 5.0, cz + Math.sin(a) * 1.2); g.add(pipe);
-    const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.1, 12), P.MAT.graphite()); flange.position.set(cx + Math.cos(a) * 1.2, LEVEL + 3.6, cz + Math.sin(a) * 1.2); g.add(flange);
+    const h = CEIL - (PIT + 3.6);
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, h, 12), P.MAT.brushed());
+    pipe.position.set(cx + Math.cos(a) * 1.3, PIT + 3.6 + h / 2, cz + Math.sin(a) * 1.3); g.add(pipe);
+    const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.1, 12), P.MAT.graphite());
+    flange.position.set(cx + Math.cos(a) * 1.3, PIT + 3.62, cz + Math.sin(a) * 1.3); g.add(flange);
   }
-  const l1 = new THREE.PointLight(0x5fbfff, 3.5, 22, 1.5); l1.position.set(cx, LEVEL + 2.4, cz); g.add(l1);
-  const l2 = new THREE.PointLight(0x2f6fbf, 1.2, 14, 1.5); l2.position.set(cx, LEVEL + 6.2, cz); g.add(l2);
-  // пульт с экраном состояния (макет — надпись об этом прямо на экране)
+  const pipeMat = new THREE.MeshStandardMaterial({ color: 0x9aa4ad, roughness: 0.35, metalness: 0.7 });
+  const runPipes = (axis, fixed, from, to, ys) => {
+    for (const y of ys) {
+      const len = to - from;
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, len, 12), pipeMat);
+      if (axis === 'z') { pipe.rotation.x = Math.PI / 2; pipe.position.set(fixed, y, (from + to) / 2); }
+      else { pipe.rotation.z = Math.PI / 2; pipe.position.set((from + to) / 2, y, fixed); }
+      g.add(pipe);
+      for (let k = 0; k <= 6; k++) {
+        const q = from + (len * k) / 6;
+        const clamp = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.025, 8, 16), P.MAT.graphite());
+        if (axis === 'z') { clamp.position.set(fixed, y, q); clamp.rotation.y = Math.PI / 2; }
+        else { clamp.position.set(q, y, fixed); }
+        g.add(clamp);
+      }
+      const valve = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.03, 8, 20), new THREE.MeshStandardMaterial({ color: 0xb95740, roughness: 0.4, metalness: 0.5 }));
+      if (axis === 'z') { valve.position.set(fixed + 0.2, y, (from + to) / 2 + 2); valve.rotation.y = Math.PI / 2; }
+      else { valve.position.set((from + to) / 2 + 2, y, fixed + 0.2); }
+      g.add(valve);
+    }
+  };
+  runPipes('z', x0 + 0.35, z0 + 1, z1 - 1, [PIT + 1.2, PIT + 1.6, PIT + 2.1]);
+  runPipes('x', z0 + 0.35, x0 + 1, x1 - 3, [PIT + 1.3, PIT + 1.75]);
+  runPipes('x', z1 - 0.35, x0 + 1, x1 - 3, [PIT + 1.4, PIT + 1.85, PIT + 2.3]);
+
+  const l1 = new THREE.PointLight(0x5fbfff, 3.5, 26, 1.5); l1.position.set(cx, PIT + 2.6, cz); g.add(l1);
+  const l2 = new THREE.PointLight(0x2f6fbf, 1.2, 16, 1.5); l2.position.set(cx, CEIL - 0.6, cz); g.add(l2);
+
+  // картины с атомными станциями и картинная подсветка
+  const arts = [
+    { kind: 'towers', title: 'Градирни', sub: 'вечерний свет' },
+    { kind: 'night', title: 'Ночная смена', sub: 'станция после заката' },
+    { kind: 'domes', title: 'Гермооболочки', sub: 'два энергоблока' },
+  ];
+  arts.forEach((a, i) => {
+    const w = 2.4, h = w / 1.5;
+    const { texture } = P.canvasTexture(1024, 683, (c, W, H) => drawNppPoster(c, W, H, a.kind));
+    const art = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }));
+    const zz = z0 + 4.5 + i * 4.6;
+    art.position.set(x0 + 0.16, PIT + 2.4, zz); art.rotation.y = Math.PI / 2; g.add(art);
+    g.add(box(0.06, h + 0.12, w + 0.12, P.MAT.graphite(), x0 + 0.13, PIT + 2.4, zz));
+    const capt = label(a.title, a.sub, 0.9, true); capt.position.set(x0 + 0.17, PIT + 1.45, zz); capt.rotation.y = Math.PI / 2; g.add(capt);
+    const arm = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.02, 8, 16, Math.PI / 2), P.MAT.brushed());
+    arm.position.set(x0 + 0.2, PIT + 2.4 + h / 2 + 0.1, zz); arm.rotation.y = Math.PI / 2; arm.rotation.z = -Math.PI / 2; g.add(arm);
+    const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, w * 0.8, 12, 1, true), P.MAT.brushed());
+    shade.rotation.z = Math.PI / 2; shade.rotation.y = Math.PI / 2;
+    shade.position.set(x0 + 0.48, PIT + 2.4 + h / 2 + 0.32, zz); g.add(shade);
+    const spot = new THREE.SpotLight(0xfff2dc, 9, 5, 0.6, 0.5, 1.4);
+    spot.position.set(x0 + 0.52, PIT + 2.4 + h / 2 + 0.3, zz);
+    spot.target.position.set(x0 + 0.16, PIT + 2.3, zz);
+    g.add(spot, spot.target);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.1, 16, 1, true), new THREE.MeshBasicMaterial({ color: 0xfff0d0, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }));
+    cone.position.set(x0 + 0.34, PIT + 2.95, zz); cone.rotation.z = Math.PI / 2 - 0.5; g.add(cone);
+    ctx.pickable(art, { kind: 'art', id: a.kind });
+  });
+
   const console_ = new THREE.Group();
-  const consoleBody = rbox(3.2, 0.9, 0.8, P.MAT.graphite(), 0.03); consoleBody.position.y = LEVEL + 0.45; console_.add(consoleBody);
+  const consoleBody = rbox(3.2, 0.9, 0.8, P.MAT.graphite(), 0.03); consoleBody.position.y = PIT + 0.45; console_.add(consoleBody);
   const scr = P.canvasTexture(1024, 384, () => {});
   const scrMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 1.05), new THREE.MeshBasicMaterial({ map: scr.texture, toneMapped: false }));
-  scrMesh.position.set(0, LEVEL + 1.35, -0.2); scrMesh.rotation.x = -0.35; console_.add(scrMesh);
-  console_.position.set(cx, 0, cz + 5.8); g.add(console_);
-  const sign = label('Реактор · макет', 'как в павильоне «Атом» на ВДНХ', 1.3, true); sign.position.set(x1 - 0.14, LEVEL + 2.4, 5.4); sign.rotation.y = -Math.PI / 2; g.add(sign);
+  scrMesh.position.set(0, PIT + 1.35, -0.2); scrMesh.rotation.x = -0.35; console_.add(scrMesh);
+  console_.position.set(cx, 0, cz + 6.2); g.add(console_);
+  const sign = label('Зал реактора · макет', 'балкон сверху, пульт и картины внизу', 1.4, true);
+  sign.position.set(B[0] + 0.1, LEVEL + 2.2, 3.4); sign.rotation.y = Math.PI / 2; g.add(sign);
+
   scene.add(g);
   ctx.pickable(core, { kind: 'reactor' }); ctx.pickable(console_, { kind: 'reactor' });
-  ctx.itemAnchors.set('reactor', { group: g, camPos: [-18.6, LEVEL + 2.2, 4.4], camTgt: [cx, LEVEL + 2.0, cz], walk: [-19.2, 4.6], look: [cx, cz] });
-  ctx.blockers.push({ x: cx, z: cz, r: 4.7 });
-  ctx.blockers.push({ x0: cx - 1.7, x1: cx + 1.7, z0: cz + 5.3, z1: cz + 6.3 });
+  ctx.itemAnchors.set('reactor', { group: g, camPos: [-16.8, LEVEL + 1.9, 2.8], camTgt: [cx, PIT + 2.4, cz], walk: [-17.0, 0.2], look: [cx, cz] });
+  ctx.itemAnchors.set('reactor-floor', { group: g, camPos: [cx + 1.2, PIT + 1.9, cz + 7.6], camTgt: [cx, PIT + 2.4, cz], walk: [cx, cz + 6.9], look: [cx, cz], floorY: PIT });
+  ctx.blockers.push({ x: cx, z: cz, r: 4.6, above: 0 });
+  ctx.blockers.push({ x0: cx - 1.7, x1: cx + 1.7, z0: cz + 5.7, z1: cz + 6.7, above: 0 });
   return {
     update(dt, t) {
       rings[0].rotation.y += dt * 0.5; rings[1].rotation.x += dt * 0.35; rings[2].rotation.z += dt * 0.42;
@@ -761,8 +988,18 @@ function buildReactor(scene, ctx) {
       const pulse = 0.85 + Math.sin(t * 1.6) * 0.15;
       coreMat.emissiveIntensity = 1.5 * pulse; l1.intensity = 3.5 * pulse;
       for (const r of rays.children) r.material.opacity = 0.06 + Math.sin(t * 2 + r.rotation.y * 3) * 0.03;
-      if (!this._acc) this._acc = 0;
-      this._acc += dt;
+      const arr = sparkGeo.attributes.position.array;
+      for (let i = 0; i < N; i++) {
+        const sd = seeds[i];
+        sd.y = (sd.y + dt * sd.sp * 0.12) % 1;
+        const a = sd.a + t * 0.2;
+        const r = sd.r * (1 - sd.y * 0.35);
+        arr[i * 3] = cx + Math.cos(a) * r;
+        arr[i * 3 + 1] = PIT + 0.3 + sd.y * (CEIL - PIT - 0.6);
+        arr[i * 3 + 2] = cz + Math.sin(a) * r;
+      }
+      sparkGeo.attributes.position.needsUpdate = true;
+      this._acc = (this._acc || 0) + dt;
       if (this._acc > 0.5) {
         this._acc = 0;
         const c = scr.ctx;
@@ -770,7 +1007,7 @@ function buildReactor(scene, ctx) {
         c.fillStyle = '#7fd0ff'; c.font = '600 44px ui-monospace, monospace'; c.textBaseline = 'top';
         c.fillText('МАКЕТ · ДЕМОНСТРАЦИОННЫЙ КОНТУР', 40, 30);
         c.fillStyle = 'rgba(191,230,255,.8)'; c.font = '36px ui-monospace, monospace';
-        c.fillText(`пульс ядра ${(pulse * 100).toFixed(0)} %   кольца 3/3   свет ${(l1.intensity).toFixed(1)}`, 40, 110);
+        c.fillText(`пульс ядра ${(pulse * 100).toFixed(0)} %   кольца 3/3   контур замкнут`, 40, 110);
         c.fillText(`t = ${t.toFixed(1)} c   темп. условная 300 K   мощность 0 МВт`, 40, 170);
         c.fillStyle = 'rgba(191,230,255,.5)'; c.font = '28px -apple-system, sans-serif';
         c.fillText('Экспонат воспроизводит образ, а не физику: делить здесь нечего.', 40, 300);
@@ -782,54 +1019,194 @@ function buildReactor(scene, ctx) {
 
 /* ================= сад за окнами ================= */
 
-function drawGardens(c, w, h, night) {
-  const sky = c.createLinearGradient(0, 0, 0, h);
-  if (night) { sky.addColorStop(0, '#0a1020'); sky.addColorStop(0.7, '#1a2a44'); sky.addColorStop(1, '#2b3a55'); }
-  else { sky.addColorStop(0, '#9fc9e6'); sky.addColorStop(0.65, '#dbe9f0'); sky.addColorStop(1, '#f2e8d8'); }
-  c.fillStyle = sky; c.fillRect(0, 0, w, h);
-  // дальний город
-  c.fillStyle = night ? 'rgba(40,55,80,.9)' : 'rgba(120,140,160,.35)';
-  for (let x = 0; x < w; x += 70) { const bh = 80 + ((x * 7919) % 260); c.fillRect(x, h * 0.62 - bh, 52, bh); if (night) { c.fillStyle = 'rgba(255,230,160,.35)'; for (let y = h * 0.62 - bh + 10; y < h * 0.62; y += 22) c.fillRect(x + 8 + (y % 3) * 12, y, 6, 8); c.fillStyle = 'rgba(40,55,80,.9)'; } }
-  // купола
-  const dome = (dx, dw, dh) => {
-    c.save(); c.translate(dx, h * 0.62);
-    const gr = c.createLinearGradient(0, -dh, 0, 0);
-    gr.addColorStop(0, night ? 'rgba(120,180,230,.35)' : 'rgba(255,255,255,.55)'); gr.addColorStop(1, night ? 'rgba(60,110,170,.35)' : 'rgba(200,225,240,.45)');
-    c.fillStyle = gr; c.beginPath(); c.ellipse(0, 0, dw, dh, 0, Math.PI, 0); c.fill();
-    c.strokeStyle = night ? 'rgba(190,220,255,.35)' : 'rgba(80,110,140,.35)'; c.lineWidth = 2;
-    for (let i = -4; i <= 4; i++) { c.beginPath(); c.ellipse(0, 0, Math.abs(i) * dw / 4.5 + 4, dh, 0, Math.PI, 0); c.stroke(); }
-    for (let i = 1; i < 4; i++) { c.beginPath(); c.ellipse(0, 0, dw, dh * i / 4, 0, Math.PI, 0); c.stroke(); }
-    c.restore();
-  };
-  dome(w * 0.22, 420, 260); dome(w * 0.78, 360, 230);
-  // супердеревья
-  const tree = (tx, th, tw) => {
-    const top = h * 0.62 - th;
-    c.fillStyle = night ? '#3a2f3f' : '#7a5a6a';
-    c.beginPath(); c.moveTo(tx - tw * 0.18, h * 0.64); c.lineTo(tx + tw * 0.18, h * 0.64); c.lineTo(tx + tw * 0.08, top + 40); c.lineTo(tx - tw * 0.08, top + 40); c.closePath(); c.fill();
-    c.strokeStyle = night ? 'rgba(255,120,200,.75)' : 'rgba(110,80,110,.8)'; c.lineWidth = 4;
-    for (let i = 0; i < 9; i++) { const a = -Math.PI * 0.95 + (i / 8) * Math.PI * 0.9; c.beginPath(); c.moveTo(tx, top + 60); c.quadraticCurveTo(tx + Math.cos(a) * tw * 0.4, top + 10, tx + Math.cos(a) * tw * 0.6, top - 10 + Math.abs(Math.sin(a)) * 30); c.stroke(); }
-    c.fillStyle = night ? 'rgba(255,120,200,.28)' : 'rgba(96,160,96,.45)';
-    c.beginPath(); c.ellipse(tx, top + 8, tw * 0.62, 34, 0, 0, Math.PI * 2); c.fill();
-    if (night) { c.fillStyle = 'rgba(255,200,240,.9)'; for (let i = 0; i < 12; i++) { c.beginPath(); c.arc(tx + (Math.random() - 0.5) * tw, top + 8 + (Math.random() - 0.5) * 40, 3, 0, 7); c.fill(); } }
-  };
-  [0.08, 0.15, 0.35, 0.44, 0.52, 0.63, 0.88, 0.95].forEach((k, i) => tree(w * k, 360 + (i % 3) * 120, 220 + (i % 2) * 90));
-  // связующие мостики
-  c.strokeStyle = night ? 'rgba(255,160,220,.5)' : 'rgba(90,70,90,.5)'; c.lineWidth = 6;
-  c.beginPath(); c.moveTo(w * 0.35, h * 0.62 - 420); c.quadraticCurveTo(w * 0.44, h * 0.62 - 470, w * 0.52, h * 0.62 - 440); c.stroke();
-  // зелень на переднем плане
-  c.fillStyle = night ? '#16261c' : '#4f7d58';
-  for (let x = 0; x < w; x += 90) { c.beginPath(); c.arc(x + 45, h * 0.66, 70 + (x % 4) * 15, 0, Math.PI * 2); c.fill(); }
-  c.fillStyle = night ? '#101a14' : '#3e6b47'; c.fillRect(0, h * 0.7, w, h * 0.3);
+/* ================= второй этаж: кольцевой лаундж ================= */
+
+function buildRingLounge(scene, ctx) {
+  const g = new THREE.Group();
+  const slabMat = new THREE.MeshStandardMaterial({ color: 0xece6da, roughness: 0.6 });
+  const woodTex = P.woodTexture(); woodTex.repeat.set(4, 4);
+  const woodFloor = new THREE.MeshStandardMaterial({ map: woodTex, bumpMap: woodTex, bumpScale: 0.005, roughness: 0.35, metalness: 0.03 });
+  for (const r of [ROOMS.ringW, ROOMS.ringE, ROOMS.ringN, ROOMS.ringS]) {
+    const w = r[1] - r[0], d = r[3] - r[2];
+    const slab = rbox(w, 0.24, d, slabMat, 0.02);
+    slab.position.set((r[0] + r[1]) / 2, FLOOR2 - 0.12, (r[2] + r[3]) / 2);
+    slab.castShadow = true; slab.receiveShadow = true; g.add(slab);
+    const top = new THREE.Mesh(new THREE.PlaneGeometry(w, d), woodFloor);
+    top.rotation.x = -Math.PI / 2; top.position.set((r[0] + r[1]) / 2, FLOOR2 + 0.004, (r[2] + r[3]) / 2); top.receiveShadow = true; g.add(top);
+    const led = box(w, 0.03, 0.03, new THREE.MeshBasicMaterial({ color: 0xfff3e6, transparent: true, opacity: 0.7 }),
+      (r[0] + r[1]) / 2, FLOOR2 - 0.27, r === ROOMS.ringN ? r[3] : r[2]);
+    g.add(led); ctx.life.strips.push(led);
+  }
+  // парапет по внутреннему контуру кольца: цельное стекло, тонкий поручень
+  const inner = [
+    { axis: 'z', at: ROOMS.ringW[1], from: ROOMS.ringN[3], to: ROOMS.ringS[2] },
+    { axis: 'z', at: ROOMS.ringE[0], from: ROOMS.ringN[3], to: ROOMS.ringS[2] },
+    { axis: 'x', at: ROOMS.ringN[3], from: ROOMS.ringW[1], to: ROOMS.ringE[0] },
+    { axis: 'x', at: ROOMS.ringS[2], from: ROOMS.ringW[1], to: ROOMS.ringE[0] },
+  ];
+  for (const p of inner) {
+    const len = p.to - p.from, mid = (p.from + p.to) / 2;
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(len, 1.05), appleGlass(0.16));
+    const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, len, 10), P.MAT.chrome());
+    if (p.axis === 'z') {
+      glass.position.set(p.at, FLOOR2 + 0.52, mid); glass.rotation.y = Math.PI / 2;
+      rail.position.set(p.at, FLOOR2 + 1.06, mid); rail.rotation.x = Math.PI / 2;
+    } else {
+      glass.position.set(mid, FLOOR2 + 0.52, p.at);
+      rail.position.set(mid, FLOOR2 + 1.06, p.at); rail.rotation.z = Math.PI / 2;
+    }
+    g.add(glass, rail);
+  }
+  // лестница из фойе на кольцо и подпись
+  // лестница стоит в лобби у края проёма и выходит мостиком через проём на кольцо
+  const M = ROOMS.stairMain, SB = ROOMS.stairBridge;
+  g.add(stairs({ x0: M[0], x1: M[1], z0: M[2], z1: M[3], yFrom: LEVEL, yTo: FLOOR2, steps: 26, axis: 'z', railSide: 1 }));
+  const bridge2 = rbox(SB[1] - SB[0], 0.2, SB[3] - SB[2] + 0.4, slabMat, 0.02);
+  bridge2.position.set((SB[0] + SB[1]) / 2, FLOOR2 - 0.1, (SB[2] + SB[3]) / 2); g.add(bridge2);
+  for (const sx of [SB[0], SB[1]]) {
+    const rail = new THREE.Mesh(new THREE.PlaneGeometry(SB[3] - SB[2] + 0.4, 1.05), appleGlass(0.16));
+    rail.position.set(sx, FLOOR2 + 0.52, (SB[2] + SB[3]) / 2); rail.rotation.y = Math.PI / 2; g.add(rail);
+  }
+  const stairLabel = label('Второй этаж', 'лаундж · библиотека', 1.4);
+  stairLabel.position.set((M[0] + M[1]) / 2, LEVEL + 2.5, M[3] + 0.05); stairLabel.rotation.y = Math.PI; g.add(stairLabel);
+  // мостик к библиотеке над проходом
+  const LB = ROOMS.libraryBridge;
+  const bridge = rbox(LB[1] - LB[0] + 0.8, 0.2, LB[3] - LB[2], slabMat, 0.02);
+  bridge.position.set((LB[0] + LB[1]) / 2, FLOOR2 - 0.1, (LB[2] + LB[3]) / 2); g.add(bridge);
+
+  // мебель лаунджа вдоль окон
+  const sofaMat = new THREE.MeshStandardMaterial({ color: 0xd9cdbb, roughness: 0.9 });
+  const spots = [
+    [-13.6, -6.0, Math.PI / 2], [-13.6, 0.4, Math.PI / 2], [-13.6, 6.6, Math.PI / 2],
+    [13.6, -6.0, -Math.PI / 2], [13.6, -1.4, -Math.PI / 2],
+    [-6.0, -9.0, 0], [6.0, -9.0, 0], [-6.0, 9.0, Math.PI], [6.0, 9.0, Math.PI],
+  ];
+  for (const [sx, sz, ry] of spots) {
+    const sofa = rbox(2.2, 0.42, 0.9, sofaMat, 0.08); sofa.position.set(sx, FLOOR2 + 0.21, sz); sofa.rotation.y = ry; sofa.castShadow = true; g.add(sofa);
+    const back = rbox(2.2, 0.5, 0.2, sofaMat, 0.06);
+    back.position.set(sx - Math.sin(ry) * 0.36, FLOOR2 + 0.62, sz - Math.cos(ry) * 0.36); back.rotation.y = ry; g.add(back);
+    const tbl = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.04, 24), P.MAT.walnut());
+    tbl.position.set(sx + Math.sin(ry) * 0.95, FLOOR2 + 0.42, sz + Math.cos(ry) * 0.95); g.add(tbl);
+    g.add(box(0.05, 0.42, 0.05, P.MAT.chrome(), sx + Math.sin(ry) * 0.95, FLOOR2 + 0.21, sz + Math.cos(ry) * 0.95));
+    const sh = P.makeContactShadow(3.2, 2.2, 0.28); sh.position.set(sx, FLOOR2 + 0.006, sz); g.add(sh);
+    ctx.blockers.push({ x0: sx - 1.2, x1: sx + 1.2, z0: sz - 0.6, z1: sz + 0.6, above: 3 });
+  }
+  for (const [px, pz] of [[-14.6, -9.4], [-14.6, 9.4], [14.6, -9.4], [14.6, 9.4], [-9.0, -9.4], [9.0, -9.4]]) {
+    const pl = (px + pz) % 2 === 0 ? P.makeMonstera(1.0) : P.makeFicus(1.1);
+    pl.position.set(px, FLOOR2, pz); g.add(pl); ctx.life.plants.push(pl);
+    ctx.blockers.push({ x: px, z: pz, r: 0.5, above: 3 });
+  }
+  // кофейная точка на северной стороне кольца
+  const bar = rbox(2.6, 0.95, 0.7, stoneMaterial(2), 0.03); bar.position.set(0, FLOOR2 + 0.48, -9.2); g.add(bar);
+  const barTop = rbox(2.7, 0.06, 0.78, P.MAT.walnut(), 0.02); barTop.position.set(0, FLOOR2 + 0.98, -9.2); g.add(barTop);
+  for (let i = 0; i < 4; i++) { const mug = P.makeMug(); mug.position.set(-0.9 + i * 0.35, FLOOR2 + 1.01, -9.3); g.add(mug); }
+  ctx.blockers.push({ x0: -1.4, x1: 1.4, z0: -9.6, z1: -8.8, above: 3 });
+
+  scene.add(g);
+  ctx.pickable(bar, { kind: 'room', id: 'lounge' });
+  ctx.itemAnchors.set('lounge', { group: g, camPos: [-13.4, FLOOR2 + 1.7, 6.2], camTgt: [-15.7, FLOOR2 + 1.6, -2.0], walk: [-13.6, 3.6], look: [-15.9, -1], floorY: FLOOR2 });
+  return { update() {} };
 }
 
-function buildGardens(scene, ctx) {
-  const day = P.canvasTexture(4096, 1536, (c, w, h) => drawGardens(c, w, h, false));
-  const night = P.canvasTexture(4096, 1536, (c, w, h) => drawGardens(c, w, h, true));
+/* ================= наружное окружение: сад, лес, река, водопад ================= */
+
+function drawOutside(c, w, h, night) {
+  const sky = c.createLinearGradient(0, 0, 0, h);
+  if (night) { sky.addColorStop(0, '#080f1e'); sky.addColorStop(0.6, '#16283f'); sky.addColorStop(1, '#28405c'); }
+  else { sky.addColorStop(0, '#8dbfe0'); sky.addColorStop(0.55, '#cfe3ee'); sky.addColorStop(1, '#eef0e2'); }
+  c.fillStyle = sky; c.fillRect(0, 0, w, h);
+  if (!night) {
+    c.fillStyle = 'rgba(255,255,255,.5)';
+    for (let i = 0; i < 9; i++) { const x = (i * 613) % w, y = h * 0.1 + (i % 3) * 44; c.beginPath(); c.ellipse(x, y, 130 + i * 18, 26 + (i % 2) * 10, 0, 0, 7); c.fill(); }
+  } else {
+    c.fillStyle = 'rgba(255,255,255,.85)';
+    for (let i = 0; i < 200; i++) c.fillRect((i * 397) % w, (i * 131) % (h * 0.42), 2, 2);
+  }
+  const horizon = h * 0.44;
+  c.fillStyle = night ? '#1b2b3d' : '#9fb6c2';
+  c.beginPath(); c.moveTo(0, horizon);
+  for (let x = 0; x <= w; x += 60) c.lineTo(x, horizon - 60 - Math.sin(x * 0.004) * 70 - ((x * 37) % 40));
+  c.lineTo(w, horizon); c.closePath(); c.fill();
+
+  // штаб-квартира-кольцо среди леса — отсылка к Apple Park
+  const rcx = w * 0.5, rcy = horizon + 44, rOut = w * 0.155, rIn = rOut * 0.72;
+  c.save();
+  c.beginPath();
+  c.ellipse(rcx, rcy, rOut, rOut * 0.26, 0, 0, Math.PI * 2);
+  c.ellipse(rcx, rcy, rIn, rIn * 0.26, 0, 0, Math.PI * 2, true);
+  c.fillStyle = night ? 'rgba(120,170,210,.32)' : 'rgba(228,238,244,.92)'; c.fill();
+  c.strokeStyle = night ? 'rgba(160,210,245,.6)' : 'rgba(120,140,155,.5)'; c.lineWidth = 3; c.stroke();
+  c.strokeStyle = night ? 'rgba(255,225,170,.6)' : 'rgba(140,160,175,.4)'; c.lineWidth = 2;
+  for (let a = 0; a < Math.PI * 2; a += 0.055) {
+    const x1 = rcx + Math.cos(a) * rIn, y1 = rcy + Math.sin(a) * rIn * 0.26;
+    const x2 = rcx + Math.cos(a) * rOut, y2 = rcy + Math.sin(a) * rOut * 0.26;
+    c.beginPath(); c.moveTo(x1, y1 - 15); c.lineTo(x2, y2 - 15); c.stroke();
+  }
+  c.fillStyle = night ? 'rgba(90,140,180,.5)' : 'rgba(208,222,230,.95)';
+  c.beginPath(); c.ellipse(rcx, rcy - 15, rOut, rOut * 0.26, 0, Math.PI, 0); c.fill();
+  c.restore();
+  c.fillStyle = night ? '#122a1c' : '#5f9b62';
+  c.beginPath(); c.ellipse(rcx, rcy, rIn * 0.9, rIn * 0.23, 0, 0, Math.PI * 2); c.fill();
+
+  // лес двумя планами
+  const forest = (y, scale, color) => {
+    c.fillStyle = color;
+    for (let x = -40; x < w + 40; x += 26 * scale) {
+      const th = (70 + ((x * 53) % 62)) * scale;
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x + 13 * scale, y - th); c.lineTo(x + 26 * scale, y); c.closePath(); c.fill();
+    }
+  };
+  forest(horizon + 28, 0.85, night ? '#0f2318' : '#3f6b47');
+  forest(horizon + 66, 1.2, night ? '#0c1c13' : '#356040');
+
+  // река с водопадом
+  const riverTop = horizon + 104;
+  c.fillStyle = night ? '#0d2233' : '#4a86a8';
+  c.beginPath();
+  c.moveTo(0, h); c.lineTo(0, riverTop + 130);
+  c.bezierCurveTo(w * 0.25, riverTop + 64, w * 0.4, riverTop + 30, w * 0.5, riverTop);
+  c.bezierCurveTo(w * 0.6, riverTop + 30, w * 0.75, riverTop + 64, w, riverTop + 130);
+  c.lineTo(w, h); c.closePath(); c.fill();
+  c.fillStyle = night ? '#16202a' : '#7d8a91';
+  c.beginPath();
+  c.moveTo(w * 0.34, riverTop + 36); c.lineTo(w * 0.44, riverTop + 6); c.lineTo(w * 0.56, riverTop + 6); c.lineTo(w * 0.66, riverTop + 36);
+  c.lineTo(w * 0.66, riverTop + 104); c.lineTo(w * 0.34, riverTop + 104); c.closePath(); c.fill();
+  const fall = c.createLinearGradient(0, riverTop, 0, riverTop + 104);
+  fall.addColorStop(0, night ? 'rgba(190,225,245,.85)' : 'rgba(255,255,255,.95)');
+  fall.addColorStop(1, night ? 'rgba(140,190,220,.4)' : 'rgba(225,240,248,.62)');
+  c.fillStyle = fall; c.fillRect(w * 0.45, riverTop + 6, w * 0.1, 100);
+  c.fillStyle = night ? 'rgba(190,225,245,.35)' : 'rgba(255,255,255,.6)';
+  for (let i = 0; i < 28; i++) { c.beginPath(); c.arc(w * 0.5 + (Math.random() - 0.5) * w * 0.12, riverTop + 100 + Math.random() * 24, 4 + Math.random() * 12, 0, 7); c.fill(); }
+  c.fillStyle = night ? '#0f1c14' : '#4f7d58';
+  c.beginPath(); c.moveTo(0, riverTop + 128); c.bezierCurveTo(w * 0.22, riverTop + 78, w * 0.36, riverTop + 48, w * 0.44, riverTop + 24); c.lineTo(0, riverTop + 24); c.closePath(); c.fill();
+  c.beginPath(); c.moveTo(w, riverTop + 128); c.bezierCurveTo(w * 0.78, riverTop + 78, w * 0.64, riverTop + 48, w * 0.56, riverTop + 24); c.lineTo(w, riverTop + 24); c.closePath(); c.fill();
+
+  // сад на переднем плане: газон, дорожка, кроны, скамьи
+  c.fillStyle = night ? '#0b1710' : '#59894f';
+  c.fillRect(0, h * 0.84, w, h * 0.16);
+  c.strokeStyle = night ? 'rgba(190,180,150,.25)' : 'rgba(232,226,208,.85)'; c.lineWidth = 26; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(-20, h * 0.97); c.bezierCurveTo(w * 0.3, h * 0.9, w * 0.6, h * 0.95, w + 20, h * 0.87); c.stroke();
+  for (let i = 0; i < 30; i++) {
+    const x = (i * 271) % w, y = h * 0.845 + ((i * 53) % Math.round(h * 0.12));
+    c.fillStyle = night ? '#12281a' : ['#3f6b47', '#4f8a52', '#6aa35c'][i % 3];
+    c.beginPath(); c.arc(x, y, 24 + (i % 4) * 12, 0, Math.PI * 2); c.fill();
+    if (!night && i % 5 === 0) { c.fillStyle = '#6b4a33'; c.fillRect(x - 3, y, 6, 22); }
+  }
+  if (night) { c.fillStyle = 'rgba(255,214,150,.55)'; for (let i = 0; i < 26; i++) { c.beginPath(); c.arc((i * 331) % w, h * 0.9 + ((i * 71) % 60), 3, 0, 7); c.fill(); } }
+}
+
+function buildOutside(scene) {
+  const day = P.canvasTexture(4096, 1536, (c, w, h) => drawOutside(c, w, h, false));
+  const night = P.canvasTexture(4096, 1536, (c, w, h) => drawOutside(c, w, h, true));
   const planes = [];
   for (const side of [-1, 1]) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(90, 34), new THREE.MeshBasicMaterial({ map: day.texture, toneMapped: false }));
-    m.position.set(side * 52, 12, 4); m.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(120, 46), new THREE.MeshBasicMaterial({ map: day.texture, toneMapped: false }));
+    m.position.set(side * 58, 15, 4); m.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+    scene.add(m); planes.push(m);
+  }
+  for (const [z, ry] of [[-52, 0], [58, Math.PI]]) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(120, 46), new THREE.MeshBasicMaterial({ map: day.texture, toneMapped: false }));
+    m.position.set(0, 15, z); m.rotation.y = ry;
     scene.add(m); planes.push(m);
   }
   return { setDark(dark) { for (const m of planes) { m.material.map = dark ? night.texture : day.texture; m.material.needsUpdate = true; } }, update() {} };
@@ -838,11 +1215,13 @@ function buildGardens(scene, ctx) {
 /* ================= сборка ================= */
 
 export function buildWings(scene, ctx) {
-  const parts = [buildAquarium(scene, ctx), buildMeetingAndLibrary(scene, ctx), buildGarage(scene, ctx), buildReactor(scene, ctx)];
-  const gardens = buildGardens(scene, ctx);
-  parts.push(gardens);
+  const meeting = buildMeetingAndLibrary(scene, ctx);
+  const parts = [buildAquarium(scene, ctx), meeting, buildGarage(scene, ctx), buildReactor(scene, ctx), buildRingLounge(scene, ctx)];
+  const outside = buildOutside(scene);
+  parts.push(outside);
   return {
     update(dt, t) { for (const p of parts) p.update(dt, t); },
-    setDark(dark) { gardens.setDark(dark); },
+    setDark(dark) { outside.setDark(dark); },
+    setBooks(docs) { meeting.setBooks(docs); },
   };
 }

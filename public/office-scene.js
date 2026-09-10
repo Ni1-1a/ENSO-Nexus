@@ -19,7 +19,7 @@ import { RectAreaLightUniformsLib } from './vendor/RectAreaLightUniformsLib.js';
 import * as P from './office-props.js';
 import { LifeDirector, makeSteam } from './office-life.js';
 import { WalkRig } from './office-walk.js';
-import { buildWings, insideWalkable, floorHeight, LEVEL as WING_LEVEL, MEZZ } from './office-wings.js';
+import { buildWings, insideWalkable, floorHeight, stoneMaterial, LEVEL as WING_LEVEL, FLOOR2 } from './office-wings.js';
 
 /* палитра платформы + бренд (BRAND задаётся в office-data.js) */
 const PAL = {
@@ -200,7 +200,6 @@ export class OfficeScene {
   _build() {
     this._buildFloorsAndTiers();
     this._buildWallsAndCeiling();
-    this._buildGalleries();
     this._buildScreen();
     this._buildTable();
     this._buildDesks();
@@ -221,7 +220,7 @@ export class OfficeScene {
     this._wood = P.woodTexture();
 
     // сцена перед ярусами (уровень 0) — матовый паркет
-    const stage = new THREE.Mesh(new THREE.PlaneGeometry(32, 8), new THREE.MeshStandardMaterial({ map: this._wood, roughness: 0.42, metalness: 0.02 }));
+    const stage = new THREE.Mesh(new THREE.PlaneGeometry(32, 8), stoneMaterial(7));
     stage.rotation.x = -Math.PI / 2;
     stage.position.set(0, 0, -7.4);
     stage.receiveShadow = true;
@@ -232,7 +231,7 @@ export class OfficeScene {
     this._ledStrips = [];
     TIERS.forEach((t, i) => {
       const ring = new THREE.RingGeometry(t.r0, t.r1, 96, 1, Math.PI / 2 - 0.95, 1.9);
-      const mesh = new THREE.Mesh(ring, new THREE.MeshStandardMaterial({ map: this._wood, roughness: 0.45 }));
+      const mesh = new THREE.Mesh(ring, new THREE.MeshStandardMaterial({ map: this._wood, bumpMap: this._wood, bumpScale: 0.006, roughness: 0.4, metalness: 0.03 }));
       mesh.rotation.x = -Math.PI / 2;
       mesh.position.set(FOCUS.x, t.y + 0.001, FOCUS.z);
       mesh.receiveShadow = true;
@@ -267,7 +266,7 @@ export class OfficeScene {
     for (let i = 1; i < TIERS.length; i++) {
       const rise = TIERS[i].y - TIERS[i - 1].y;
       for (let s = 0; s < 3; s++) {
-        const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, rise / 3, 0.34), new THREE.MeshStandardMaterial({ map: this._wood, roughness: 0.4 }));
+        const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, rise / 3, 0.34), new THREE.MeshStandardMaterial({ map: this._wood, bumpMap: this._wood, bumpScale: 0.006, roughness: 0.4 }));
         const r = TIERS[i].r0 - 0.5 + s * 0.34;
         step.position.set(0, TIERS[i - 1].y + (rise / 3) * (s + 0.5), FOCUS.z + r);
         step.receiveShadow = true;
@@ -287,7 +286,9 @@ export class OfficeScene {
       this.scene.add(mirror);
       this._mirror = mirror;
     }
-    const gloss = new THREE.Mesh(concourse, new THREE.MeshStandardMaterial({ map: this._wood, roughness: 0.22, metalness: 0.04, transparent: !this.mobile, opacity: this.mobile ? 1 : 0.78 }));
+    const stoneMat = stoneMaterial(8);
+    stoneMat.transparent = !this.mobile; stoneMat.opacity = this.mobile ? 1 : 0.82;
+    const gloss = new THREE.Mesh(concourse, stoneMat);
     gloss.rotation.x = -Math.PI / 2;
     gloss.position.set(0, CONCOURSE_Y, (concourseZ0 + 21) / 2);
     gloss.receiveShadow = true;
@@ -305,7 +306,7 @@ export class OfficeScene {
 
   _buildWallsAndCeiling() {
     const p = this.pal;
-    const wallMat = new THREE.MeshStandardMaterial({ color: p.wall, roughness: 0.95 });
+    const wallMat = stoneMaterial(9);
     this._wallMat = wallMat;
     const mk = (w, h, x, y, z, ry = 0) => {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), wallMat);
@@ -348,20 +349,20 @@ export class OfficeScene {
     this.scene.add(lam);
 
     // перегородка лобби с широким проёмом и перемычкой
-    for (const [w, x] of [[11.6, -10.2], [11.6, 10.2]]) {
+    for (const [w, x] of [[10.0, -11.0], [10.0, 11.0]]) {
       const m = new THREE.Mesh(new THREE.BoxGeometry(w, 9, 0.3), wallMat);
       m.position.set(x, 4.5, 11);
       this.scene.add(m);
       this._blockers.push({ x0: x - w / 2, x1: x + w / 2, z0: 10.7, z1: 11.3 });
     }
-    const lintel = new THREE.Mesh(new THREE.BoxGeometry(9, 2.2, 0.3), wallMat);
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(12.2, 2.2, 0.3), wallMat);
     lintel.position.set(0, 7.9, 11);
     this.scene.add(lintel);
     // портал проёма — тёмная рамка с подсветкой
-    const portal = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.12, 0.36), P.MAT.graphite());
+    const portal = new THREE.Mesh(new THREE.BoxGeometry(12.4, 0.12, 0.36), P.MAT.graphite());
     portal.position.set(0, 6.75, 11);
     this.scene.add(portal);
-    const portalLed = new THREE.Mesh(new THREE.BoxGeometry(8.8, 0.02, 0.02), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.8 }));
+    const portalLed = new THREE.Mesh(new THREE.BoxGeometry(12.0, 0.02, 0.02), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.8 }));
     portalLed.position.set(0, 6.68, 11.2);
     this.scene.add(portalLed);
     this.life.strips.push(portalLed);
@@ -414,43 +415,7 @@ export class OfficeScene {
     }
   }
 
-  /** боковые галереи: плита, стеклянные перила, свисающие растения */
-  _buildGalleries() {
-    this._galleryRails = [];
-    for (const side of [-1, 1]) {
-      const x = side * 14.4;
-      const slab = new THREE.Mesh(new RoundedBoxGeometry(3.2, 0.28, 19, 2, 0.05), new THREE.MeshStandardMaterial({ color: 0xece6da, roughness: 0.6 }));
-      slab.position.set(x, 3.6, 1);
-      slab.castShadow = true; slab.receiveShadow = true;
-      this.scene.add(slab);
-      const led = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 19), new THREE.MeshBasicMaterial({ color: this.pal.strip, transparent: true, opacity: 0.7 }));
-      led.position.set(x - side * 1.6, 3.47, 1);
-      led.userData.phase = side;
-      this.scene.add(led);
-      this.life.strips.push(led);
-      const glass = new THREE.Mesh(new THREE.PlaneGeometry(19, 1.0), new THREE.MeshPhysicalMaterial({ color: 0xe9f0ec, transmission: 0.85, thickness: 0.04, roughness: 0.05, ior: 1.5, transparent: true, side: THREE.DoubleSide }));
-      glass.position.set(x - side * 1.62, 4.25, 1);
-      glass.rotation.y = side < 0 ? -Math.PI / 2 : Math.PI / 2;
-      this.scene.add(glass);
-      for (let i = 0; i <= 15; i++) {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.03, 1.0, 0.03), P.MAT.ink());
-        post.position.set(x - side * 1.62, 4.25, -8.5 + i * 1.27); this.scene.add(post);
-      }
-      const fascia = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.28, 19), P.MAT.ink());
-      fascia.position.set(x - side * 1.61, 3.6, 1); this.scene.add(fascia);
-      const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 19, 8), P.MAT.chrome());
-      rail.rotation.x = Math.PI / 2;
-      rail.position.set(x - side * 1.62, 4.78, 1);
-      this.scene.add(rail);
-      for (let i = 0; i < 6; i++) {
-        const pl = P.makeTrailingPlant(1.3);
-        pl.position.set(x - side * 1.55, 4.72, -6.5 + i * 3.2);
-        this.scene.add(pl);
-        pl.traverse((m) => { if (m.userData.sway) this.life.plants.push(m); });
-      }
-      // экраны галереи: по два постера механической серии на стене за галереей
-    }
-  }
+  /* галереи заменены кольцевым лаунджем второго этажа — office-wings.buildRingLounge */
 
   /* ---------- центральный экран ---------- */
 
@@ -1145,7 +1110,7 @@ export class OfficeScene {
     });
 
     // диваны и растения лобби
-    for (const sx of [-5.2, 5.2]) {
+    for (const sx of [-8.6, 8.6]) {
       const sofa = new THREE.Mesh(new RoundedBoxGeometry(2.4, 0.5, 0.95, 3, 0.1), P.MAT.terracotta());
       sofa.position.set(sx, y0 + 0.25, 17.8); sofa.castShadow = true; this.scene.add(sofa);
       const back = new THREE.Mesh(new RoundedBoxGeometry(2.4, 0.55, 0.2, 3, 0.08), P.MAT.terracotta());
@@ -1364,6 +1329,9 @@ export class OfficeScene {
 
   /* ================= данные ================= */
 
+  /** корешки библиотеки — документы базы знаний платформы */
+  setBooks(docs) { if (this.wings) this.wings.setBooks(docs); }
+
   setSceneData(data) {
     this._sceneData = data;
     // на кульмане — настоящий план проекта, как только он пришёл
@@ -1480,16 +1448,16 @@ export class OfficeScene {
         s.torso.scale.y = 1 + Math.sin(t * 1.3) * 0.012;
         s.head.rotation.y += (Math.sin(t * 0.4) * 0.35 - s.head.rotation.y) * dt * 2;
         const wave = this._wave && t < this._wave;
-        s.armR.shoulder.rotation.x += ((wave ? -2.6 : 0.1) - s.armR.shoulder.rotation.x) * dt * 6;
-        s.armR.elbow.rotation.x += ((wave ? -0.6 + Math.sin(t * 9) * 0.35 : -0.2) - s.armR.elbow.rotation.x) * dt * 8;
-        s.armL.shoulder.rotation.x += (0.15 - s.armL.shoulder.rotation.x) * dt * 4;
+        s.armR.shoulder.rotation.x += ((wave ? 2.5 : 0.12) - s.armR.shoulder.rotation.x) * dt * 6;
+        s.armR.elbow.rotation.x += ((wave ? 0.5 + Math.sin(t * 9) * 0.35 : 0.15) - s.armR.elbow.rotation.x) * dt * 8;
+        s.armL.shoulder.rotation.x += (0.12 - s.armL.shoulder.rotation.x) * dt * 4;
       }
       if (this.teaMaster) {
         const pour = (Math.sin(t * 0.45) + 1) / 2;
         const pouring = pour > 0.82;
         if (this.teapot) this.teapot.rotation.z += ((pouring ? -(pour - 0.82) * 3.5 : 0) - this.teapot.rotation.z) * dt * 5;
-        this.teaMaster.armR.shoulder.rotation.x += ((pouring ? -1.4 : -0.85) - this.teaMaster.armR.shoulder.rotation.x) * dt * 4;
-        this.teaMaster.armR.elbow.rotation.x += ((pouring ? -0.6 : -1.0) - this.teaMaster.armR.elbow.rotation.x) * dt * 4;
+        this.teaMaster.armR.shoulder.rotation.x += ((pouring ? 1.25 : 0.8) - this.teaMaster.armR.shoulder.rotation.x) * dt * 4;
+        this.teaMaster.armR.elbow.rotation.x += ((pouring ? 0.55 : 0.95) - this.teaMaster.armR.elbow.rotation.x) * dt * 4;
         this.teaMaster.head.rotation.x = 0.25;
         this.teaMaster.torso.scale.y = 1 + Math.sin(t * 1.1) * 0.012;
       }
@@ -1573,7 +1541,7 @@ export class OfficeScene {
     this.scene.background.set(p.bg); this.scene.fog.color.set(p.bg);
     this.hemi.intensity = p.hemi; this.sun.intensity = p.sun;
     this.renderer.toneMappingExposure = dark ? 0.9 : 1.05;
-    this._wallMat.color.set(p.wall);
+    this._wallMat.color.set(dark ? 0x8a8378 : 0xffffff);
     this._ceil.material.color.set(p.ceiling);
     for (const w of this._windows) w.material.color.set(p.window);
     for (const s of this._strips) s.material.color.set(p.strip);

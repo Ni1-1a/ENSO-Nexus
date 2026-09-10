@@ -158,7 +158,9 @@ export class WalkRig {
     // шаг допустим, если точка внутри помещений, не в препятствии и пол не выше
     // подъёма ступени (0.45 м): так лестница проходится, а антресоль с пола — нет
     const ok = (x, z) => {
-      if (!this.inside(x, z) || this.blocked(x, z)) return false;
+      // этаж передаётся в blocked: без него препятствия с below/above считались
+      // от нулевого этажа, и ограждение реактора не пускало вниз по лестнице
+      if (!this.inside(x, z) || this.blocked(x, z, this.floorY)) return false;
       const h = this.heightAt(x, z, this.floorY);
       return Math.abs(h - this.floorY) < 0.45;
     };
