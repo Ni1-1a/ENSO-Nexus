@@ -484,3 +484,32 @@ test('анализ ТЗ: правка встаёт рядом с цитатой 
   for (const l of lines) assert.ok(out.text.includes(l), `строка потеряна: ${l.slice(0, 30)}`);
   assert.ok(out.text.indexOf('40. Строка задания') > at, 'хвост документа потерян');
 });
+
+/*
+ * Пикер модели из модуля убран (10.09.2026): выбор живёт у проекта платформы
+ * и СИЛЬНЕЕ старой записи задания. Значит и показывать карточка обязана его —
+ * иначе она говорит «модель: claude» у задания, которое пойдёт к модели
+ * проекта, и человек не понимает, почему прогон ушёл к другой.
+ */
+test('анализ ТЗ: карточка задания показывает нейросеть ПРОЕКТА, а не старую запись задания', async () => {
+  const projects = require('../server/services/projects');
+  const platform = await api('/api/projects', { method: 'POST', ...json({ name: 'Смена нейросети' }) });
+  const pid = platform.body.project.id;
+
+  const made = await api('/api/tz/projects', {
+    method: 'POST',
+    ...json({ name: 'Задание со старой моделью', checklist: 'production', projectId: pid, object: { kind: 'производственное' } }),
+  });
+  const tzId = made.body.project.id;
+  // у задания своя старая запись — так выглядят задания, заведённые до правки
+  require('../server/services/tz/store').updateProject(tzId, { provider: 'claude', model: 'claude-old' });
+  projects.update(pid, { aiProvider: 'lmstudio', aiModel: 'qwen-new' });
+
+  const one = await api(`/api/tz/projects/${tzId}`, { headers: asUser() });
+  assert.equal(one.body.project.ai_provider, 'lmstudio');
+  assert.equal(one.body.project.ai_model, 'qwen-new');
+
+  const list = await api(`/api/tz/projects?project=${pid}`, { headers: asUser() });
+  const card = list.body.projects.find((p) => p.id === tzId);
+  assert.equal(card.ai_provider, 'lmstudio', 'в списке осталась старая модель задания');
+});

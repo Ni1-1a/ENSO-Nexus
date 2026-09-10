@@ -145,18 +145,31 @@ router.post('/projects', bigJson, wrap(async (req, res) => {
   res.status(201).json({ project: { ...project, document_text: undefined, object_json: undefined, document_chars: 0 } });
 }));
 
+/**
+ * ДЕЙСТВУЮЩАЯ нейросеть задания. Пикер из модуля убран (10.09.2026), выбор
+ * живёт у проекта платформы и сильнее старой записи задания — значит и
+ * показывать надо его. Иначе карточка говорит «модель: claude» у задания,
+ * которое на самом деле пойдёт к модели проекта, и человек не понимает,
+ * почему прогон ушёл к другой.
+ */
+function withLiveAi(row) {
+  const ai = platformProjects.aiChoice(row.project_id);
+  return ai.provider ? { ...row, ai_provider: ai.provider, ai_model: ai.model } : row;
+}
+
 router.get('/projects', wrap(async (req, res) => {
   const projectId = platformProjects.filterId(req.query.project, req.user);
   const rows = store.listProjects({ projectId });
   // без ?project= — только задания из видимых, не удалённых проектов платформы
-  res.json({ projects: projectId ? rows : platformProjects.onlyVisible(rows, req.user) });
+  const visible = projectId ? rows : platformProjects.onlyVisible(rows, req.user);
+  res.json({ projects: visible.map(withLiveAi) });
 }));
 
 router.get('/projects/:id', wrap(async (req, res) => {
   const project = store.projectById(req.params.id);
   if (!allowed(project, req, res)) return;
   res.json({
-    project: { ...project, document_text: undefined, object_json: undefined, document_chars: project.document_text.length },
+    project: withLiveAi({ ...project, document_text: undefined, object_json: undefined, document_chars: project.document_text.length }),
     runs: store.listRuns(project.id),
   });
 }));
