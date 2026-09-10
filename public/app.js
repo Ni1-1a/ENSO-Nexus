@@ -21,7 +21,10 @@ const state = {
   offlineTimer: null,       // таймер автопроверки связи
   plan: null,               // план участка для схем в карточках ленты
   run: null,                // последний запуск вариантов посадки
+  zonesLive: null,          // живая сводка зон для свежей карточки согласования
+  zonesLiveFor: '',         // id карточки зон, для которой сводка считана
   cardsLoading: false,      // защита от повторной загрузки данных карточек
+  cardsGen: 0,              // поколение данных карточек: ответ прежнего поколения выбрасывается
   processing: false,        // запрос на запуск анализа уже ушёл — второй платный прогон не нужен
   uploads: [],              // файлы, которые прямо сейчас уходят на сервер (имя, размер, процент, исход)
 };
@@ -30,6 +33,8 @@ const state = {
 function resetCardData() {
   state.plan = null;
   state.run = null;
+  state.zonesLive = null;
+  state.zonesLiveFor = '';
   state.cardsLoading = false;
 }
 
@@ -203,7 +208,16 @@ async function api(path, options = {}) {
     e.offline = true;
     throw e;
   }
-  if (GATEWAY_DOWN.has(res.status)) {
+  let data = null;
+  try { data = await res.clone().json(); } catch { /* downloads etc. */ }
+  /*
+   * «Шлюз упал» — только когда ответ НЕ от платформы. Сервер отдаёт недоступную
+   * модель («Kimi не настроен», нет баланса) как 503 с JSON-телом и русским
+   * текстом, а клиент считал это падением туннеля: включал офлайн-плашку,
+   * через десять секунд радовался «связь восстановлена» и терял сам текст.
+   */
+  const platformError = data && typeof data.error === 'string' ? data.error : null;
+  if (GATEWAY_DOWN.has(res.status) && !platformError) {
     setOffline(true);
     const e = new Error('Сервер сейчас недоступен — проверяем связь, попробуйте чуть позже');
     e.offline = true;
@@ -211,8 +225,6 @@ async function api(path, options = {}) {
     throw e;
   }
   if (state.offline) setOffline(false); // сервер ответил — связь есть
-  let data = null;
-  try { data = await res.json(); } catch { /* downloads etc. */ }
   if (!res.ok) {
     const message = (data && data.error) || `Ошибка сервера (${res.status})`;
     const err = new Error(message);
@@ -922,7 +934,24 @@ function sourceSwatchStyle(kind, color) {
     `border: 1px solid ${color}`;
 }
 
-function zonesCardHtml(data, fresh) {
+/** Согласованное или выбранное пятно последнего запуска — для схем в ленте. */
+function selectedFootprint() {
+  const run = state.run;
+  const picked = run && Array.isArray(run.variants) ? run.variants.find((vv) => vv.selected) : null;
+  return picked ? picked.footprint : null;
+}
+
+function zonesCardHtml(frozen, fresh) {
+  /*
+   * Свежая карточка показывает ЖИВЫЕ сводки (state.zonesLive): после правки
+   * объекта на плане допустимая территория, легенда и подсказки меняются, а
+   * тело карточки заморожено в момент отправки. Старые карточки в ленте
+   * остаются с прежними цифрами — это история решений, и это правильно.
+   */
+  const live = fresh && state.zonesLive && !state.zonesLive.failed && state.zonesLive.computed ? state.zonesLive : null;
+  const data = live
+    ? { ...frozen, zones: live.zones, sources: live.sources, buildable: live.buildable, manualHints: live.manualHints, unresolved: live.unresolved, liveWarnings: live.warnings || [] }
+    : frozen;
   const zones = data.zones || [];
   /*
    * Легенда карточки — ПО ОБЪЕКТАМ, если сервер их прислал.
@@ -948,6 +977,7 @@ function zonesCardHtml(data, fresh) {
     ...(data.unresolved || []).map((u) => `Не построено «${esc(u.kind)}»: ${esc(u.reason)}`),
     ...(data.conflicts || []).map((c) => esc(c)),
     ...(data.missingData || []).slice(0, 4).map((m) => `Не хватает данных: ${esc(m)}`),
+    ...(data.liveWarnings || []).map((w) => esc(w)),
   ];
   const done = state.view && ['variants', 'variants_review', 'drawing', 'done'].includes(state.view.stage);
   return `<div class="pc">
@@ -1096,6 +1126,7 @@ function variantsCardHtml(data, fresh) {
       <span class="pc-shape">${esc(m.shapeLabel || 'прямоугольник')}${m.shapeNote ? ` — ${esc(m.shapeNote)}` : ''}</span>
       <span class="pc-metrics"><span>${m.areaM2} м²</span><span>${m.width} × ${m.length} м</span>
         <span>${m.rotationDeg}°</span>${m.floors ? `<span>${m.floors} эт.</span>` : ''}
+        ${Number.isFinite(m.corners) ? `<span title="${m.orthogonal === false ? 'есть непрямые углы' : 'все углы прямые'}">углов: ${m.corners}${m.orthogonal === false ? ' ⚠' : ''}</span>` : ''}
         ${m.affectedCount ? `<span>задето ${m.affectedCount}</span>` : ''}
         ${m.removedCount ? `<span title="Решение о сносе или переносе уже принято — воздействием варианта это не считается, но в ТЭП попадает">под снос ${m.removedCount} · ${m.removedAreaM2} м²</span>` : ''}</span>
       </button>
@@ -1104,8 +1135,14 @@ function variantsCardHtml(data, fresh) {
   }).join('');
   const picked = run.variants.find((vv) => vv.selected);
   const done = state.view && ['drawing', 'done'].includes(state.view.stage);
+  // план правился после подбора: пятна посчитаны по прежней схеме, и молчать
+  // об этом нельзя — человек согласует варианты, которые его правок не видели
+  const stale = fresh && run.stale && !done
+    ? '<p class="pc-note pc-stale-run">План изменён после подбора вариантов (правки объектов или пересчёт зон): пятна посчитаны по прежней схеме. Нажмите «Переделать с замечанием», чтобы подобрать заново.</p>'
+    : '';
   return `<div class="pc">
     <div class="pc-variants">${cards}</div>
+    ${stale}
     ${done ? '' : variantHintsHtml(run)}
     ${(data.notes || []).length ? `<p class="pc-note">${(data.notes || []).map(esc).join(' ')}</p>` : ''}
     ${done
@@ -1126,8 +1163,10 @@ function drawingCardHtml(data) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12m0 0l-5-5m5 5l5-5M4 20h16"/></svg>
       </button></li>`).join('');
   const dwg = (data.files || []).some((f) => f.format === 'dwg');
+  // на листе — согласованное пятно: чертёж без здания после согласования
+  // выглядел так, будто вариант никуда не попал
   return `<div class="pc">
-    ${sheetHtml(null)}
+    ${sheetHtml(selectedFootprint())}
     <div class="pc-facts"><span>Чертёж по варианту <b>${data.variantNumber}</b></span>
       <span>${dwg ? 'DWG готов' : 'DWG не собран — отдан DXF'}</span></div>
     <ul class="results-list" style="padding: 0 12px 10px">${files}</ul>
@@ -1158,20 +1197,47 @@ async function ensureCardData(v) {
   const cards = v.messages.map(cardOf).filter(Boolean);
   if (!cards.length || state.cardsLoading) return;
   const needPlan = !state.plan;
-  const needRun = cards.some((c) => c.card === 'variants') && !state.run;
-  if (!needPlan && !needRun) return;
+  // запуск нужен и карточке чертежа: она рисует согласованное пятно на схеме
+  const needRun = cards.some((c) => c.card === 'variants' || c.card === 'drawing') && !state.run;
+  // живая сводка зон — для свежей карточки согласования: тело карточки
+  // заморожено, а правки объектов меняют и допустимую территорию, и подсказки
+  // сводка привязана к ПОСЛЕДНЕЙ карточке зон: после замечания приходит новая
+  // карточка с новым расчётом, и старую сводку надо забыть
+  const lastZones = [...v.messages].reverse().find((m) => (cardOf(m) || {}).card === 'zones');
+  const needZones = !!lastZones && (state.zonesLiveFor !== String(lastZones.id) || !state.zonesLive);
+  if (!needPlan && !needRun && !needZones) return;
+  /*
+   * Поколение: пока летит запрос, план мог измениться (правка объекта во
+   * вьювере) — тогда обработчик enso:plan-changed поднимает cardsGen, и ответ
+   * прежнего поколения выбрасывается, иначе в карточках оседал план «до правки».
+   */
+  const gen = ++state.cardsGen;
   state.cardsLoading = true;
   try {
     if (needPlan) {
       const data = await api(`/sessions/${state.session.id}/plan`);
+      if (gen !== state.cardsGen) return;
       state.plan = data.plan;
     }
-    if (needRun) state.run = await api(`/sessions/${state.session.id}/plan/variants`);
+    if (needRun) {
+      const run = await api(`/sessions/${state.session.id}/plan/variants`);
+      if (gen !== state.cardsGen) return;
+      state.run = run;
+    }
+    if (needZones) {
+      let live;
+      try { live = await api(`/sessions/${state.session.id}/stages/zones/summary`); } catch { live = { failed: true }; }
+      if (gen !== state.cardsGen) return;
+      state.zonesLiveFor = String(lastZones.id);
+      state.zonesLive = live;
+    }
     render();
   } catch (err) {
     console.warn('[cards]', err.message);
   } finally {
     state.cardsLoading = false;
+    // план сменился, пока грузились данные — перечитать уже для нового поколения
+    if (gen !== state.cardsGen && state.view) ensureCardData(state.view).catch(() => {});
   }
 }
 
@@ -2631,6 +2697,7 @@ function renderUserBox() {
  * в вопросе: иначе «выйти» читается как «потерять всё».
  */
 async function signOut() {
+  if (window.EnsoShell && window.EnsoShell.closeDrawer) window.EnsoShell.closeDrawer(); // диалог не должен открыться под панелью
   const ok = await appDialog({
     title: 'Выйти из записи?',
     message: 'Проекты и загруженные файлы останутся на месте — они вернутся при следующем входе.',
@@ -2673,6 +2740,24 @@ async function init() {
   window.PlanViewer.init();
   $('vw-reload').addEventListener('click', () => window.PlanViewer.load(api, state.session));
   $('plan-modal-close').addEventListener('click', () => window.PlanViewer.close());
+  /*
+   * План изменился во вьювере (правка объекта, пересчёт зон) — карточки ленты
+   * перечитывают план, запуск вариантов и живую сводку зон СРАЗУ, а не после
+   * перезагрузки страницы: иначе схема в карточке и её цифры показывают
+   * состояние до правки, и человек решает, что правка не сработала.
+   */
+  window.addEventListener('enso:plan-changed', async (e) => {
+    if (!state.session || (e.detail && e.detail.sessionId && e.detail.sessionId !== state.session.id)) return;
+    state.cardsGen++; // летящий запрос прежнего поколения не должен положить старый план
+    state.plan = null;
+    state.run = null;
+    state.zonesLive = null;
+    state.zonesLiveFor = '';
+    try {
+      if (state.view) await ensureCardData(state.view);
+      await refresh();
+    } catch (err) { console.warn('[plan-changed]', err.message); }
+  });
 
   // стопка плашек: высота уходит в --banners-h, чтобы ничего не перекрывать
   watchBanners();

@@ -1344,6 +1344,22 @@ body.modal-open { overflow: hidden; }
 /* объект с правкой человека виден и без наведения: пунктир по контуру */
 .vw-layer .vw-shape.vw-edited { stroke-dasharray: 10 4; }
 
+/* пятно застройки — выбранный или согласованный вариант посадки: заливка и
+   контур из ZoneStyle.FOOTPRINT (те же, что в миниатюрах, отчёте и чертеже) */
+.vw-footprint .vw-shape { stroke-width: 2.4px; }
+.vw-sw-footprint { background: rgba(79, 125, 88, .45); border-color: #3f6f4c; }
+
+/* вспышка контура после правки: где именно на плане она применилась */
+@keyframes vw-flash-pulse {
+  0% { stroke: var(--accent); stroke-width: 7px; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 90%, transparent)); }
+  60% { stroke: var(--accent); stroke-width: 5px; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 70%, transparent)); }
+  100% { stroke-width: 1.5px; filter: none; }
+}
+.vw-layer .vw-shape.vw-flash { animation: vw-flash-pulse 2.1s ease-out 1; }
+
+/* варианты посадки устарели: план правился после подбора */
+.pc-stale-run { color: var(--orange); border-left: 3px solid var(--orange); padding-left: 10px; }
+
 /* ---------- свойства объекта: панель внутри плана ----------
    Панель стоит СЛЕВА. Справа сверху раскрывается меню «Слои» (.pm-layers-menu),
    и панель, стоявшая там же, ложилась поверх него: человек открывал слои,

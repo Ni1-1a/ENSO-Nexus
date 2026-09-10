@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=2';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=2';
+import { OfficeScene } from './office-scene.js?v=3';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=3';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -76,16 +76,17 @@ const Sound = {
       ch[i] = last * 3;
     }
     noise.buffer = buf; noise.loop = true;
+    // фон офиса: очень тихий низкий гул вентиляции, без «самолёта» (было 420 Гц / 0.05)
     const lp = this.ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 420;
+    lp.type = 'lowpass'; lp.frequency.value = 140;
     const gain = this.ctx.createGain();
-    gain.gain.value = 0.05;
+    gain.gain.value = 0.012;
     noise.connect(lp).connect(gain).connect(this.ctx.destination);
     noise.start();
     this.ambient = gain;
   },
   setOn(on) {
-    if (on) { this.ensure(); this.ctx.resume(); this.ambient.gain.value = 0.05; }
+    if (on) { this.ensure(); this.ctx.resume(); this.ambient.gain.value = 0.012; }
     else if (this.ambient) this.ambient.gain.value = 0;
   },
   step() {
@@ -411,6 +412,24 @@ function posterContext(info) {
     chatKind: null,
     renderInfo() {
       return `<p>${esc(p.text)}</p><p class="muted">Композиция построена по золотому сечению: предмет стоит в точке φ, рама — прямоугольник 1 : 1,618.</p>`;
+    },
+  };
+}
+
+function placeContext(p, topic) {
+  const more = D.facts_more[topic] || [];
+  return {
+    title: p.title,
+    sub: p.sub,
+    chatKind: null,
+    renderInfo() {
+      const i = state.factIndex[topic] || 0;
+      return `<p>${esc(p.text)}</p>${more.length ? `<h3>Интересный факт</h3><div class="dock-fact" id="fact-text">${esc(more[i % more.length])}</div>
+        <div class="dock-actions"><button class="btn" id="fact-next" type="button">Ещё факт</button></div>` : ''}`;
+    },
+    afterInfo(el) {
+      const next = el.querySelector('#fact-next');
+      if (next) next.onclick = () => { state.factIndex[topic] = (state.factIndex[topic] || 0) + 1; el.querySelector('#fact-text').textContent = more[state.factIndex[topic] % more.length]; };
     },
   };
 }
@@ -763,6 +782,10 @@ function hoverLabel(info) {
     case 'plaque': return D.plaques[info.index] ? D.plaques[info.index].sub : 'табличка';
     case 'item': return D.items[info.item] ? D.items[info.item].title : info.item;
     case 'poster': return D.posters[info.id] ? D.posters[info.id].title : 'постер';
+    case 'vehicle': return D.vehicles[info.id] ? D.vehicles[info.id].title : 'экспонат';
+    case 'aquarium': return 'Аквариум';
+    case 'reactor': return 'Реактор · макет';
+    case 'room': return D.places[info.id] ? D.places[info.id].title : 'помещение';
     case 'walker': return (D.walkers && D.walkers[info.index]) || 'коллега';
     case 'chess-square': return 'Шахматы';
     case 'go-point': return 'Го';
@@ -814,6 +837,15 @@ async function main() {
       else state.scene.goTo('hall');
     };
   }
+  // крылья: аквариум, переговорная, библиотека, мастерская, реактор
+  $('ob-place').onchange = () => {
+    const id = $('ob-place').value;
+    if (!id) return;
+    setView('');
+    state.scene.focusAnchor(id);
+    if (D.places[id]) openDock(placeContext(D.places[id], id));
+    $('ob-place').value = '';
+  };
   $('ob-project').onclick = showProjectPick;
   $('ob-sound').onclick = () => {
     state.sound = !state.sound;
@@ -930,6 +962,18 @@ function handlePick(info) {
       break;
     case 'poster':
       openDock(posterContext(info));
+      break;
+    case 'vehicle':
+      openDock(placeContext(D.vehicles[info.id], 'garage'));
+      break;
+    case 'aquarium':
+      openDock(placeContext(D.places.aquarium, 'aquarium'));
+      break;
+    case 'reactor':
+      openDock(placeContext(D.places.reactor, 'reactor'));
+      break;
+    case 'room':
+      openDock(placeContext(D.places[info.id], info.id));
       break;
     case 'walker':
       toast(`${(D.walkers && D.walkers[info.index]) || 'Коллега'} — идёт по делам`);

@@ -528,7 +528,8 @@ html[data-view="d"] .proj-card::before { content: attr(data-n); font-family: var
 html[data-view="d"] .proj-card .pc-head { display: contents; }
 html[data-view="d"] .proj-card .pc-name { font-family: var(--font-text); font-size: 14.5px; }
 html[data-view="d"] .proj-card .pc-full { font-size: 12.5px; }
-html[data-view="d"] .proj-card .pc-stage { order: 3; }
+/* плашка стадии — элемент сетки (pc-head: contents): без justify-self она растягивалась во всю колонку */
+html[data-view="d"] .proj-card .pc-stage { order: 3; justify-self: start; }
 html[data-view="d"] .proj-card .pc-meta { order: 2; font-size: 13px; color: var(--text-2); }
 html[data-view="d"] .proj-card .pc-foot { order: 4; gap: 6px; }
 html[data-view="d"] .proj-card .pc-line span:first-child { display: none; }
@@ -585,6 +586,9 @@ html[data-view="d"] .proj-new .pn-sub { display: none; }
 /* диалог подтверждения (app.js) и диалог каркаса — поверх окна свойств проекта:
    все бэкдропы в styles.css на одном z-index, побеждал тот, что позже в DOM */
 #dialog-modal, #shell-dialog { z-index: 115; }
+/* …и поверх бокового меню (панель 130, скрим 125): «Выйти из записи?» открывался
+   ПОД панелью — на телефоне его не было видно вовсе (обход 09.09.2026) */
+#dialog-modal, #shell-dialog { z-index: 140; }
 /* карточка проекта: ссылка растянута на всю карточку, кнопка «⋯» — сосед, а не потомок */
 .proj-card { position: relative; }
 .proj-card .pc-link { position: absolute; inset: 0; border-radius: inherit; z-index: 0; }
@@ -692,7 +696,11 @@ html[data-view="c"] .tz-cols, html[data-view="c"] .mod-cols, html[data-view="c"]
 
 /* ─── обход в браузере 04.09.2026 ─── */
 /* длинное имя без пробелов не должно выламывать карточку, заголовок и окно */
-.proj-card .pc-name, .ph-name, .hub-tile .ht-name, .modal h2, .modal h3, .tm-name, .dialog-message { overflow-wrap: anywhere; min-width: 0; }
+.proj-card .pc-name, .ph-name, .modal h2, .modal h3, .tm-name, .dialog-message { overflow-wrap: anywhere; min-width: 0; }
+/* имя модуля — известное слово: переносить по слогам, а не рвать «Нормоконтро/ль» на 1050 */
+.hub-tile .ht-name { overflow-wrap: normal; hyphens: auto; -webkit-hyphens: auto; min-width: 0; }
+/* плитка-ссылка («Виртуальный офис») не должна выглядеть голой ссылкой */
+a.proj-new, a.proj-new:hover { text-decoration: none; color: inherit; }
 .card, .tz-cols > *, .mod-cols > *, .nm-cols > * { min-width: 0; }
 .nm-table-wrap { max-width: 100%; }
 /* элементы полосы сессий доступны с клавиатуры */

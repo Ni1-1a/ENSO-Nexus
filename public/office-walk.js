@@ -2,8 +2,9 @@
 /**
  * Ходьба от первого лица: WASD / стрелки, Shift — бег, мышь — взгляд
  * (Pointer Lock), на телефоне — левый джойстик и правая половина экрана
- * для взгляда. Высота глаз идёт по ярусам амфитеатра (heightAt), столбы,
- * столы и стены не проходятся (blocked).
+ * для взгляда. Высота глаз идёт по полу помещения (heightAt с учётом
+ * этажа: лестница и антресоль), за стены выйти нельзя (inside), столы,
+ * стойки и машины не проходятся (blocked).
  */
 
 import * as THREE from './vendor/three.module.min.js';
@@ -11,18 +12,19 @@ import * as THREE from './vendor/three.module.min.js';
 const EYE = 1.65;
 
 export class WalkRig {
-  constructor(camera, dom, { heightAt = () => 0, blocked = () => false, bounds = { minX: -15, maxX: 15, minZ: -10, maxZ: 20 } } = {}) {
+  constructor(camera, dom, { heightAt = () => 0, blocked = () => false, inside = null, bounds = { minX: -15, maxX: 15, minZ: -10, maxZ: 20 } } = {}) {
     this.camera = camera;
     this.dom = dom;
-    this.heightAt = heightAt;
+    this.heightAt = heightAt;   // (x, z, prevFloorY) → высота пола
     this.blocked = blocked;
-    this.bounds = bounds;
+    this.inside = inside || ((x, z) => x > bounds.minX && x < bounds.maxX && z > bounds.minZ && z < bounds.maxZ);
     this.enabled = false;
     this.locked = false;
     this.keys = new Set();
     this.euler = new THREE.Euler(0, 0, 0, 'YXZ');
     this.vel = new THREE.Vector3();
     this.bobT = 0;
+    this.floorY = 0;
     this.joy = { x: 0, y: 0, active: false };
     this.onLockChange = null;
     this.onStep = null;
@@ -48,7 +50,6 @@ export class WalkRig {
       this.locked = document.pointerLockElement === this.dom;
       if (this.onLockChange) this.onLockChange(this.locked);
     };
-    // касания: левая половина — джойстик, правая — взгляд
     this._touches = new Map();
     this._onTouchStart = (e) => {
       if (!this.enabled) return;
@@ -118,9 +119,10 @@ export class WalkRig {
     try { this.dom.requestPointerLock(); } catch { /* телефон — замка нет, взгляд по касанию */ }
   }
 
-  teleport(pos, lookAt) {
+  teleport(pos, lookAt, floorY = null) {
     const p = new THREE.Vector3(...pos);
-    p.y = this.heightAt(p.x, p.z) + EYE;
+    this.floorY = floorY === null ? this.heightAt(p.x, p.z, p.y || 0) : floorY;
+    p.y = this.floorY + EYE;
     this.camera.position.copy(p);
     if (lookAt) {
       const target = new THREE.Vector3(...lookAt);
@@ -143,20 +145,23 @@ export class WalkRig {
     const len = Math.hypot(fwd, side) || 1;
     fwd /= len; side /= len;
 
-    // направление по горизонту
     const dir = new THREE.Vector3();
     this.camera.getWorldDirection(dir);
     dir.y = 0; dir.normalize();
     const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0));
     const target = new THREE.Vector3().addScaledVector(dir, fwd * speed).addScaledVector(right, side * speed);
-    // инерция
     this.vel.lerp(target, Math.min(1, dt * 9));
 
     const p = this.camera.position;
     const nx = p.x + this.vel.x * dt;
     const nz = p.z + this.vel.z * dt;
-    const b = this.bounds;
-    const ok = (x, z) => x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ && !this.blocked(x, z);
+    // шаг допустим, если точка внутри помещений, не в препятствии и пол не выше
+    // подъёма ступени (0.45 м): так лестница проходится, а антресоль с пола — нет
+    const ok = (x, z) => {
+      if (!this.inside(x, z) || this.blocked(x, z)) return false;
+      const h = this.heightAt(x, z, this.floorY);
+      return Math.abs(h - this.floorY) < 0.45;
+    };
     if (ok(nx, nz)) { p.x = nx; p.z = nz; }
     else if (ok(nx, p.z)) { p.x = nx; this.vel.z = 0; }
     else if (ok(p.x, nz)) { p.z = nz; this.vel.x = 0; }
@@ -169,7 +174,8 @@ export class WalkRig {
       if (this._stepAcc > (run ? 0.32 : 0.5)) { this._stepAcc = 0; if (this.onStep) this.onStep(); }
     }
     const bob = moving ? Math.sin(this.bobT) * 0.028 : 0;
-    const floorY = this.heightAt(p.x, p.z) + EYE + bob;
-    p.y += (floorY - p.y) * Math.min(1, dt * 10);
+    this.floorY = this.heightAt(p.x, p.z, this.floorY);
+    const eyeY = this.floorY + EYE + bob;
+    p.y += (eyeY - p.y) * Math.min(1, dt * 10);
   }
 }

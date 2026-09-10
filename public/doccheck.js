@@ -384,7 +384,9 @@
         h('td', {}, [r.doc_type ? (typeById(r.doc_type) || { label: r.doc_type }).label : '—',
           r.prompt_id ? ` · ${r.prompt_id}` : ''].join('')),
         h('td', {}, h('span', { class: 'mod-badge', 'data-run': r.status },
-          r.status === 'running' && r.progress ? r.progress : (RUN_LABEL[r.status] || r.status))),
+          r.status === 'running' && r.progress ? r.progress
+            // прогон без нейросети — только тип по маркерам: «готово» без оговорки читалось как «проверено»
+            : (r.status === 'done' && !r.provider ? 'готово без модели: только тип' : (RUN_LABEL[r.status] || r.status)))),
         h('td', {}, r.findings_count != null ? String(r.findings_count) : (r.status === 'failed' ? (r.error_text || 'ошибка') : '—')),
         h('td', { class: 'row-actions' }, h('button', {
           class: 'btn btn-quiet btn-sm', type: 'button',
@@ -421,7 +423,9 @@
     state.check.document_note = note || '';
     renderCheckDoc();
     if (data.runId) {
-      toast('Документ загружен — проверка запустилась');
+      // без нейросети прогон стартует ради типа по маркерам, но профильной проверки не будет — сказать сразу
+      if (data.hint) toast(`Документ загружен. ${data.hint}`, 'error');
+      else toast('Документ загружен — проверка запустилась');
       location.hash = `#/r/${data.runId}`;
     } else {
       toast('Документ сохранён; прогон уже идёт — откройте его из списка', 'error');

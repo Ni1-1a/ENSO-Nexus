@@ -7,7 +7,7 @@
   <meta name="description" content="Диспетчерский зал платформы: агенты за работой, центральный экран проекта, стол с участком в 3D, шахматы, го и кубик Рубика">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=56">
-  <link rel="stylesheet" href="office.css?v=2">
+  <link rel="stylesheet" href="office.css?v=3">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M18 72l32-18 32 18-32 18z' fill='none' stroke='%23B95740' stroke-width='5' stroke-linejoin='round'/><path d='M34 44h32v18H34z' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M42 30h16v14H42z' fill='none' stroke='%23B95740' stroke-width='5'/></svg>">
 </head>
@@ -33,6 +33,15 @@
       <button data-goto="screen" type="button">Экран</button>
       <button data-goto="table" type="button">Стол</button>
     </nav>
+    <label class="sr-only" for="ob-place">Другие помещения</label>
+    <select id="ob-place" class="ob-chip ob-select" title="Другие помещения">
+      <option value="">Ещё…</option>
+      <option value="aquarium">Аквариум</option>
+      <option value="meeting">Переговорная</option>
+      <option value="library">Библиотека</option>
+      <option value="garage">Мастерская</option>
+      <option value="reactor">Зал реактора</option>
+    </select>
     <button id="ob-walk" class="ob-icon" type="button" aria-pressed="false" title="Пройтись (F): WASD — идти, мышь — смотреть"><svg class="ico"><use href="#i-walk"/></svg></button>
     <button id="ob-sound" class="ob-icon" type="button" aria-pressed="false" title="Звук зала"><svg class="ico"><use href="#i-sound-off"/></svg></button>
     <a id="ob-exit" class="ob-icon" href="/" title="Вернуться на платформу"><svg class="ico"><use href="#i-close"/></svg></a>
@@ -93,9 +102,9 @@
 
   <script src="zone-style.js?v=4"></script>
   <script src="vendor/cube.js"></script>
-  <script src="office-data.js?v=2"></script>
+  <script src="office-data.js?v=3"></script>
   <!-- CSP платформы запрещает inline-скрипты, поэтому import map не используется:
        вендорные модули импортируются относительными путями -->
-  <script type="module" src="office.js?v=2"></script>
+  <script type="module" src="office.js?v=3"></script>
 </body>
 </html>

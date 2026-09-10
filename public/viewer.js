@@ -29,11 +29,15 @@
     { id: 'utilities', label: 'Инженерные сети', on: true },
     { id: 'buildings', label: 'Существующая застройка', on: true },
     { id: 'existingObjects', label: 'Прочие объекты', on: true },
+    // выбранный или согласованный вариант посадки: здание обязано быть на плане
+    { id: 'footprint', label: 'Пятно застройки', on: true },
     { id: 'annotations', label: 'Выделения и комментарии', on: true },
   ];
 
   const state = {
     plan: null,
+    variant: null,       // выбранный (согласованный) вариант посадки: {number, footprint, metrics, approved}
+    stage: 'idle',
     run: null,           // последний запуск генерации вариантов
     planId: null,        // версия плана: к ней привязываются аннотации (ТЗ, п. 74)
     version: null,
@@ -105,6 +109,14 @@
           properties: { areaM2: f.areaM2, sharePercent: f.sharePercent, zoneCount: f.zoneCount },
         }]
         : [];
+    }
+    if (layerId === 'footprint') {
+      const v = state.variant;
+      if (!v || !v.footprint) return [];
+      return [{
+        id: 'footprint', type: 'footprint', geometry: v.footprint,
+        properties: { ...(v.metrics || {}), number: v.number, status: v.status, approved: !!v.approved },
+      }];
     }
     if (layerId === 'annotations') {
       return state.annotations.map((a) => ({
@@ -215,6 +227,11 @@
         if (layer.id === 'forbidden') {
           path.style.fill = window.ZoneStyle.FORBIDDEN.fill;
           path.style.stroke = window.ZoneStyle.FORBIDDEN.color;
+        }
+        // пятно застройки — тем же цветом, что в миниатюрах ленты, отчёте и чертеже
+        if (layer.id === 'footprint') {
+          path.style.fill = window.ZoneStyle.FOOTPRINT.fill;
+          path.style.stroke = window.ZoneStyle.FOOTPRINT.color;
         }
         g.appendChild(path);
       }
@@ -346,6 +363,13 @@
       lines.push('поверх подложки — штриховка каждой зоны своим цветом: цвет = объект, угол = тип ограничения');
       return lines.join('\n');
     }
+    if (layerId === 'footprint') {
+      lines.push(`Пятно застройки — вариант ${p.number}${p.approved ? ' (согласован)' : ' (выбран, ещё не согласован)'}`);
+      lines.push(`${p.shapeLabel || 'форма'}${Number.isFinite(p.corners) ? ` · ${p.corners} углов` : ''}${p.orthogonal === false ? ' · есть непрямые углы' : ''}`);
+      lines.push(`${p.areaM2} м² · ${p.width} × ${p.length} м · поворот ${p.rotationDeg}°${p.floors ? ` · ${p.floors} эт.` : ''}`);
+      if (p.shapeNote) lines.push(p.shapeNote);
+      return lines.join('\n');
+    }
     if (layerId === 'annotations') {
       lines.push(p.comment ? `«${p.comment}»` : 'Выделение без комментария');
       if (p.author) lines.push(`автор: ${p.author}`);
@@ -387,7 +411,7 @@
     parcel: 'Границы участка', buildings: 'Здание', redLines: 'Красная линия',
     utilities: 'Инженерная сеть', existingObjects: 'Существующий объект',
     restrictions: 'Зона ограничения', buildable: 'Допустимая территория',
-    forbidden: 'Запретная зона',
+    forbidden: 'Запретная зона', footprint: 'Пятно застройки',
   };
 
   function showTip(text, clientX, clientY) {
@@ -502,9 +526,11 @@
         && state.zoneGroupStyles.length;
       const title = layer.id === 'forbidden' && count
         ? `${layer.label} (${forbiddenSummary()})`
-        : (folded
-          ? `${layer.label} (${state.zoneGroupStyles.length} правил · ${count} зон)`
-          : `${layer.label} (${count})`);
+        : (layer.id === 'footprint' && count
+          ? `${layer.label} — вариант ${state.variant.number} (${state.variant.approved ? 'согласован' : 'выбран'})`
+          : (folded
+            ? `${layer.label} (${state.zoneGroupStyles.length} правил · ${count} зон)`
+            : `${layer.label} (${count})`));
       label.append(cb, swatch, document.createTextNode(title));
       box.appendChild(label);
 
@@ -645,6 +671,8 @@
       state.version = data.version;
       state.annotations = data.annotations || [];
       state.objectEdits = data.objectEdits || [];
+      state.variant = data.variant || null;
+      state.stage = data.stage || 'idle';
       if (data.layers) fillTypeSelect(data.layers);
       const hasGeometry = boundsOfPlan(state.plan);
       empty.hidden = !!hasGeometry;
@@ -859,6 +887,8 @@
       if (shape.dataset.layer === 'annotations') { editAnnotation(shape.dataset.objectId); return; }
       // Shift — набрать пачку: несколько «строений», которые на деле рельеф,
       // переназначаются одной правкой, а не пятью подряд
+      // пятно застройки — не объект чертежа: в пачку правок ему нельзя
+      if (shape.dataset.layer === 'footprint') { openProps(shape.dataset.objectId, shape.dataset.layer); return; }
       if (e.shiftKey) toggleMulti(shape.dataset.objectId, shape.dataset.layer);
       else openProps(shape.dataset.objectId, shape.dataset.layer);
     });
@@ -1015,6 +1045,7 @@
    * переносятся ли, общий комментарий.
    */
   function openBatchProps() {
+    el('vw-props-form').hidden = false;
     el('vw-props-title').textContent = `Выбрано объектов: ${state.multi.length}`;
     const dl = el('vw-props-facts');
     dl.innerHTML = '';
@@ -1027,6 +1058,7 @@
     el('vw-prop-relocation').value = 'undecided';
     el('vw-prop-comment').value = '';
     el('vw-prop-reset').hidden = true;
+    el('vw-prop-save').textContent = `Применить к ${state.multi.length}`;
     el('vw-props-note').textContent = 'Правка применится ко ВСЕМ выбранным объектам.';
     updateFieldHelp();
     showProps();
@@ -1046,6 +1078,25 @@
 
     const dl = el('vw-props-facts');
     dl.innerHTML = '';
+
+    // пятно застройки — результат посадки, а не объект чертежа: правок нет,
+    // только сведения о варианте
+    el('vw-props-form').hidden = layer === 'footprint';
+    el('vw-prop-save').textContent = 'Сохранить';
+    if (layer === 'footprint') {
+      fact(dl, 'Вариант', `${p.number}${p.approved ? ' — согласован' : ' — выбран, ещё не согласован'}`);
+      fact(dl, 'Форма', p.shapeLabel);
+      if (Number.isFinite(p.corners)) fact(dl, 'Углов', `${p.corners}${p.orthogonal === false ? ' (есть непрямые)' : ' (все прямые)'}`);
+      fact(dl, 'Площадь', p.areaM2 ? `${p.areaM2} м²` : '');
+      fact(dl, 'Габарит', p.width && p.length ? `${p.width} × ${p.length} м` : '');
+      fact(dl, 'Поворот', Number.isFinite(p.rotationDeg) ? `${p.rotationDeg}°` : '');
+      fact(dl, 'Этажей', p.floors);
+      fact(dl, 'Задето объектов', p.affectedCount);
+      if (p.shapeNote) fact(dl, 'Примечание', p.shapeNote);
+      showProps();
+      draw();
+      return;
+    }
     fact(dl, 'Тип', TYPE_LABELS[obj.type] || obj.type);
     if (p.parserType) fact(dl, 'Разбор считал', TYPE_LABELS[p.parserType] || p.parserType);
     fact(dl, 'Площадь', p.areaM2 ? `${p.areaM2} м²` : '');
@@ -1119,7 +1170,7 @@
     const btn = el('vw-prop-save');
     btn.disabled = true;
     try {
-      await state.api(`/sessions/${state.session.id}/plan/objects/${encodeURIComponent(state.picked.id)}`, {
+      const res = await state.api(`/sessions/${state.session.id}/plan/objects/${encodeURIComponent(state.picked.id)}`, {
         method: 'POST', json: patch,
       });
       const picked = { ...state.picked };
@@ -1128,12 +1179,63 @@
       // где он теперь лежит, иначе панель показывала бы вчерашнее состояние
       const found = findAnyLayer(picked.id);
       if (found) openProps(found.id, found.layer); else closeProps();
-      window.appToast('Свойства объекта сохранены');
+      announceEffect(res && res.effect, { objectId: picked.id, fromLayer: picked.layer, patch });
     } catch (err) {
       window.appToast(err.message, 'error');
     } finally {
       btn.disabled = false;
     }
+  }
+
+  /**
+   * Правка обязана быть ВИДНА сразу: объект мигает на плане в новом слое,
+   * строка состояния и плашка называют, что изменилось, а лента получает
+   * сигнал перечитать план — иначе карточки согласования продолжают
+   * показывать схему и цифры до правки (это и выглядело как «система ничего
+   * не предпринимает»).
+   */
+  function announceEffect(effect, { objectId, fromLayer, patch } = {}) {
+    const eff = effect || {};
+    const parts = [];
+    if (eff.parcelReplaced) parts.push('контур назначен границей участка');
+    else if (eff.typeLabel && patch && patch.type) {
+      // имя слоя — то же, что в списке слоёв («Инженерные сети»), а не подпись объекта
+      const layerName = (id) => ((LAYERS.find((l) => l.id === id) || {}).label || LAYER_TITLES[id] || id);
+      parts.push(`объект теперь «${eff.typeLabel}»`
+        + (eff.layer && fromLayer && eff.layer !== fromLayer ? ` — переехал в слой «${layerName(eff.layer)}»` : ''));
+    }
+    if (patch && patch.relocation && patch.relocation !== 'undecided') parts.push(`решение: ${RELOCATION_LABELS[patch.relocation] || patch.relocation}`);
+    if (eff.zonesRecomputed) {
+      parts.push(`зоны пересчитаны${Number.isFinite(eff.buildableM2) ? `, допустимо ${eff.buildableM2} м²` : ''}`);
+    } else if (eff.zonesStale) {
+      parts.push('зоны не пересчитаны — нажмите «Рассчитать ограничения»');
+    }
+    const text = `Правка применена${parts.length ? ': ' + parts.join('; ') : ''}`;
+    el('vw-status').textContent = text;
+    window.appToast(text, eff.zonesStale ? 'error' : undefined);
+    if (objectId) flashObject(objectId);
+    notifyPlanChanged({ objectId, effect: eff });
+  }
+
+  /** Короткая вспышка контура: где именно на плане применилась правка. */
+  function flashObject(objectId) {
+    if (!state.root) return;
+    const path = state.root.querySelector(`[data-object-id="${CSS.escape(objectId)}"]`);
+    if (!path) return;
+    path.classList.remove('vw-flash');
+    // перезапуск анимации: без принудительного reflow повторный класс не мигает
+    void path.getBoundingClientRect();
+    path.classList.add('vw-flash');
+    setTimeout(() => path.classList.remove('vw-flash'), 2200);
+  }
+
+  /** Сообщить остальному приложению, что план изменился: карточки ленты перечитывают его. */
+  function notifyPlanChanged(detail) {
+    try {
+      window.dispatchEvent(new CustomEvent('enso:plan-changed', {
+        detail: { sessionId: state.session && state.session.id, ...(detail || {}) },
+      }));
+    } catch { /* старый браузер без CustomEvent — лента обновится по опросу */ }
   }
 
   /**
@@ -1159,23 +1261,34 @@
     const btn = el('vw-prop-save');
     btn.disabled = true;
     const total = state.multi.length;
+    const ids = state.multi.map((m) => m.id);
     let done = 0;
+    let lastEffect = null;
     const failed = [];
     for (const m of state.multi) {
       el('vw-props-note').textContent = `Применяю: ${done + 1} из ${total}…`;
       try {
-        await state.api(`/sessions/${state.session.id}/plan/objects/${encodeURIComponent(m.id)}`, {
+        const res = await state.api(`/sessions/${state.session.id}/plan/objects/${encodeURIComponent(m.id)}`, {
           method: 'POST', json: patch,
         });
+        lastEffect = (res && res.effect) || lastEffect;
         done++;
       } catch (err) { failed.push(err.message); }
     }
     btn.disabled = false;
     await reloadKeepingView();
     closeProps();
-    window.appToast(failed.length
+    for (const id of ids) flashObject(id);
+    const eff = lastEffect || {};
+    const tail = eff.zonesRecomputed
+      ? `; зоны пересчитаны${Number.isFinite(eff.buildableM2) ? `, допустимо ${eff.buildableM2} м²` : ''}`
+      : (eff.zonesStale ? '; зоны не пересчитаны — нажмите «Рассчитать ограничения»' : '');
+    const text = failed.length
       ? `Применено к ${done} из ${total}; не удалось: ${failed.length} (${failed[0]})`
-      : `Применено к ${done} объектам`, failed.length ? 'error' : undefined);
+      : `Применено к ${done} объектам${tail}`;
+    el('vw-status').textContent = text;
+    window.appToast(text, failed.length ? 'error' : undefined);
+    notifyPlanChanged({ objectIds: ids, effect: eff });
   }
 
   /** Где сейчас лежит объект: после правки типа он мог сменить слой. */
@@ -1191,10 +1304,14 @@
     const edit = state.picked && editOf(state.picked.id);
     if (!edit) return;
     try {
+      const objectId = edit.objectId;
       await state.api(`/sessions/${state.session.id}/plan/objects/${encodeURIComponent(edit.objectKey)}`, { method: 'DELETE' });
       await reloadKeepingView();
       closeProps();
+      if (objectId) flashObject(objectId);
+      el('vw-status').textContent = 'Правка отменена — вернулось то, что определил разбор';
       window.appToast('Правка отменена — вернулось то, что определил разбор');
+      notifyPlanChanged({ objectId, reverted: true });
     } catch (err) { window.appToast(err.message, 'error'); }
   }
 
@@ -1211,6 +1328,7 @@
   function setSelecting(on) {
     state.selecting = on;
     el('vw-select').classList.toggle('active', on);
+    el('vw-select').setAttribute('aria-pressed', String(on));
     el('vw-stage').classList.toggle('selecting', on);
     el('vw-select').textContent = on ? 'Отменить выделение' : 'Выделить область';
     if (!on) { state.pending = null; drawPending(); }
@@ -1411,6 +1529,7 @@
           box.appendChild(li);
         }
       }
+      notifyPlanChanged({ zonesRecomputed: true });
     } catch (err) {
       el('vw-status').textContent = `Ограничения не рассчитаны: ${err.message}`;
       window.appToast(err.message, 'error');

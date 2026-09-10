@@ -49,34 +49,28 @@ export function canvasTexture(w, h, draw) {
   return { canvas, ctx, texture };
 }
 
-/** паркет: доски с тёплым дубом и лёгким шумом */
+/** паркет «ёлочка»: плашки под 45°, разброс тона, тёмные швы */
 export function woodTexture(size = 1024) {
   const { texture } = canvasTexture(size, size, (c) => {
-    c.fillStyle = '#c9ad84';
+    c.fillStyle = '#7d5f42';
     c.fillRect(0, 0, size, size);
-    const rows = 12;
-    const h = size / rows;
-    for (let r = 0; r < rows; r++) {
-      const off = (r % 2) * size * 0.37;
-      for (let k = -1; k < 3; k++) {
-        const x = off + k * size * 0.5;
-        const w = size * 0.5 - 4;
-        const tone = 190 + Math.round(Math.random() * 28);
-        c.fillStyle = `rgb(${tone},${tone - 30},${tone - 68})`;
-        c.fillRect(x, r * h + 1, w, h - 2);
-        // волокна
-        c.strokeStyle = 'rgba(90,60,30,.10)';
-        for (let i = 0; i < 6; i++) {
-          c.beginPath();
-          const y = r * h + 4 + Math.random() * (h - 8);
-          c.moveTo(x, y); c.bezierCurveTo(x + w * 0.3, y + 3, x + w * 0.6, y - 3, x + w, y + 1);
-          c.stroke();
-        }
+    const pw = size / 8, ph = pw / 4.2;
+    c.save();
+    c.translate(size / 2, size / 2); c.rotate(Math.PI / 4); c.translate(-size, -size);
+    for (let row = 0; row < 40; row++) {
+      for (let col = 0; col < 40; col++) {
+        const x = col * pw + (row % 2) * pw / 2, y = row * ph;
+        const l = 56 + Math.random() * 16, hue = 30 + Math.random() * 6;
+        c.fillStyle = `hsl(${hue}, 36%, ${l}%)`;
+        c.fillRect(x + 2, y + 2, pw - 4, ph - 4);
+        c.strokeStyle = 'rgba(70,45,20,.2)'; c.lineWidth = 1;
+        for (let i = 0; i < 3; i++) { c.beginPath(); const yy = y + 6 + Math.random() * (ph - 12); c.moveTo(x + 2, yy); c.bezierCurveTo(x + pw * 0.3, yy + 2, x + pw * 0.6, yy - 2, x + pw - 2, yy + 1); c.stroke(); }
       }
     }
+    c.restore();
   });
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(6, 6);
+  texture.repeat.set(10, 10);
   return texture;
 }
 

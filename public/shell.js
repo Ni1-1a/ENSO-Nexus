@@ -56,6 +56,8 @@
     arrowRight: '<path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round"/>',
     close: '<path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>',
+    // монитор — плитка «Виртуальный офис» на главной (без него в svg попадало «undefined»)
+    screen: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4" stroke-linecap="round"/><path d="M7 12l3-3 2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/>',
   };
 
   const params = new URLSearchParams(location.search);
@@ -479,6 +481,9 @@
 
   /* ---------------- поведение ---------------- */
 
+  // закрыть боковое меню: назначается в wire(), нужно и обработчику выхода, и app.js через EnsoShell
+  let closeDrawer = () => {};
+
   function wire() {
     const btn = $('tb-switch'); const menu = $('tb-menu');
     if (btn && menu) {
@@ -505,6 +510,7 @@
         } else if (document.activeElement && drawer.contains(document.activeElement)) more.focus();
       };
       more.addEventListener('click', () => setDrawer(drawer.hidden));
+      closeDrawer = () => setDrawer(false);
       pdScrim.addEventListener('click', () => setDrawer(false));
       $('pd-close').addEventListener('click', () => setDrawer(false));
       drawer.addEventListener('click', (e) => { if (e.target.closest('a')) setDrawer(false); });
@@ -515,7 +521,9 @@
       const signOut = $('btn-sign-out');
       if (signOut) {
         signOut.addEventListener('click', async () => {
-          // то же подтверждение, что на главной (app.js signOut)
+          // то же подтверждение, что на главной (app.js signOut); панель закрывается
+          // ДО диалога — иначе он открывался под ней (обход 09.09.2026)
+          closeDrawer();
           const ok = await confirmDialog({ title: 'Выйти из записи?', message: 'Проекты и загруженные файлы останутся на месте — они вернутся при следующем входе.', confirmText: 'Выйти' });
           if (ok && window.Auth) window.Auth.signOut();
         });
@@ -657,5 +665,6 @@
     projectHref: (pid) => `/?project=${encodeURIComponent(pid)}`,
     fmtDate, esc, svg, ICONS, headers, getJson,
     dialog, confirm: confirmDialog, prompt: promptDialog,
+    closeDrawer: () => closeDrawer(),
   };
 })();

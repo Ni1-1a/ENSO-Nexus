@@ -521,9 +521,31 @@
     $('v-run-note').textContent = force ? 'Проверка запущена заново…' : 'Загрузка прогона…';
     try {
       const started = await api(`/versions/${encodeURIComponent(versionId)}/check`, { method: 'POST', json: force ? { force: true } : {} });
-      const { run } = await api(`/runs/${started.runId}`);
+      let { run } = await api(`/runs/${started.runId}`);
       state.run = run;
-      renderRun(run, started.cached);
+      renderRun(run, started.cached && run.status === 'done');
+      /*
+       * Прогон ещё идёт — опрашивать до конца, а не рисовать снимок и молчать:
+       * сразу после загрузки версии экран говорил «замечаний нет — проверка
+       * прошла чисто · результат из кэша», хотя сервер только начал, и без F5
+       * ничего не менялось (обход 09.09.2026). Пока идёт — так и написано.
+       */
+      const deadline = Date.now() + 15 * 60 * 1000;
+      const my = (state.pollSeq = (state.pollSeq || 0) + 1); // «Перепроверить» заводит новый цикл — старый замолкает
+      while (['queued', 'running'].includes(run.status) && Date.now() < deadline) {
+        if (!state.version || String(state.version.id) !== String(versionId)) return; // ушли с версии
+        await new Promise((r) => setTimeout(r, 1500));
+        if (my !== state.pollSeq) return;
+        ({ run } = await api(`/runs/${started.runId}`));
+        if (my !== state.pollSeq) return;
+        state.run = run;
+        renderRun(run, false);
+      }
+      if (['queued', 'running'].includes(run.status)) {
+        $('v-run-note').textContent = 'Проверка идёт дольше 15 минут — опрос остановлен, обновите страницу позже.';
+        return;
+      }
+      if (run.status === 'done' || run.status === 'failed') await loadFindings(versionId);
     } catch (err) {
       state.run = null;
       setRunBadge('не выполнен', 'bad');
@@ -545,15 +567,18 @@
     setRunBadge(label, kind);
     const journal = run.journal || [];
     const findings = run.findings || [];
-    const noteParts = [
-      `правил проверено: ${journal.length}`,
-      `замечаний в прогоне: ${findings.length}`,
-      run.finished_at ? `закончен ${fmtDateTime(run.finished_at)}` : null,
-      cached ? 'результат из кэша — комплект файлов и каталог правил не менялись' : null,
-    ].filter(Boolean);
+    const inProgress = ['queued', 'running'].includes(run.status);
+    const noteParts = inProgress
+      ? [`проверка идёт: правил проверено ${journal.length}`, findings.length ? `замечаний пока ${findings.length}` : null]
+      : [
+        `правил проверено: ${journal.length}`,
+        `замечаний в прогоне: ${findings.length}`,
+        run.finished_at ? `закончен ${fmtDateTime(run.finished_at)}` : null,
+        cached && run.status === 'done' ? 'результат из кэша — комплект файлов и каталог правил не менялись' : null,
+      ];
     $('v-run-note').textContent = run.status === 'failed' && run.error
       ? `Прогон упал: ${run.error}`
-      : noteParts.join(' · ');
+      : noteParts.filter(Boolean).join(' · ');
 
     const tbody = $('v-journal');
     tbody.innerHTML = '';
@@ -883,7 +908,7 @@
       if (check.error) {
         toast(`Версия № ${data.version.version_no} загружена, но проверка не запустилась: ${check.error}`, 'error');
       } else {
-        toast(`Версия № ${data.version.version_no} загружена, проверка ${check.cached ? 'взята из кэша' : 'выполнена'}`);
+        toast(`Версия № ${data.version.version_no} загружена, проверка ${check.cached ? 'взята из кэша' : 'запущена'}`);
       }
       state.project = null; // счётчики раздела изменились — перечитать при возврате
       location.hash = `#/v/${data.version.id}`;

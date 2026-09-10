@@ -254,3 +254,8 @@ body[data-tv="1"] #walk-hint, body[data-tv="1"] #crosshair, body[data-tv="1"] #h
 @media (max-width: 700px) {
   #walk-hint { font-size: 12px; padding: 8px 14px; border-radius: 18px; }
 }
+
+/* ---------- выбор помещения в капсуле ---------- */
+.ob-select { appearance: none; -webkit-appearance: none; padding-right: 22px; background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5' fill='none' stroke='%236f665a' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 6px center / 14px; }
+.ob-select:hover { border-color: var(--accent); }
+@media (max-width: 700px) { .ob-select { max-width: 22vw; } }

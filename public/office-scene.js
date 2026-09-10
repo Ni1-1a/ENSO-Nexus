@@ -19,6 +19,7 @@ import { RectAreaLightUniformsLib } from './vendor/RectAreaLightUniformsLib.js';
 import * as P from './office-props.js';
 import { LifeDirector, makeSteam } from './office-life.js';
 import { WalkRig } from './office-walk.js';
+import { buildWings, insideWalkable, floorHeight, LEVEL as WING_LEVEL, MEZZ } from './office-wings.js';
 
 /* палитра платформы + бренд (BRAND задаётся в office-data.js) */
 const PAL = {
@@ -126,9 +127,9 @@ export class OfficeScene {
     this.controls.update();
 
     this.walk = new WalkRig(this.camera, this.canvas, {
-      heightAt,
-      blocked: (x, z) => this._blocked(x, z),
-      bounds: { minX: -15.2, maxX: 15.2, minZ: -9.6, maxZ: 20.2 },
+      heightAt: (x, z, prevY) => floorHeight(x, z, prevY === undefined ? heightAt(x, z) : prevY, heightAt),
+      blocked: (x, z, floorY) => this._blocked(x, z, floorY),
+      inside: insideWalkable,
     });
 
     this.hemi = new THREE.HemisphereLight(0xfff8ee, 0x7a7062, this.pal.hemi);
@@ -183,8 +184,11 @@ export class OfficeScene {
     this.pickables.push(obj);
   }
 
-  _blocked(x, z) {
+  _blocked(x, z, floorY = 0) {
     for (const b of this._blockers) {
+      // below/above — препятствие только на своём этаже (стол переговорной не мешает на антресоли)
+      if (b.below !== undefined && floorY >= b.below) continue;
+      if (b.above !== undefined && floorY < b.above) continue;
       if (b.r !== undefined) { if (Math.hypot(x - b.x, z - b.z) < b.r) return true; }
       else if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) return true;
     }
@@ -205,6 +209,11 @@ export class OfficeScene {
     this._buildWallProps();
     this._buildPostersAndPlants();
     this._buildWalkers();
+    this.wings = buildWings(this.scene, {
+      life: this.life, pickables: this.pickables, blockers: this._blockers, itemAnchors: this.itemAnchors,
+      brand: this.brand, pickable: (obj, info) => this._pickable(obj, info),
+    });
+    this.wings.setDark(this.dark);
   }
 
   _buildFloorsAndTiers() {
@@ -306,8 +315,22 @@ export class OfficeScene {
     };
     mk(32, 9, 0, 4.5, -11.2);
     mk(32, 9, 0, 4.5, 21, Math.PI);
-    mk(34, 9, -16, 4.5, 4, Math.PI / 2);
-    mk(34, 9, 16, 4.5, 4, -Math.PI / 2);
+    // боковые стены зала — до подоконника, с проёмами (z −1.2…1.6) в зал реактора и гараж;
+    // в лобби по бокам стен нет: там стекло аквариума и переговорной (office-wings.js)
+    for (const side of [-1, 1]) {
+      const x = side * 16, ry = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+      mk(10, 5.2, x, 2.6, -6.2, ry);          // z −11.2…−1.2, до подоконника
+      mk(9.4, 5.2, x, 2.6, 6.3, ry);          // z 1.6…11
+      mk(2.8, 0.8, x, 4.8, 0.2, ry);          // перемычка над проёмом
+      mk(22.2, 0.6, x, 8.7, -0.1, ry);        // полоса над окнами
+      const jamb = P.MAT.ink();
+      for (const zz of [-1.2, 1.6]) { const j = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.4, 0.12), jamb); j.position.set(x, 2.2 + WING_LEVEL, zz); this.scene.add(j); }
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 2.9), jamb); head.position.set(x, WING_LEVEL + 4.42, 0.2); this.scene.add(head);
+      const led = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 2.7), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.8 })); led.position.set(x - side * 0.12, WING_LEVEL + 4.34, 0.2); this.scene.add(led); this.life.strips.push(led);
+      const doorSign = P.canvasTexture(512, 128, (c) => { c.fillStyle = '#26211b'; c.fillRect(0, 0, 512, 128); c.fillStyle = '#f3efe6'; c.font = '600 54px -apple-system, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(side < 0 ? 'ЗАЛ РЕАКТОРА' : 'МАСТЕРСКАЯ', 256, 64); });
+      const ds = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.4), new THREE.MeshBasicMaterial({ map: doorSign.texture, toneMapped: false }));
+      ds.position.set(x - side * 0.2, WING_LEVEL + 4.75, 0.2); ds.rotation.y = ry; this.scene.add(ds);
+    }
     // плинтусы тушью по периметру фойе и сцены
     const skirt = P.MAT.ink();
     for (const [w, h, x, y, z] of [[32, 0.1, 0, CONCOURSE_Y + 0.05, 20.95], [0.1, 0.1, -15.95, CONCOURSE_Y + 0.05, 13.5], [0.1, 0.1, 15.95, CONCOURSE_Y + 0.05, 13.5]]) {
@@ -373,19 +396,21 @@ export class OfficeScene {
     }
 
     // окна над галереями
+    // окна над крыльями: стеклянная лента 5.2…8.4 м, за ней — сад (office-wings.buildGardens)
     this._windows = [];
-    const winMat = new THREE.MeshBasicMaterial({ color: p.window });
-    for (const sx of [-15.9, 15.9]) {
-      for (let i = 0; i < 5; i++) {
-        const m = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 2.2), winMat);
-        m.position.set(sx, 6.6, -7 + i * 4.2);
-        m.rotation.y = sx < 0 ? Math.PI / 2 : -Math.PI / 2;
-        this.scene.add(m);
-        this._windows.push(m);
-        const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.3, 0.06), P.MAT.graphite());
-        mullion.position.set(sx + (sx < 0 ? 0.02 : -0.02), 6.6, -7 + i * 4.2);
+    const winMat = new THREE.MeshPhysicalMaterial({ color: 0xdfeaf2, transmission: 0.92, thickness: 0.02, roughness: 0.03, ior: 1.45, transparent: true, side: THREE.DoubleSide });
+    for (const sx of [-15.95, 15.95]) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(21, 3.2), winMat);
+      m.position.set(sx, 6.8, -0.6);
+      m.rotation.y = sx < 0 ? Math.PI / 2 : -Math.PI / 2;
+      this.scene.add(m);
+      this._windows.push(m);
+      for (let i = 0; i <= 6; i++) {
+        const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.08, 3.3, 0.08), P.MAT.graphite());
+        mullion.position.set(sx, 6.8, -11 + i * 3.5);
         this.scene.add(mullion);
       }
+      const sill = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 21), P.MAT.graphite()); sill.position.set(sx, 5.15, -0.6); this.scene.add(sill);
     }
   }
 
@@ -474,8 +499,9 @@ export class OfficeScene {
     const W = this.screenCanvas.width, H = this.screenCanvas.height;
     const brand = this.brand;
     // фон: глубокий графит с мягким градиентом
+    // палитра сайта ENSO-Engineering: чёрный фон, белый текст, серые панели
     const bg = c.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#111820'); bg.addColorStop(1, '#0b1016');
+    bg.addColorStop(0, '#141414'); bg.addColorStop(1, '#0a0a0b');
     c.fillStyle = bg; c.fillRect(0, 0, W, H);
     // сетка-подложка
     c.strokeStyle = 'rgba(255,255,255,.035)'; c.lineWidth = 1;
@@ -486,21 +512,20 @@ export class OfficeScene {
       c.fillStyle = 'rgba(255,255,255,.05)';
       c.beginPath(); c.roundRect(x, y, w, h, 18); c.fill();
       c.strokeStyle = 'rgba(255,255,255,.12)'; c.lineWidth = 2; c.stroke();
-      c.fillStyle = brand.primary; c.fillRect(x + 22, y + 20, 6, 34);
-      c.fillStyle = 'rgba(243,239,230,.9)';
+      c.fillStyle = '#ffffff'; c.fillRect(x + 22, y + 20, 6, 34);
+      c.fillStyle = 'rgba(255,255,255,.92)';
       c.font = '600 30px -apple-system, "Helvetica Neue", sans-serif';
       c.textAlign = 'left'; c.textBaseline = 'top';
       c.fillText(title, x + 42, y + 20);
     };
     c.textBaseline = 'top';
 
-    // шапка: бренд, проект, часы
-    c.fillStyle = 'rgba(243,239,230,.55)';
-    c.font = '600 26px -apple-system, sans-serif';
-    c.fillText(brand.name.toUpperCase(), 48, 26);
-    c.fillStyle = '#f3efe6';
+    // шапка: логотип компании (SVG с сайта) или имя, проект, часы
+    if (this._logoImg) c.drawImage(this._logoImg, 48, 30, 190, 70);
+    else { c.fillStyle = 'rgba(255,255,255,.6)'; c.font = '600 26px -apple-system, sans-serif'; c.fillText(brand.name.toUpperCase(), 48, 26); }
+    c.fillStyle = '#ffffff';
     c.font = '600 60px Georgia, "New York", serif';
-    c.fillText(data && data.project ? data.project.name : 'Enso-nexus', 48, 58);
+    c.fillText(data && data.project ? data.project.name : 'Enso-nexus', 270, 40);
     c.textAlign = 'right';
     c.font = '500 44px ui-monospace, Menlo, monospace';
     c.fillStyle = 'rgba(243,239,230,.8)';
@@ -567,7 +592,7 @@ export class OfficeScene {
           c.fillStyle = 'rgba(243,239,230,.85)'; c.font = '26px -apple-system, sans-serif';
           c.fillText(this._clip(c, pr.provider || pr.id || '', 260), mx + midW - 460, by);
           const wbar = Math.max(6, (pr.requests / Math.max(1, data.stats.requests)) * 300);
-          c.fillStyle = brand.primary; c.fillRect(mx + midW - 460, by + 36, wbar, 10);
+          c.fillStyle = 'rgba(255,255,255,.7)'; c.fillRect(mx + midW - 460, by + 36, wbar, 10);
           c.fillStyle = 'rgba(243,239,230,.5)'; c.font = '22px ui-monospace, monospace';
           c.fillText(`${pr.requests}`, mx + midW - 140, by + 30);
           by += 78;
@@ -603,7 +628,7 @@ export class OfficeScene {
       const maxC = Math.max(...days.map((d) => d.costUsd), 0.01);
       for (let i = 0; i < days.length; i++) {
         const bh = Math.max(4, (days[i].costUsd / maxC) * 110);
-        c.fillStyle = i === days.length - 1 ? brand.primary : 'rgba(208,113,90,.6)';
+        c.fillStyle = i === days.length - 1 ? '#ffffff' : 'rgba(255,255,255,.45)';
         c.beginPath(); c.roundRect(rx + 30 + i * bw, top + 340 - bh, Math.max(3, bw - 5), bh, 3); c.fill();
       }
     }
@@ -895,7 +920,7 @@ export class OfficeScene {
       this.monitors.set(module, mc);
     }
     const mon = P.makeMonitor({ texture: module ? mc.texture : this._idle.texture });
-    mon.position.set(0, 1.2, -0.05);
+    mon.position.set(0, 1.2, 0.42); // ось группы — у человека, панель (−R) над задней третью стола, подошва на столешнице
     g.add(mon);
     const kb = P.makeKeyboard(); kb.position.set(-0.08, 0.775, 0.14); g.add(kb);
     const mouse = P.makeMouse(); mouse.position.set(0.28, 0.775, 0.16); g.add(mouse);
@@ -1047,10 +1072,11 @@ export class OfficeScene {
     // секретарь стоит за стойкой
     const s = P.makePerson({ hair: 0x4b3222, skin: 0xf0cdaa, female: true, standing: true, polo: this.brand.poloHex || 0xb95740 });
     s.group.position.set(0, 0, -0.85);
+    s.group.rotation.y = Math.PI; // лицо модели смотрит в −z, гость входит с +z
     g.add(s.group);
     this.secretary = s;
     // монитор секретаря и телефон
-    const smon = P.makeMonitor({ texture: this._idle.texture }); smon.scale.setScalar(0.6); smon.position.set(-0.9, 1.4, -0.2); smon.rotation.y = Math.PI; g.add(smon);
+    const smon = P.makeMonitor({ texture: this._idle.texture }); smon.scale.setScalar(0.6); smon.position.set(-0.9, 1.37, -0.55); smon.rotation.y = Math.PI; g.add(smon);
     const ph = P.makePhone(); ph.position.set(0.8, 1.15, -0.1); g.add(ph);
     this.scene.add(g);
     this._pickable(g, { kind: 'secretary' });
@@ -1079,7 +1105,7 @@ export class OfficeScene {
     this.scene.add(signMesh);
     if (this.brand.logoUrl) {
       const img = new Image();
-      img.onload = () => { this._drawBrandSign(sign.ctx, img); sign.texture.needsUpdate = true; };
+      img.onload = () => { this._logoImg = img; this._drawBrandSign(sign.ctx, img); sign.texture.needsUpdate = true; if (this._sceneData) this._drawScreen(this._sceneData); };
       img.src = this.brand.logoUrl;
     }
     const signLed = new THREE.Mesh(new THREE.BoxGeometry(10.4, 0.03, 0.03), new THREE.MeshBasicMaterial({ color: 0xfff1e0, transparent: true, opacity: 0.8 }));
@@ -1106,14 +1132,14 @@ export class OfficeScene {
         c.font = '30px -apple-system, sans-serif'; c.fillStyle = this.dark ? '#9a8f80' : '#6f665a';
         this._wrapText(c, pl.sub, 256, 232, 400, 38);
       });
+      // на перегородке лобби по обе стороны проёма, лицом к входящему (боковые стены лобби — стекло крыльев)
       const side = i < 3 ? -1 : 1;
       const m = new THREE.Group();
       const art = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.05), new THREE.MeshBasicMaterial({ map: t.texture, toneMapped: false }));
       art.position.z = 0.02; m.add(art);
       const frame = new THREE.Mesh(new THREE.BoxGeometry(1.62, 1.17, 0.04), P.MAT.walnut());
       m.add(frame);
-      m.position.set(side * 15.8, y0 + 2.1, 12.8 + (i % 3) * 2.5);
-      m.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+      m.position.set(side * (7.0 + (i % 3) * 2.4), y0 + 2.2, 11.2);
       this.scene.add(m);
       this._pickable(m, { kind: 'plaque', index: i });
     });
@@ -1158,7 +1184,7 @@ export class OfficeScene {
     }
     const steam = makeSteam(); steam.position.set(0.16, 0.78, 0); g.add(steam); this.life.steam = steam;
     const tm = P.makePerson({ hair: 0x1d1a17, skin: 0xd9a878, polo: this.brand.poloHex || 0xb95740 });
-    tm.group.position.set(0, 0, 1.05); tm.group.rotation.y = Math.PI; g.add(tm.group);
+    tm.group.position.set(0, 0, 1.05); g.add(tm.group); // лицом к столу (−z)
     this.teaMaster = tm;
     for (const a of [-0.9, 2.2, 4.0]) {
       const st = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, 0.45, 16), P.MAT.white());
@@ -1184,6 +1210,19 @@ export class OfficeScene {
     const sheet = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.0), new THREE.MeshBasicMaterial({ map: drawing.texture, toneMapped: false }));
     sheet.position.set(0, 1.46, 0.033); sheet.rotation.x = -0.28; g.add(sheet);
     const ruler = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.03, 0.02), P.MAT.brushed()); ruler.position.set(0, 1.25, 0.06); ruler.rotation.x = -0.28; g.add(ruler);
+    // рейсшина с кареткой на направляющей, угольник, зажимы, лоток с карандашами, табурет
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.18, 0.03), P.MAT.brushed()); rail.position.set(-0.86, 1.45, 0.05); rail.rotation.x = -0.28; g.add(rail);
+    const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.06), P.MAT.graphite()); carriage.position.set(-0.86, 1.62, 0.07); carriage.rotation.x = -0.28; g.add(carriage);
+    const tsq = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.025, 0.02), P.MAT.brushed()); tsq.position.set(-0.05, 1.62, 0.075); tsq.rotation.x = -0.28; g.add(tsq);
+    const setsq = new THREE.Mesh(new THREE.ShapeGeometry((() => { const sh = new THREE.Shape(); sh.moveTo(0, 0); sh.lineTo(0.32, 0); sh.lineTo(0, 0.24); sh.closePath(); return sh; })()), new THREE.MeshPhysicalMaterial({ color: 0xe3b96a, transparent: true, opacity: 0.55, roughness: 0.1, side: THREE.DoubleSide }));
+    setsq.position.set(0.25, 1.3, 0.05); setsq.rotation.x = -0.28; g.add(setsq);
+    for (const sx of [-0.62, 0.62]) { const clip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.05, 0.03), P.MAT.black()); clip.position.set(sx, 1.98, 0.05); clip.rotation.x = -0.28; g.add(clip); }
+    const tray = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.09), P.MAT.walnut()); tray.position.set(0.35, 0.82, 0.24); g.add(tray);
+    for (let i = 0; i < 5; i++) { const pen = i % 2 ? P.makePen() : P.makePerfectPencil(); pen.position.set(0.15 + i * 0.09, 0.85, 0.24); pen.rotation.y = Math.PI / 2 + (Math.random() - 0.5) * 0.3; g.add(pen); }
+    const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.06, 20), P.MAT.walnut()); stool.position.set(0.2, 0.7, 0.85); g.add(stool);
+    const stoolPole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.68, 8), P.MAT.chrome()); stoolPole.position.set(0.2, 0.36, 0.85); g.add(stoolPole);
+    const stoolBase = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.02, 8, 24), P.MAT.chrome()); stoolBase.rotation.x = Math.PI / 2; stoolBase.position.set(0.2, 0.03, 0.85); g.add(stoolBase);
+    g.add(P.makeContactShadow(2.2, 1.6, 0.35));
     for (const sx of [-0.6, 0.6]) {
       for (const [z, rx] of [[0.25, 0.2], [-0.25, -0.2]]) {
         const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.8, 8), P.MAT.brushed());
@@ -1327,6 +1366,14 @@ export class OfficeScene {
 
   setSceneData(data) {
     this._sceneData = data;
+    // на кульмане — настоящий план проекта, как только он пришёл
+    if (data.geometry && data.geometry.parcel && this._blueprintCtx && !this._blueprintDrawn) {
+      this._blueprintDrawn = true;
+      const c = this._blueprintCtx.ctx;
+      this._drawBlueprint(c);
+      this._drawPlanOnScreen(c, 60, 60, 600, 500, data.geometry);
+      this._blueprintCtx.texture.needsUpdate = true;
+    }
     this.life.setModuleStates(data.modules);
     for (const m of MODULES) this._drawMonitor(m, data);
     this._drawScreen(data);
@@ -1358,7 +1405,7 @@ export class OfficeScene {
   goTo(view, ms = 1400) {
     const v = VIEWS[view];
     if (!v) return;
-    if (this.walkMode) { this.walk.teleport([v.walk[0], 0, v.walk[1]], [v.look[0], 0, v.look[1]]); return; }
+    if (this.walkMode) { this.walk.teleport([v.walk[0], 0, v.walk[1]], [v.look[0], 0, v.look[1]], null); return; }
     this._tweenTo(new THREE.Vector3(...v.pos), new THREE.Vector3(...v.tgt), this.reducedMotion ? 0 : ms);
   }
 
@@ -1370,7 +1417,7 @@ export class OfficeScene {
       const wx = w.x !== undefined ? w.x : w[0], wz = w.z !== undefined ? w.z : w[1];
       const l = a.look;
       const lx = l.x !== undefined ? l.x : l[0], lz = l.z !== undefined ? l.z : l[1];
-      this.walk.teleport([wx, 0, wz], [lx, 0, lz]);
+      this.walk.teleport([wx, 0, wz], [lx, 0, lz], a.floorY === undefined ? null : a.floorY);
       return;
     }
     this._tweenTo(new THREE.Vector3(...a.camPos), new THREE.Vector3(...a.camTgt), this.reducedMotion ? 0 : ms);
@@ -1473,6 +1520,7 @@ export class OfficeScene {
       }
     }
 
+    if (this.wings) this.wings.update(dt, t);
     if (this.walkMode) this.walk.update(dt); else this.controls.update();
     // зеркальный паркет — второй проход рендера; нужен только когда камера в фойе/лобби
     if (this._mirror) this._mirror.visible = this.camera.position.z > 5.5;
@@ -1530,6 +1578,7 @@ export class OfficeScene {
     for (const w of this._windows) w.material.color.set(p.window);
     for (const s of this._strips) s.material.color.set(p.strip);
     for (const s of this._spots) s.intensity = p.spots * 60;
+    if (this.wings) this.wings.setDark(dark);
     if (this._sceneData) this._drawScreen(this._sceneData);
   }
 
