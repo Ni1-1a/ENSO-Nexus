@@ -129,22 +129,27 @@ export class LifeDirector {
     const lerp = (obj, key, target, k = dt * 5) => { obj.rotation[key] += (target - obj.rotation[key]) * Math.min(1, k); };
 
     switch (a.state) {
+      /*
+       * Углы пересчитаны от НАСТОЯЩЕЙ геометрии (В13): плечевой сустав на
+       * отметке 1.03, плечо 270 мм, предплечье 250 мм, столешница 0.775.
+       * Прежние 0.95/0.62 оставляли кисть в воздухе над клавиатурой.
+       */
       case 'typing':
-        lerp(r.armL.shoulder, 'x', 0.95); lerp(r.armR.shoulder, 'x', 0.95);
-        lerp(r.armL.elbow, 'x', 0.62 + Math.sin(t * 14 + ph) * 0.06);
-        lerp(r.armR.elbow, 'x', 0.62 + Math.cos(t * 12 + ph * 2) * 0.06, dt * 12);
+        lerp(r.armL.shoulder, 'x', 0.34); lerp(r.armR.shoulder, 'x', 0.34);
+        lerp(r.armL.elbow, 'x', 1.29 + Math.sin(t * 14 + ph) * 0.05);
+        lerp(r.armR.elbow, 'x', 1.29 + Math.cos(t * 12 + ph * 2) * 0.05, dt * 12);
         lerp(r.head, 'y', Math.sin(t * 0.6 + ph) * 0.08);
         lerp(r.head, 'x', 0.08);
         break;
       case 'reading':
-        lerp(r.armL.shoulder, 'x', 0.7); lerp(r.armR.shoulder, 'x', 0.7);
-        lerp(r.armL.elbow, 'x', 1.35); lerp(r.armR.elbow, 'x', 1.35);
+        lerp(r.armL.shoulder, 'x', 0.17); lerp(r.armR.shoulder, 'x', 0.17);
+        lerp(r.armL.elbow, 'x', 2.08); lerp(r.armR.elbow, 'x', 2.08);
         lerp(r.head, 'x', 0.32); lerp(r.head, 'y', Math.sin(t * 0.3 + ph) * 0.1);
         break;
       case 'sipping': {
         const k = Math.min(1, (t - a.t0) / 0.8);
-        lerp(r.armR.shoulder, 'x', 0.6 + k * 0.35); lerp(r.armR.elbow, 'x', 1.9 * k + 0.4);
-        lerp(r.armL.shoulder, 'x', 0.85); lerp(r.armL.elbow, 'x', 0.7);
+        lerp(r.armR.shoulder, 'x', 0.34 + k * 1.33); lerp(r.armR.elbow, 'x', 1.29 + k * 0.98);
+        lerp(r.armL.shoulder, 'x', 0.34); lerp(r.armL.elbow, 'x', 1.29);
         lerp(r.head, 'x', -0.15 * k);
         break;
       }
@@ -155,19 +160,37 @@ export class LifeDirector {
         lerp(r.torso, 'x', -0.12);
         break;
       case 'phone':
-        lerp(r.armR.shoulder, 'x', 0.5); lerp(r.armR.shoulder, 'z', -0.9); lerp(r.armR.elbow, 'x', 2.3);
-        lerp(r.armL.shoulder, 'x', 0.85); lerp(r.armL.elbow, 'x', 0.7);
+        lerp(r.armR.shoulder, 'x', 0.9); lerp(r.armR.shoulder, 'z', -0.9); lerp(r.armR.elbow, 'x', 2.5);
+        lerp(r.armL.shoulder, 'x', 0.34); lerp(r.armL.elbow, 'x', 1.29);
         lerp(r.head, 'y', 0.4 + Math.sin(t * 0.9) * 0.1); lerp(r.head, 'z', 0.12);
         break;
       default: // look
-        lerp(r.armL.shoulder, 'x', 0.85); lerp(r.armR.shoulder, 'x', 0.85);
-        lerp(r.armL.elbow, 'x', 0.7); lerp(r.armR.elbow, 'x', 0.7);
+        lerp(r.armL.shoulder, 'x', 0.30); lerp(r.armR.shoulder, 'x', 0.30);
+        lerp(r.armL.elbow, 'x', 1.25); lerp(r.armR.elbow, 'x', 1.25);
         lerp(r.head, 'y', Math.sin(t * 0.35 + ph) * 0.6); lerp(r.head, 'x', 0.02);
     }
     if (a.state !== 'phone') { lerp(r.armR.shoulder, 'z', 0); lerp(r.head, 'z', 0); }
     if (a.state !== 'stretch') lerp(r.torso, 'x', 0);
     if (a.props.mug) a.props.mug.visible = a.state !== 'sipping';
     if (a.props.handMug) a.props.handMug.visible = a.state === 'sipping';
+    this._face(a, r, dt, t);
+  }
+
+  /**
+   * Моргание и речь (В13). Живое лицо — это не мимика ради мимики: с двух
+   * метров неподвижные глаза читаются как манекен. Пауза между морганиями
+   * 2.5…6 с, само моргание 130 мс; рот двигается, пока агент «говорит».
+   */
+  _face(a, r, dt, t) {
+    if (!r.face) return;
+    if (a.blinkAt === undefined) a.blinkAt = t + rnd(1, 5);
+    if (t >= a.blinkAt) {
+      const k = (t - a.blinkAt) / 0.13;
+      if (k >= 1) { r.face.blink(1); a.blinkAt = t + rnd(2.5, 6); }
+      else r.face.blink(Math.abs(k * 2 - 1));            // вниз и обратно
+    }
+    const talking = a.state === 'phone';
+    r.face.speak(talking ? Math.max(0, Math.sin(t * 9 + r.phase)) * 0.9 : 0);
   }
 
   _walk(w, dt, t) {

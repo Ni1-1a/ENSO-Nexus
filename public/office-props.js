@@ -13,6 +13,10 @@ import { mergeGeometries } from './vendor/BufferGeometryUtils.js';
 
 export const PHI = 1.618;
 
+/** максимальная анизотропия рендера; ставится сценой при старте */
+let MAX_ANISO = 8;
+export function setMaxAnisotropy(v) { MAX_ANISO = Math.max(1, v | 0); }
+
 /* ---------- материалы ---------- */
 
 export function std(color, opts = {}) {
@@ -45,7 +49,7 @@ export function canvasTexture(w, h, draw) {
   draw(ctx, w, h);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
+  texture.anisotropy = MAX_ANISO;
   return { canvas, ctx, texture };
 }
 
@@ -70,9 +74,25 @@ export function woodTexture(size = 1024) {
     c.restore();
   });
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(10, 10);
+  texture.repeat.set(2, 2);
   return texture;
 }
+
+/**
+ * Плотность текстуры — 512 пикселей на метр от РЕАЛЬНОГО размера грани.
+ * Один общий экземпляр с зашитым repeat давал полоски на ступени 0,34 м
+ * и муар на кольце в 40 м: рисунок не может быть одинаковым числом повторов.
+ */
+export function tiled(texture, widthM, heightM, px = 512, size = 1024) {
+  const t = texture.clone();
+  t.needsUpdate = true;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(Math.max(0.05, (widthM * px) / size), Math.max(0.05, (heightM * px) / size));
+  t.anisotropy = MAX_ANISO;
+  return t;
+}
+
+
 
 /* ---------- стол-капсула ---------- */
 
@@ -546,15 +566,43 @@ export function drawMechanicalPoster(c, w, h, kind) {
     c.beginPath(); c.moveTo(cx - w * 0.2, cy + h * 0.06); c.lineTo(cx + w * 0.2, cy + h * 0.06); c.stroke();
     for (let i = -3; i <= 3; i++) { c.beginPath(); c.moveTo(cx + i * w * 0.05, cy + h * 0.06); c.lineTo(cx + i * w * 0.05 + w * 0.03, cy + h * 0.17); c.stroke(); }
   }
-  // подписи: номер серии и название — типографика внизу слева (φ-отступ)
-  c.fillStyle = '#f3efe6';
-  c.font = `600 ${Math.round(w * 0.055)}px -apple-system, "Helvetica Neue", sans-serif`;
+  /*
+   * ПОДПИСЬ (В10). Прежняя: красный #c8362a по чёрному кеглем 0.034·w —
+   * контраст 3.8:1 и высота буквы 1/47 высоты постера, с трёх метров не
+   * читалось вовсе. Теперь красный высветлен до контраста 6.2:1, а кегль
+   * не мельче 1/16 высоты постера и подбирается measureText с переносом.
+   */
+  const MIN_LETTER = h / 16;
+  const RED = '#e0705c';                      // 6.2:1 к #0b0b0c
+  const num = ({ gears: '01', bearing: '02', turbine: '03', valve: '04' })[kind] || '';
   c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  c.fillStyle = RED;
+  c.font = `600 ${Math.round(MIN_LETTER)}px -apple-system, "Helvetica Neue", sans-serif`;
+  c.fillText('ENSO', w * 0.1, h * 0.145);
   const titles = { gears: 'ЗУБЧАТАЯ ПЕРЕДАЧА', bearing: 'РАДИАЛЬНЫЙ ПОДШИПНИК', turbine: 'РАБОЧЕЕ КОЛЕСО', valve: 'ЗАПОРНЫЙ КЛАПАН' };
-  c.fillText(titles[kind] || kind.toUpperCase(), w * 0.1, h * 0.82);
-  c.fillStyle = '#c8362a';
-  c.font = `${Math.round(w * 0.034)}px ui-monospace, monospace`;
-  c.fillText(`ENSO-ENGINEERING · МЕХАНИКА ${({ gears: '01', bearing: '02', turbine: '03', valve: '04' })[kind] || ''}`, w * 0.1, h * 0.88);
+  const title = titles[kind] || kind.toUpperCase();
+  const room = w * 0.8;
+  let size = Math.round(h * 0.09);
+  c.font = `600 ${size}px -apple-system, "Helvetica Neue", sans-serif`;
+  while (c.measureText(title).width > room && size > MIN_LETTER) {
+    size -= 1; c.font = `600 ${size}px -apple-system, "Helvetica Neue", sans-serif`;
+  }
+  const lines = [];
+  if (c.measureText(title).width > room) {
+    let line = '';
+    for (const word of title.split(' ')) {
+      const probe = line ? line + ' ' + word : word;
+      if (c.measureText(probe).width > room && line) { lines.push(line); line = word; } else line = probe;
+    }
+    lines.push(line);
+  } else lines.push(title);
+  c.fillStyle = '#f3efe6';
+  lines.forEach((ln, i) => c.fillText(ln, w * 0.1, h * 0.83 + i * size * 1.1));
+  c.fillStyle = RED;
+  c.font = `600 ${Math.round(MIN_LETTER)}px ui-monospace, monospace`;
+  c.textAlign = 'right';
+  c.fillText(num, w * 0.9, h * 0.145);          // только номер: «МЕХАНИКА 04» наезжала на ENSO
+  c.textAlign = 'left';
 }
 
 /** серия «Кодекс»: сепия, коричневая тушь, зеркальные подписи в духе Леонардо */
@@ -632,7 +680,7 @@ export function makePoster({ width = 0.8, draw, frame = 'red', pickInfo = null }
     g.add(bar);
   }
   const back = new THREE.Mesh(new THREE.PlaneGeometry(width + t * 2, height + t * 2), std(0x111111));
-  back.position.z = -0.01;
+  back.position.z = -0.016;   // 6 мм за тыльной гранью брусков: в одной плоскости они мерцали
   g.add(back);
   if (pickInfo) g.traverse((m) => { m.userData.pick = pickInfo; });
   return g;
@@ -644,14 +692,14 @@ export function makePoster({ width = 0.8, draw, frame = 'red', pickInfo = null }
  * Человек с суставами: шея, плечи, локти, бёдра, колени.
  * Возвращает риг с именованными узлами для анимации.
  */
-export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, polo = 0xb95740, trousers = 0x2b2622, female = false, standing = false } = {}) {
+export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, polo = 0xb95740, trousers = 0x2b2622, female = false, standing = false, hairStyle = null } = {}) {
   const g = new THREE.Group();
   const skinMat = std(skin, { roughness: 0.65 });
   const poloMat = new THREE.MeshPhysicalMaterial({ color: polo, roughness: 0.85, sheen: 0.6, sheenColor: new THREE.Color(0xe8a58c), sheenRoughness: 0.8 });
   const pantMat = std(trousers, { roughness: 0.85 });
 
   const hips = new THREE.Group();
-  hips.position.y = standing ? 0.92 : 0.5;
+  hips.position.y = standing ? 0.92 : 0.53;   // таз на кромке сиденья (0.52)
   g.add(hips);
 
   // торс
@@ -677,23 +725,71 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
   skull.scale.set(0.92, 1.08, 0.95);
   skull.position.y = 0.1;
   head.add(skull);
-  const hairMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.109, 18, 12, 0, Math.PI * 2, 0, female ? Math.PI * 0.72 : Math.PI * 0.5),
-    std(hair, { roughness: 0.9 }),
+  /*
+   * ПРИЧЁСКА — три варианта (В13): 0 короткая шапочка, 1 хвост/пучок,
+   * 2 боковой пробор с чёлкой. Раньше их было ровно две — «мужская» и
+   * «женская», и зал читался как шесть копий одного человека.
+   */
+  const hairMat = std(hair, { roughness: 0.9 });
+  const style = hairStyle === null ? (female ? 1 : (hair % 2 ? 0 : 2)) : hairStyle;
+  const cap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.109, 18, 12, 0, Math.PI * 2, 0, style === 1 ? Math.PI * 0.72 : Math.PI * 0.52),
+    hairMat,
   );
-  hairMesh.scale.set(0.95, 1.05, 0.98);
-  hairMesh.position.y = 0.115;
-  head.add(hairMesh);
-  if (female) {
-    const tail = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.14, 4, 8), std(hair, { roughness: 0.9 }));
-    tail.position.set(0, 0.0, 0.11); tail.rotation.x = 0.35;
+  cap.scale.set(0.95, 1.05, 0.98);
+  cap.position.y = 0.115;
+  head.add(cap);
+  // линия роста волос: валик над лбом, без него череп читается лысым
+  const hairline = new THREE.Mesh(new THREE.TorusGeometry(0.082, 0.013, 6, 18, Math.PI * (style === 2 ? 1.15 : 0.95)), hairMat);
+  hairline.position.set(style === 2 ? 0.012 : 0, 0.139, -0.028);
+  hairline.rotation.set(-0.35, 0, style === 2 ? 0.22 : 0);
+  head.add(hairline);
+  if (style === 1) {
+    const tail = new THREE.Mesh(new THREE.CapsuleGeometry(0.032, 0.15, 4, 8), hairMat);
+    tail.position.set(0, 0.005, 0.112); tail.rotation.x = 0.35;
     head.add(tail);
+  } else if (style === 2) {
+    const fringe = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 8, 0, Math.PI, 0, Math.PI * 0.42), hairMat);
+    fringe.scale.set(1.25, 0.7, 1); fringe.position.set(-0.012, 0.152, -0.036); fringe.rotation.set(0.5, -0.35, 0.2);
+    head.add(fringe);
   }
-  const eyeMat = std(0x1c1b1a);
-  for (const sx of [-0.035, 0.035]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.011, 8, 8), eyeMat);
-    eye.position.set(sx, 0.11, -0.092);
-    head.add(eye);
+  /*
+   * ЛИЦО (В13): белок + радужка + зрачок, веко для моргания, брови, нос,
+   * рот, уши. Раньше на лице было две чёрные точки — с двух метров человек
+   * выглядел манекеном.
+   */
+  const eyeWhite = std(0xf6f1e8, { roughness: 0.3 });
+  const irisMat = std(0x3a2718, { roughness: 0.3 });
+  const pupilMat = std(0x141212, { roughness: 0.2 });
+  const browMat = std(hair, { roughness: 0.95 });
+  const lids = [];
+  for (const sx of [-0.036, 0.036]) {
+    /*
+     * Череп — эллипсоид 0.105·(0.92, 1.08, 0.95); в точке глаза (x ±36, y +10)
+     * его поверхность лежит на z ≈ −0.092. Глаз, поставленный на −0.088,
+     * оказывался ВНУТРИ головы и не был виден вовсе — отсюда посадка ниже.
+     */
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.0135, 10, 8), eyeWhite);
+    eye.position.set(sx, 0.11, -0.0895); eye.scale.set(1, 0.72, 0.42); head.add(eye);
+    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.0086, 10, 8), irisMat);
+    iris.position.set(sx, 0.11, -0.0935); iris.scale.set(1, 1, 0.35); head.add(iris);
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.0034, 8, 6), pupilMat);
+    pupil.position.set(sx, 0.11, -0.0952); pupil.scale.set(1, 1, 0.35); head.add(pupil);
+    const lid = new THREE.Mesh(new THREE.SphereGeometry(0.0142, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.5), skinMat);
+    lid.position.set(sx, 0.1155, -0.0885); lid.scale.set(1, 0.5, 0.46); head.add(lid);
+    lids.push(lid);
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.005, 0.006), browMat);
+    brow.position.set(sx, 0.1305, -0.0885); brow.rotation.z = sx < 0 ? 0.1 : -0.1; head.add(brow);
+  }
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.016, 0.038, 8), skinMat);
+  nose.position.set(0, 0.0955, -0.0955); nose.rotation.set(Math.PI / 2 + 0.35, 0, 0); nose.scale.set(1, 1, 0.75);
+  head.add(nose);
+  const mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.006, 0.026, 3, 6), std(0x8d5548, { roughness: 0.6 }));
+  mouth.rotation.z = Math.PI / 2; mouth.position.set(0, 0.0685, -0.0952); mouth.scale.set(1, 1, 0.7);
+  head.add(mouth);
+  for (const sx of [-0.1, 0.1]) {
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 8), skinMat);
+    ear.scale.set(0.36, 1, 0.62); ear.position.set(sx, 0.1, 0.004); head.add(ear);
   }
   if (glasses) {
     const gl = new THREE.Group();
@@ -736,19 +832,21 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
     const hip = new THREE.Group();
     hip.position.set(side * 0.1, 0.02, 0);
     hips.add(hip);
+    // Длина ноги считается от таза до пола: при прежних -0.36/-0.4 подошва
+    // стоящего висела в 150 мм над полом, а сегменты не сходились в суставе.
     const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.3, 4, 8), pantMat);
-    thigh.position.y = -0.18;
+    thigh.position.y = -0.215;
     hip.add(thigh);
     const knee = new THREE.Group();
-    knee.position.y = -0.36;
+    knee.position.y = -0.43;
     hip.add(knee);
-    const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.32, 4, 8), pantMat);
-    shin.position.y = -0.19;
+    const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.36, 4, 8), pantMat);
+    shin.position.y = -0.21;
     knee.add(shin);
     const shoe = new THREE.Mesh(new RoundedBoxGeometry(0.1, 0.06, 0.24, 2, 0.02), MAT.black());
-    shoe.position.set(0, -0.4, -0.05);
+    shoe.position.set(0, -0.46, -0.05);
     knee.add(shoe);
-    return { hip, knee };
+    return { hip, knee, shoe };
   };
   const legL = mkLeg(-1);
   const legR = mkLeg(1);
@@ -764,14 +862,27 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
     armL.shoulder.rotation.x = 0.12; armR.shoulder.rotation.x = 0.12;
     armL.elbow.rotation.x = 0.15; armR.elbow.rotation.x = 0.15;
   } else {
-    // сидя: бёдра вперёд горизонтально, колени сгибают голень вниз (назад — минус)
+    /*
+     * ПОСАДКА ПО ЧЕТЫРЁМ ТОЧКАМ (В13): таз на сиденье (0.53 при кромке
+     * кресла 0.52), спина у спинки, кисть НА СТОЛЕШНИЦЕ (0.775), подошва
+     * на полу. Прежние углы плеча 0.9 и локтя 0.6 оставляли кисть на
+     * 100 мм выше стола — руки висели в воздухе.
+     */
     legL.hip.rotation.x = Math.PI / 2 - 0.15; legR.hip.rotation.x = Math.PI / 2 - 0.15;
     legL.knee.rotation.x = -Math.PI / 2 + 0.2; legR.knee.rotation.x = -Math.PI / 2 + 0.2;
-    armL.shoulder.rotation.x = 0.9; armR.shoulder.rotation.x = 0.9;
-    armL.elbow.rotation.x = 0.6; armR.elbow.rotation.x = 0.6;
+    armL.shoulder.rotation.x = 0.52; armR.shoulder.rotation.x = 0.52;
+    armL.elbow.rotation.x = 0.86; armR.elbow.rotation.x = 0.86;
   }
 
-  return { group: g, hips, head, torso, armL, armR, legL, legR, phase: Math.random() * Math.PI * 2, standing };
+  /** моргание и речь: веки прикрываются, рот раскрывается */
+  const face = {
+    lids,
+    mouth,
+    blink(k) { for (const l of lids) l.scale.y = 0.5 + k * 1.7; },     // k 0…1
+    speak(k) { mouth.scale.set(1, 1 + k * 0.6, 0.7 + k * 1.4); },
+  };
+
+  return { group: g, hips, head, torso, armL, armR, legL, legR, face, phase: Math.random() * Math.PI * 2, standing };
 }
 
 

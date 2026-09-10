@@ -16,10 +16,11 @@ import { RoomEnvironment } from './vendor/RoomEnvironment.js';
 import { Reflector } from './vendor/Reflector.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
 import { RectAreaLightUniformsLib } from './vendor/RectAreaLightUniformsLib.js';
-import * as P from './office-props.js';
-import { LifeDirector, makeSteam } from './office-life.js';
-import { WalkRig } from './office-walk.js';
-import { buildWings, insideWalkable, floorHeight, stoneMaterial, LEVEL as WING_LEVEL, FLOOR2 } from './office-wings.js';
+import * as P from './office-props.js?v=5';
+import { LifeDirector, makeSteam } from './office-life.js?v=5';
+import { WalkRig } from './office-walk.js?v=5';
+import { buildWings, insideWalkable, floorHeight, stoneMaterial, LEVEL as WING_LEVEL, FLOOR2 } from './office-wings.js?v=5';
+import { slotFree } from './office-geom.mjs?v=5';
 
 /* палитра платформы + бренд (BRAND задаётся в office-data.js) */
 const PAL = {
@@ -49,7 +50,7 @@ const CONCOURSE_Y = 1.02;
 /* виды камеры (обзор) и точки телепорта (ходьба) */
 const VIEWS = {
   lobby:  { pos: [0, 2.7, 19.6], tgt: [0, 2.3, 12.5], walk: [0, 18.6], look: [0, 12] },
-  hall:   { pos: [0, 6.6, 9.6], tgt: [0, 1.4, -7.0], walk: [0, 8.6], look: [0, -8] },
+  hall:   { pos: [0, 7.6, 4.0], tgt: [0, 2.0, -7.6], walk: [0, 8.6], look: [0, -8] },
   screen: { pos: [0, 3.9, 3.8], tgt: [0, 3.5, -11], walk: [0, -5.6], look: [0, -11] },
   table:  { pos: [1.5, 2.7, -6.4], tgt: [0, 1.15, -8.6], walk: [1.3, -6.6], look: [0, -8.6] },
 };
@@ -101,20 +102,25 @@ export class OfficeScene {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.mobile ? 1.5 : 2));
     this.renderer.setSize(w, h, false);
     this.renderer.shadowMap.enabled = !this.mobile;
+    // В three 0.185 PCFSoftShadowMap объявлен устаревшим и молча подменяется
+    // на PCFShadowMap — ставим его явно, а мягкость кромки даёт shadow.radius
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = this.dark ? 0.9 : 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    P.setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(this.pal.bg);
-    this.scene.fog = new THREE.Fog(this.pal.bg, 34, 70);
+    // дымка отодвинута за габарит участка: при 34…70 м окружение целиком уходило
+    // в цвет фона и сад читался плоской заливкой (В8)
+    this.scene.fog = new THREE.Fog(this.pal.bg, 70, 300);
     // окружение для отражений на стекле, металле и паркете
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();
 
-    this.camera = new THREE.PerspectiveCamera(48, w / h, 0.08, 140);
+    this.camera = new THREE.PerspectiveCamera(48, w / h, 0.08, 420);
     this.camera.position.set(...VIEWS.lobby.pos);
 
     this.controls = new OrbitControls(this.camera, this.canvas);
@@ -123,7 +129,9 @@ export class OfficeScene {
     this.controls.dampingFactor = 0.08;
     this.controls.maxPolarAngle = Math.PI * 0.49;
     this.controls.minDistance = 0.5;
-    this.controls.maxDistance = 38;
+    this.controls.maxDistance = 30;
+    // панорамирование уводило target вместе с камерой наружу здания
+    this.controls.enablePan = false;
     this.controls.update();
 
     this.walk = new WalkRig(this.camera, this.canvas, {
@@ -138,12 +146,15 @@ export class OfficeScene {
     this.sun.position.set(-18, 16, 6);
     if (!this.mobile) {
       this.sun.castShadow = true;
-      this.sun.shadow.mapSize.set(2048, 2048);
-      this.sun.shadow.camera.left = -24; this.sun.shadow.camera.right = 24;
-      this.sun.shadow.camera.top = 24; this.sun.shadow.camera.bottom = -24;
-      this.sun.shadow.bias = -0.0004;
-      this.sun.shadow.normalBias = 0.02;
-      this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 80;
+      // фрустум накрывает ВСЁ здание: при ±24 правая граница резала переговорную,
+      // и тень обрывалась прямой линией прямо на паркете
+      this.sun.shadow.mapSize.set(4096, 4096);
+      this.sun.shadow.camera.left = -36; this.sun.shadow.camera.right = 36;
+      this.sun.shadow.camera.top = 36; this.sun.shadow.camera.bottom = -36;
+      this.sun.shadow.bias = -0.0002;
+      this.sun.shadow.normalBias = 0.03;
+      this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 90;
+      this.sun.shadow.radius = 2.5;
       this.sun.shadow.camera.updateProjectionMatrix();
     }
     this.sun.target.position.set(0, 0, 2);
@@ -219,8 +230,19 @@ export class OfficeScene {
     const p = this.pal;
     this._wood = P.woodTexture();
 
+    /*
+     * ПОДОСНОВА ЗАЛА. Ярусы — секторы кольца в 1.9 рад: за их углами пола нет
+     * вовсе, и после того, как снаружи появилась настоящая земля (В8), в этих
+     * прорехах стал виден газон. Плита закрывает весь след здания.
+     */
+    const base = new THREE.Mesh(new THREE.PlaneGeometry(32, 32.2), stoneMaterial(32, 32.2));
+    base.rotation.x = -Math.PI / 2;
+    base.position.set(0, -0.05, 4.9);
+    base.receiveShadow = true;
+    this.scene.add(base);
+
     // сцена перед ярусами (уровень 0) — матовый паркет
-    const stage = new THREE.Mesh(new THREE.PlaneGeometry(32, 8), stoneMaterial(7));
+    const stage = new THREE.Mesh(new THREE.PlaneGeometry(32, 8), stoneMaterial(32, 8));
     stage.rotation.x = -Math.PI / 2;
     stage.position.set(0, 0, -7.4);
     stage.receiveShadow = true;
@@ -231,7 +253,8 @@ export class OfficeScene {
     this._ledStrips = [];
     TIERS.forEach((t, i) => {
       const ring = new THREE.RingGeometry(t.r0, t.r1, 96, 1, Math.PI / 2 - 0.95, 1.9);
-      const mesh = new THREE.Mesh(ring, new THREE.MeshStandardMaterial({ map: this._wood, bumpMap: this._wood, bumpScale: 0.006, roughness: 0.4, metalness: 0.03 }));
+      const woodRing = P.tiled(this._wood, (t.r0 + t.r1) * 0.95, t.r1 - t.r0, 256);
+      const mesh = new THREE.Mesh(ring, new THREE.MeshStandardMaterial({ map: woodRing, bumpMap: woodRing, bumpScale: 0.006, roughness: 0.4, metalness: 0.03 }));
       mesh.rotation.x = -Math.PI / 2;
       mesh.position.set(FOCUS.x, t.y + 0.001, FOCUS.z);
       mesh.receiveShadow = true;
@@ -266,7 +289,8 @@ export class OfficeScene {
     for (let i = 1; i < TIERS.length; i++) {
       const rise = TIERS[i].y - TIERS[i - 1].y;
       for (let s = 0; s < 3; s++) {
-        const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, rise / 3, 0.34), new THREE.MeshStandardMaterial({ map: this._wood, bumpMap: this._wood, bumpScale: 0.006, roughness: 0.4 }));
+        const woodStep = P.tiled(this._wood, 2.4, 0.34, 256);
+        const step = new THREE.Mesh(new THREE.BoxGeometry(2.4, rise / 3, 0.34), new THREE.MeshStandardMaterial({ map: woodStep, bumpMap: woodStep, bumpScale: 0.006, roughness: 0.4 }));
         const r = TIERS[i].r0 - 0.5 + s * 0.34;
         step.position.set(0, TIERS[i - 1].y + (rise / 3) * (s + 0.5), FOCUS.z + r);
         step.receiveShadow = true;
@@ -286,7 +310,7 @@ export class OfficeScene {
       this.scene.add(mirror);
       this._mirror = mirror;
     }
-    const stoneMat = stoneMaterial(8);
+    const stoneMat = stoneMaterial(32, 21 - concourseZ0);
     stoneMat.transparent = !this.mobile; stoneMat.opacity = this.mobile ? 1 : 0.82;
     const gloss = new THREE.Mesh(concourse, stoneMat);
     gloss.rotation.x = -Math.PI / 2;
@@ -306,11 +330,19 @@ export class OfficeScene {
 
   _buildWallsAndCeiling() {
     const p = this.pal;
-    const wallMat = stoneMaterial(9);
+    const wallMat = stoneMaterial(32, 9);
     this._wallMat = wallMat;
+    /**
+     * Стена — ОБЪЁМ толщиной 300 мм, а не плоскость: у плоскости нормаль смотрит
+     * в одну сторону, и из крыла зал просвечивал насквозь, а в проёме была
+     * бумага нулевой толщины. Толщина видна в каждом проёме.
+     */
+    const WALL_T = 0.3;
     const mk = (w, h, x, y, z, ry = 0) => {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), wallMat);
-      m.position.set(x, y, z); m.rotation.y = ry; m.receiveShadow = true;
+      const geo = new THREE.BoxGeometry(w, h, WALL_T);
+      const m = new THREE.Mesh(geo, wallMat);
+      m.position.set(x, y, z); m.rotation.y = ry;
+      m.receiveShadow = true; m.castShadow = true;
       this.scene.add(m);
       return m;
     };
@@ -324,13 +356,43 @@ export class OfficeScene {
       mk(9.4, 5.2, x, 2.6, 6.3, ry);          // z 1.6…11
       mk(2.8, 0.8, x, 4.8, 0.2, ry);          // перемычка над проёмом
       mk(22.2, 0.6, x, 8.7, -0.1, ry);        // полоса над окнами
+      /*
+       * Обкладка проёма СТОИТ ПРОУДЬ стены и заходит в неё: при ширине ровно
+       * 0.3 её боковые грани совпадали с гранями стены, а тыльная — с торцом
+       * у проёма, и косяк рябил зубчатой лесенкой (правило 1: зазор 2 мм).
+       */
       const jamb = P.MAT.ink();
-      for (const zz of [-1.2, 1.6]) { const j = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.4, 0.12), jamb); j.position.set(x, 2.2 + WING_LEVEL, zz); this.scene.add(j); }
-      const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 2.9), jamb); head.position.set(x, WING_LEVEL + 4.42, 0.2); this.scene.add(head);
-      const led = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 2.7), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.8 })); led.position.set(x - side * 0.12, WING_LEVEL + 4.34, 0.2); this.scene.add(led); this.life.strips.push(led);
-      const doorSign = P.canvasTexture(512, 128, (c) => { c.fillStyle = '#26211b'; c.fillRect(0, 0, 512, 128); c.fillStyle = '#f3efe6'; c.font = '600 54px -apple-system, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(side < 0 ? 'ЗАЛ РЕАКТОРА' : 'МАСТЕРСКАЯ', 256, 64); });
-      const ds = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.4), new THREE.MeshBasicMaterial({ map: doorSign.texture, toneMapped: false }));
-      ds.position.set(x - side * 0.2, WING_LEVEL + 4.75, 0.2); ds.rotation.y = ry; this.scene.add(ds);
+      // ВЫСОТЫ ПРОЁМА: перемычка стоит на 4.4…5.2, значит верх проёма — 4.4,
+      // а пол крыла — WING_LEVEL. Прежние отметки прибавляли WING_LEVEL к обеим
+      // границам, и обкладка с вывеской уезжали на метр выше проёма — на
+      // второй этаж, в лаундж.
+      const OP_TOP = 4.4, OP_BOT = WING_LEVEL;
+      for (const zz of [-1.2, 1.6]) {
+        const j = new THREE.Mesh(new THREE.BoxGeometry(0.31, OP_TOP - OP_BOT, 0.12), jamb);
+        j.position.set(x, (OP_TOP + OP_BOT) / 2, zz + (zz < 0 ? 0.055 : -0.055));
+        this.scene.add(j);
+      }
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.12, 2.9), jamb); head.position.set(x, OP_TOP - 0.06, 0.2); this.scene.add(head);
+      const led = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 2.7), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.8 })); led.position.set(x - side * 0.12, OP_TOP - 0.18, 0.2); this.scene.add(led); this.life.strips.push(led);
+      // 1024×256 на 1.8 м = 568 пикс/м: на 512×128 надпись мылилась
+      const text = side < 0 ? 'ЗАЛ РЕАКТОРА' : 'МАСТЕРСКАЯ';
+      const doorSign = P.canvasTexture(1024, 256, (c) => {
+        c.fillStyle = '#26211b'; c.fillRect(0, 0, 1024, 256);
+        c.fillStyle = '#b95740'; c.fillRect(0, 0, 1024, 8);
+        c.fillStyle = '#f3efe6'; c.textAlign = 'center'; c.textBaseline = 'middle';
+        let size = 92;
+        do { c.font = `600 ${size}px -apple-system, sans-serif`; size -= 4; } while (c.measureText(text).width > 952 && size > 30);
+        c.fillText(text, 512, 134);
+      });
+      const dsBody = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.45, 0.05), P.MAT.graphite());
+      dsBody.position.set(x - side * 0.24, OP_TOP + 0.34, 0.2); dsBody.rotation.y = ry; this.scene.add(dsBody);
+      const ds = new THREE.Mesh(new THREE.PlaneGeometry(1.76, 0.44), new THREE.MeshBasicMaterial({ map: doorSign.texture, toneMapped: false }));
+      ds.position.set(x - side * 0.27, OP_TOP + 0.34, 0.2); ds.rotation.y = ry; this.scene.add(ds);
+      for (const dz of [-0.7, 0.7]) {
+        const bracket = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.24, 8), P.MAT.brushed());
+        bracket.rotation.z = Math.PI / 2; bracket.rotation.y = ry;
+        bracket.position.set(x - side * 0.13, OP_TOP + 0.34, 0.2 + dz); this.scene.add(bracket);
+      }
     }
     // плинтусы тушью по периметру фойе и сцены
     const skirt = P.MAT.ink();
@@ -340,8 +402,8 @@ export class OfficeScene {
     }
     // стена за экраном — тёмная подложка тушью и акустические ламели чуть светлее:
     // без подложки просветы между ламелями читались белым «штрих-кодом»
-    const backing = new THREE.Mesh(new THREE.PlaneGeometry(32, 9), new THREE.MeshStandardMaterial({ color: 0x1c1916, roughness: 0.9 }));
-    backing.position.set(0, 4.5, -11.18); this.scene.add(backing);
+    const backing = new THREE.Mesh(new THREE.BoxGeometry(32, 9, 0.12), new THREE.MeshStandardMaterial({ color: 0x1c1916, roughness: 0.9 }));
+    backing.position.set(0, 4.5, -11.18); backing.receiveShadow = true; this.scene.add(backing);
     const lam = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, 8.6, 0.07), new THREE.MeshStandardMaterial({ color: 0x3a342d, roughness: 0.7 }), 200);
     const lm = new THREE.Matrix4();
     for (let i = 0; i < 200; i++) { lm.makeTranslation(-15.9 + i * 0.16, 4.3, -11.1); lam.setMatrixAt(i, lm); }
@@ -905,7 +967,7 @@ export class OfficeScene {
     if (module) {
       const cfg = window.OfficeData.personas[module];
       person = P.makePerson({ skin: cfg.skin, hair: cfg.hair, glasses: cfg.glasses, female: !!cfg.female, polo: this.brand.poloHex || 0xb95740 });
-      person.group.position.set(0, 0, 0.5);
+      person.group.position.set(0, 0, 0.46);   // спина у спинки кресла (внутренняя дуга — z 0.56)
       g.add(person.group);
       this.people.set(module, person);
       const handMug = P.makeMug(); handMug.scale.setScalar(0.9); handMug.visible = false;
@@ -1048,17 +1110,33 @@ export class OfficeScene {
     this._blockers.push({ x0: -1.9, x1: 1.9, z0: 14.0, z1: 15.7 });
     this.itemAnchors.set('secretary', { group: g, camPos: [0, y0 + 1.7, 17.2], camTgt: [0, y0 + 1.4, 14.2], walk: [0, 17.0], look: [0, 14.2] });
 
-    // мосс-стена за стойкой с логотипом
-    const moss = P.canvasTexture(1024, 512, (c) => {
-      c.fillStyle = '#2f5a3a'; c.fillRect(0, 0, 1024, 512);
-      for (let i = 0; i < 9000; i++) { c.fillStyle = `rgba(${40 + Math.random() * 60},${90 + Math.random() * 70},${40 + Math.random() * 40},.6)`; c.beginPath(); c.arc(Math.random() * 1024, Math.random() * 512, 2 + Math.random() * 5, 0, Math.PI * 2); c.fill(); }
-    });
-    moss.texture.wrapS = moss.texture.wrapT = THREE.RepeatWrapping; moss.texture.repeat.set(3, 2);
-    // фирменная стена с сайта: чёрный лак, белый логотип, слоган; мосс-панели по бокам — биодизайн
+    /*
+     * МОСС-СТЕНА — ПОДУШКИ ГЕОМЕТРИЕЙ (К17). Плоский короб с bumpScale 0.03
+     * рельефа не давал: с двух метров панель читалась зелёным прямоугольником.
+     * Теперь это подложка + инстансы полусфер пяти оттенков ягеля разного
+     * размера, как в настоящей стабилизированной стене.
+     */
+    const MOSS_TONES = [0x3f7a48, 0x568a4e, 0x2f5a3a, 0x6d9a5a, 0x476b3f];
     for (const sx of [-7.4, 7.4]) {
-      const mossWall = new THREE.Mesh(new THREE.BoxGeometry(3.6, 5.2, 0.16), new THREE.MeshStandardMaterial({ map: moss.texture, roughness: 1, bumpMap: moss.texture, bumpScale: 0.03 }));
-      mossWall.position.set(sx, y0 + 2.7, 20.85);
-      this.scene.add(mossWall);
+      const backing = new THREE.Mesh(new THREE.BoxGeometry(3.6, 5.2, 0.1), new THREE.MeshStandardMaterial({ color: 0x24361f, roughness: 1 }));
+      backing.position.set(sx, y0 + 2.7, 20.86);
+      this.scene.add(backing);
+      const cushionG = new THREE.SphereGeometry(1, 8, 6);
+      MOSS_TONES.forEach((tone, ti) => {
+        const per = 150;
+        const inst = new THREE.InstancedMesh(cushionG, new THREE.MeshStandardMaterial({ color: tone, roughness: 1, flatShading: true }), per);
+        const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pos = new THREE.Vector3();
+        for (let i = 0; i < per; i++) {
+          const r = 0.09 + Math.random() * 0.17;
+          pos.set(sx - 1.72 + Math.random() * 3.44, y0 + 0.18 + Math.random() * 5.04, 20.81 - Math.random() * 0.06);
+          q.setFromEuler(new THREE.Euler(Math.random() * 3, Math.random() * 3, Math.random() * 3));
+          sc.set(r, r * (0.7 + Math.random() * 0.5), r * (0.55 + Math.random() * 0.3));
+          m4.compose(pos, q, sc); inst.setMatrixAt(i, m4);
+        }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.castShadow = ti < 2;
+        this.scene.add(inst);
+      });
     }
     const lacquer = new THREE.Mesh(new THREE.BoxGeometry(10.6, 5.2, 0.18), new THREE.MeshStandardMaterial({ color: 0x0f0f10, roughness: 0.18, metalness: 0.25 }));
     lacquer.position.set(0, y0 + 2.7, 20.86);
@@ -1100,10 +1178,18 @@ export class OfficeScene {
       // на перегородке лобби по обе стороны проёма, лицом к входящему (боковые стены лобби — стекло крыльев)
       const side = i < 3 ? -1 : 1;
       const m = new THREE.Group();
+      // полотно ВПЕРЕДИ рамы: при равных z грани спорили и полотно проступало рябью
       const art = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.05), new THREE.MeshBasicMaterial({ map: t.texture, toneMapped: false }));
-      art.position.z = 0.02; m.add(art);
-      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.62, 1.17, 0.04), P.MAT.walnut());
-      m.add(frame);
+      art.position.z = 0.033; m.add(art);
+      // рама из четырёх брусков по контуру, за полотном — паспарту, а не глухой короб
+      const fmat = P.MAT.walnut();
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.05), P.std(0xf3efe6, { roughness: 0.9 }));
+      back.position.z = 0.028; m.add(back);
+      for (const [bw, bh, bx, by] of [[1.62, 0.06, 0, 0.555], [1.62, 0.06, 0, -0.555], [0.06, 1.17, -0.78, 0], [0.06, 1.17, 0.78, 0]]) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.05), fmat);
+        bar.position.set(bx, by, 0.02); m.add(bar);
+      }
+      const lamp = new THREE.PointLight(0xfff0dd, 0.35, 2.4, 2); lamp.position.set(0, 0.75, 0.35); m.add(lamp);
       m.position.set(side * (7.0 + (i % 3) * 2.4), y0 + 2.2, 11.2);
       this.scene.add(m);
       this._pickable(m, { kind: 'plaque', index: i });
@@ -1255,26 +1341,49 @@ export class OfficeScene {
 
   _buildPostersAndPlants() {
     // серия «Механика» — на стенах под галереями, φ-рамы, красная рама
+    /**
+     * Развеска — через общий список занятых мест на стене. Раньше каждая серия
+     * считала свои координаты своей формулой: постер налезал на косяк проёма,
+     * на соседний постер и висел над пустотой проёма в крыло.
+     */
+    // проёмы в крылья: z −1.2…1.6 плюс по 1 м запаса на косяк и импост
+    const OPENINGS = [[-2.2, 2.6]];
+    const walls = new Map();          // x стены → занятые места вдоль неё
+    const slots = (x) => { if (!walls.has(x)) walls.set(x, []); return walls.get(x); };
+    const free = (x, z, w) => slotFree(slots(x), OPENINGS, z, w);
+    const place = (x, z, w) => { slots(x).push({ along: z, width: w }); };
+    this._wallSlots = walls;          // для проверок: что и где висит
     const mech = ['gears', 'bearing', 'turbine', 'valve'];
     for (const side of [-1, 1]) {
-      mech.forEach((kind, i) => {
+      // Внутренняя грань стены после Б1 лежит на x = ±15.85 (короб 300 мм по
+      // оси ±16): постер на 15.88 оказывался ВНУТРИ стены и не был виден.
+      const x = side * 15.80;
+      let placed = 0;
+      for (const z of [-9.4, -6.2, 4.6, 7.8, 10.2]) {
+        if (placed >= mech.length || !free(x, z, 1.15)) continue;
+        const kind = mech[placed];
         const poster = P.makePoster({ width: 1.15, frame: 'red', draw: (c, w, h) => P.drawMechanicalPoster(c, w, h, kind), pickInfo: { kind: 'poster', series: 'mech', id: kind } });
-        const z = -7.5 + i * 4.6;
-        poster.position.set(side * 15.88, heightAt(side * 15.5, z) + 1.62, z);
+        poster.position.set(x, heightAt(side * 15.5, z) + 1.62, z);
         poster.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
         this.scene.add(poster);
-        // бра над постером
-        const sconce = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.12), P.MAT.graphite());
-        sconce.position.set(side * 15.78, heightAt(side * 15.5, z) + 2.72, z); this.scene.add(sconce);
-        const spot = new THREE.PointLight(0xfff0dd, 0.9, 4.5, 2); spot.position.set(side * 15.4, heightAt(side * 15.5, z) + 2.6, z); this.scene.add(spot);
-      });
+        place(x, z, 1.15);
+        // бра над постером: корпус со скрытой лампой, мягкий свет без пережога кромки
+        const sconce = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.14), P.MAT.graphite());
+        sconce.position.set(x - side * 0.16, heightAt(side * 15.5, z) + 2.85, z); this.scene.add(sconce);
+        const spot = new THREE.PointLight(0xfff0dd, 0.4, 4.5, 2);
+        spot.position.set(x - side * 0.45, heightAt(side * 15.5, z) + 2.7, z); this.scene.add(spot);
+        placed += 1;
+      }
     }
-    // серия «Кодекс» — лобби и у кульмана
     const codex = ['crane', 'arch', 'gear'];
     codex.forEach((kind, i) => {
       const poster = P.makePoster({ width: 0.8, frame: 'walnut', draw: (c, w, h) => P.drawCodexPoster(c, w, h, kind), pickInfo: { kind: 'poster', series: 'codex', id: kind } });
       if (i < 2) { poster.position.set(-6.4 + i * 12.8, CONCOURSE_Y + 2.2, 20.86); poster.rotation.y = Math.PI; }
-      else { poster.position.set(-15.88, CONCOURSE_Y + 2.1, 1.5); poster.rotation.y = Math.PI / 2; }
+      else {
+        const x = -15.80, z = -4.0;
+        if (!free(x, z, 0.8)) return;
+        poster.position.set(x, heightAt(-15.5, z) + 1.62, z); poster.rotation.y = Math.PI / 2; place(x, z, 0.8);
+      }
       this.scene.add(poster);
     });
     // растения у экрана и по углам
@@ -1489,13 +1598,29 @@ export class OfficeScene {
     }
 
     if (this.wings) this.wings.update(dt, t);
-    if (this.walkMode) this.walk.update(dt); else this.controls.update();
+    if (this.walkMode) this.walk.update(dt); else { this.controls.update(); this._clampCamera(); }
     // зеркальный паркет — второй проход рендера; нужен только когда камера в фойе/лобби
     if (this._mirror) this._mirror.visible = this.camera.position.z > 5.5;
     this.renderer.render(this.scene, this.camera);
   }
 
   wave(seconds = 2.5) { this._wave = this._time + seconds; }
+
+  /**
+   * Оболочка здания: за неё камера обзора не выходит ни при каком повороте.
+   * Габарит по X — от зала реактора (−34) до гаража (+34), по Z — от стены за
+   * экраном (−11) до лобби (+21); плюс 2 м воздуха, чтобы стены не резали кадр.
+   */
+  _clampCamera() {
+    const p = this.camera.position;
+    p.x = Math.max(-35.5, Math.min(35.5, p.x));
+    p.z = Math.max(-12.5, Math.min(22.5, p.z));
+    p.y = Math.max(0.4, Math.min(14, p.y));
+    const t = this.controls.target;
+    t.x = Math.max(-34, Math.min(34, t.x));
+    t.z = Math.max(-11, Math.min(21, t.z));
+    t.y = Math.max(-2, Math.min(12, t.y));
+  }
 
   /* ================= клик и наведение ================= */
 

@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=4';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=4';
+import { OfficeScene } from './office-scene.js?v=5';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=5';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -794,7 +794,7 @@ function hoverLabel(info) {
     case 'table': return 'Стол проекта';
     case 'zone': return `Зона: ${info.label}`;
     case 'building': return `Вариант №${info.variant.number}`;
-    case 'plaque': return D.plaques[info.index] ? D.plaques[info.index].sub : 'табличка';
+    case 'plaque': { const pl = D.plaques[info.index]; return pl ? `${pl.title} — ${pl.sub}` : 'табличка'; }
     case 'item': return D.items[info.item] ? D.items[info.item].title : info.item;
     case 'poster': return D.posters[info.id] ? D.posters[info.id].title : 'постер';
     case 'vehicle': return D.vehicles[info.id] ? D.vehicles[info.id].title : 'экспонат';

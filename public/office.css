@@ -195,7 +195,8 @@ body[data-page="office"] {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
   z-index: 60; background: var(--glass-strong);
   -webkit-backdrop-filter: blur(var(--glass-blur)); backdrop-filter: blur(var(--glass-blur));
-  border-radius: 999px; padding: 10px 18px; font-size: 13px; box-shadow: var(--glass-shadow);
+  border-radius: 18px; padding: 10px 18px; font-size: 13px; box-shadow: var(--glass-shadow);
+  max-width: min(92vw, 640px); text-align: center; line-height: 1.5;
 }
 
 /* ---------- телефон ---------- */

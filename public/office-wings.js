@@ -11,7 +11,8 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
-import * as P from './office-props.js';
+import * as P from './office-props.js?v=5';
+import { railPose } from './office-geom.mjs?v=5';
 
 export const LEVEL = 1.02;    // первый этаж: лобби, фойе, крылья
 export const FLOOR2 = 5.2;    // кольцевой лаундж и библиотека — вровень с низом окон
@@ -35,7 +36,8 @@ export const ROOMS = {
   // второй этаж: кольцо вокруг зала
   ringW: [-15.4, -11.9, -10.6, 10.6],
   ringE: [11.9, 15.4, -10.6, 10.6],
-  ringN: [-15.4, 15.4, -10.6, -7.4],
+  ringN: [-15.4, -9.0, -10.6, -7.4],
+  ringN2: [9.0, 15.4, -10.6, -7.4],
   ringS: [-15.4, 15.4, 7.6, 10.6],
   stairMain: [2.6, 5.6, 12.6, 19.8],
   stairBridge: [2.6, 5.6, 10.4, 12.6],
@@ -45,7 +47,7 @@ export const ROOMS = {
 const inRect = (x, z, r) => x > r[0] && x < r[1] && z > r[2] && z < r[3];
 
 const FIRST = ['hall', 'lobby', 'door', 'meeting', 'meetingDoor', 'garage', 'garageDoor', 'reactorBalcony', 'reactorDoor'];
-const SECOND = ['ringW', 'ringE', 'ringN', 'ringS', 'library', 'libraryBridge'];
+const SECOND = ['ringW', 'ringE', 'ringN', 'ringN2', 'ringS', 'library', 'libraryBridge'];
 
 export function insideWalkable(x, z) {
   for (const k of [...FIRST, ...SECOND, 'reactorStair', 'reactorFloor', 'stairMain', 'stairBridge']) {
@@ -94,9 +96,14 @@ function stoneTexture(size = 1024) {
   return texture;
 }
 let _stone = null;
-export function stoneMaterial(repeat = 6) {
+/**
+ * Камень по размеру грани: `stoneMaterial(wM, hM)` считает repeat от метров
+ * (512 пикс/м). Прежняя сигнатура с числом повторов оставлена совместимой:
+ * одно число трактуется как размер квадратной грани в метрах.
+ */
+export function stoneMaterial(wM = 6, hM = null) {
   if (!_stone) _stone = stoneTexture();
-  const t = _stone.clone(); t.needsUpdate = true; t.repeat.set(repeat, repeat);
+  const t = P.tiled(_stone, wM, hM === null ? wM : hM);
   return new THREE.MeshStandardMaterial({ map: t, bumpMap: t, bumpScale: 0.012, roughness: 0.62, metalness: 0.02 });
 }
 /** цельное стекло Apple Park: почти без цвета и без рам */
@@ -112,17 +119,59 @@ function box(w, h, d, mat, x = 0, y = 0, z = 0) {
 function rbox(w, h, d, mat, r = 0.03) {
   return new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 3, r), mat);
 }
+/**
+ * Вывеска — ПРЕДМЕТ, а не наклейка (В11). Раньше это была одна плоскость с
+ * `fillText` кеглем 60 на канве 768: «Библиотека нормативов» не влезала и
+ * обрезалась по краю, а плашка висела в воздухе без корпуса и тени.
+ * Теперь: корпус 25 мм, лицо на 2 мм перед корпусом (правило зазора),
+ * кромка бренда, контактная тень, канва не ниже 512 пикс/м, кегль
+ * подбирается `measureText` и не мельче 1/12 высоты плашки.
+ */
 function label(text, sub = '', w = 0.9, dark = false) {
-  const { texture } = P.canvasTexture(768, 256, (c) => {
-    c.fillStyle = dark ? '#0f0f10' : '#fdfbf4'; c.fillRect(0, 0, 768, 256);
-    c.fillStyle = '#b95740'; c.fillRect(0, 0, 768, 10);
-    c.fillStyle = dark ? '#ffffff' : '#26211b'; c.font = '600 60px Georgia, serif'; c.textBaseline = 'top';
-    c.fillText(text, 36, 40);
-    c.fillStyle = dark ? 'rgba(255,255,255,.6)' : '#6f665a'; c.font = '30px -apple-system, sans-serif';
-    c.fillText(sub, 36, 150);
+  const h = w / 3;
+  const cw = Math.max(1024, Math.round(w * 640 / 64) * 64);
+  const ch = Math.round(cw / 3);
+  const pad = Math.round(cw * 0.045);
+  const { texture } = P.canvasTexture(cw, ch, (c) => {
+    c.fillStyle = dark ? '#0f0f10' : '#fdfbf4'; c.fillRect(0, 0, cw, ch);
+    c.fillStyle = '#b95740'; c.fillRect(0, 0, cw, Math.round(ch * 0.04));
+    c.textBaseline = 'top';
+    const room = cw - pad * 2;
+    const minTitle = ch / 12;                       // нижний предел кегля
+    let ts = Math.round(ch * (sub ? 0.30 : 0.38));
+    c.font = `600 ${ts}px Georgia, serif`;
+    while (c.measureText(text).width > room && ts > minTitle) {
+      ts -= 2; c.font = `600 ${ts}px Georgia, serif`;
+    }
+    // не влезло даже минимальным — переносим по словам, а не режем по краю
+    const lines = [];
+    if (c.measureText(text).width > room) {
+      let line = '';
+      for (const word of String(text).split(' ')) {
+        const probe = line ? line + ' ' + word : word;
+        if (c.measureText(probe).width > room && line) { lines.push(line); line = word; } else line = probe;
+      }
+      lines.push(line);
+    } else lines.push(text);
+    c.fillStyle = dark ? '#ffffff' : '#26211b';
+    lines.slice(0, 2).forEach((ln, i) => c.fillText(ln, pad, ch * 0.16 + i * ts * 1.12));
+    if (sub) {
+      let ss = Math.round(ch * 0.13);
+      c.font = `${ss}px -apple-system, sans-serif`;
+      while (c.measureText(sub).width > room && ss > ch / 20) { ss -= 2; c.font = `${ss}px -apple-system, sans-serif`; }
+      c.fillStyle = dark ? 'rgba(255,255,255,.62)' : '#6f665a';
+      c.fillText(sub, pad, ch - ss * 1.5);
+    }
   });
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w / 3), new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }));
-  return m;
+  const g = new THREE.Group();
+  const body = box(w, h, 0.025, dark ? P.MAT.graphite() : P.MAT.white(), 0, 0, 0.0125);
+  body.castShadow = true; g.add(body);
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }));
+  face.position.z = 0.027;                          // 2 мм перед лицом корпуса
+  g.add(face);
+  const shade = new THREE.Mesh(new THREE.PlaneGeometry(w * 1.12, h * 1.3), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.16, depthWrite: false }));
+  shade.position.set(0, -h * 0.06, 0.001); g.add(shade);
+  return g;
 }
 
 /** лестница: каменные ступени + цельное стеклянное ограждение */
@@ -140,19 +189,36 @@ function stairs({ x0, x1, z0, z1, yFrom, yTo, steps = 22, axis = 'z', railSide =
     st.receiveShadow = true; st.castShadow = true;
     g.add(st);
   }
-  const railLen = Math.hypot(len, yTo - yFrom);
-  const midY = (yFrom + yTo) / 2 + 0.5;
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(railLen, 1.0), appleGlass(0.14));
-  const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, railLen, 10), P.MAT.chrome());
+  // Поручень идёт ПО МАРШУ; знак уклона и длина считаются в office-geom.js,
+  // и тот же расчёт проверяет юнит-тест (Б3).
+  const pose = railPose({ axis, yFrom, yTo, len });
+  const slope = pose.slope;
+  const railLen = pose.length;
+  const midY = pose.midY;
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(railLen - 0.6, 0.9), appleGlass(0.14));
+  const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, railLen, 12), P.MAT.chrome());
+  const posts = new THREE.Group();
+  const nPosts = Math.max(2, Math.round(len / 1.2));
   if (axis === 'z') {
     const x = railSide > 0 ? x1 : x0;
-    glass.position.set(x, midY, (z0 + z1) / 2); glass.rotation.y = Math.PI / 2; glass.rotation.x = Math.atan2(yTo - yFrom, len);
-    rail.position.set(x, midY + 0.5, (z0 + z1) / 2); rail.rotation.x = Math.PI / 2 - Math.atan2(yTo - yFrom, len);
+    glass.position.set(x, midY - 0.45, (z0 + z1) / 2); glass.rotation.y = Math.PI / 2; glass.rotation.x = slope;
+    rail.position.set(x, midY, (z0 + z1) / 2); rail.rotation[pose.key] = pose.angle;
+    for (let i = 0; i <= nPosts; i++) {
+      const t = i / nPosts;
+      const z = z1 - len * t, y = yFrom + (yTo - yFrom) * t;
+      posts.add(box(0.03, 0.9, 0.03, P.MAT.graphite(), x, y + 0.45, z));
+    }
   } else {
     const z = railSide > 0 ? z1 : z0;
-    glass.position.set((x0 + x1) / 2, midY, z); glass.rotation.z = -Math.atan2(yTo - yFrom, len);
-    rail.position.set((x0 + x1) / 2, midY + 0.5, z); rail.rotation.z = Math.PI / 2 + Math.atan2(yTo - yFrom, len);
+    glass.position.set((x0 + x1) / 2, midY - 0.45, z); glass.rotation.z = slope;
+    rail.position.set((x0 + x1) / 2, midY, z); rail.rotation[pose.key] = pose.angle;
+    for (let i = 0; i <= nPosts; i++) {
+      const t = i / nPosts;
+      const x = x1 - len * t, y = yFrom + (yTo - yFrom) * t;
+      posts.add(box(0.03, 0.9, 0.03, P.MAT.graphite(), x, y + 0.45, z));
+    }
   }
+  g.add(posts);
   g.add(glass, rail);
   return g;
 }
@@ -172,6 +238,18 @@ function carBody(profile, width, color, { glassFrom = 0, glassTo = 0, glassY = 0
   body.position.z = -width / 2;
   body.castShadow = true;
   g.add(body);
+  // хромированные бампера и молдинг по борту: без них силуэт читается клином
+  const chrome = P.MAT.chrome();
+  const xs = profile.map((p) => p[0]);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  for (const [bx, by] of [[xMax - 0.06, 0.52], [xMin + 0.06, 0.5]]) {
+    const bumper = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.09, width + 0.06), chrome);
+    bumper.position.set(bx, by, 0); g.add(bumper);
+  }
+  for (const sz of [-1, 1]) {
+    const mold = new THREE.Mesh(new THREE.BoxGeometry(xMax - xMin - 0.5, 0.035, 0.025), chrome);
+    mold.position.set((xMin + xMax) / 2, 0.62, sz * (width / 2 + 0.01)); g.add(mold);
+  }
   // стёкла — тёмная полоса кабины
   if (glassTo > glassFrom) {
     const gl = box(glassTo - glassFrom, 0.32, width + 0.02, new THREE.MeshPhysicalMaterial({ color: 0x1c2a33, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.85 }), (glassFrom + glassTo) / 2, glassY, 0);
@@ -180,19 +258,31 @@ function carBody(profile, width, color, { glassFrom = 0, glassTo = 0, glassY = 0
   return g;
 }
 
+/** колесо: покрышка с плечом, диск с ободом, спицы с двух сторон, тормозной диск (К15) */
 function wheel(r = 0.33, w = 0.24) {
   const g = new THREE.Group();
-  const tire = new THREE.Mesh(new THREE.CylinderGeometry(r, r, w, 24), new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.9 }));
-  tire.rotation.x = Math.PI / 2;
-  g.add(tire);
-  const rim = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.62, r * 0.62, w + 0.01, 16), P.MAT.chrome());
-  rim.rotation.x = Math.PI / 2;
-  g.add(rim);
-  for (let i = 0; i < 5; i++) {
-    const spoke = box(r * 0.5, 0.04, 0.03, P.MAT.brushed());
-    spoke.position.set(Math.cos((i / 5) * Math.PI * 2) * r * 0.28, Math.sin((i / 5) * Math.PI * 2) * r * 0.28, w / 2 + 0.005);
-    spoke.rotation.z = (i / 5) * Math.PI * 2;
-    g.add(spoke);
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.92 });
+  const tire = new THREE.Mesh(new THREE.CylinderGeometry(r, r, w * 0.72, 28), rubber);
+  tire.rotation.x = Math.PI / 2; tire.castShadow = true; g.add(tire);
+  // плечи покрышки — иначе колесо читается плоским кружком
+  for (const sz of [-1, 1]) {
+    const sh = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.94, r * 0.86, w * 0.14, 24), rubber);
+    sh.rotation.x = Math.PI / 2; sh.position.z = sz * (w * 0.43); g.add(sh);
+  }
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.55, r * 0.55, w * 0.3, 20), new THREE.MeshStandardMaterial({ color: 0x6b6b70, roughness: 0.45, metalness: 0.7 }));
+  disc.rotation.x = Math.PI / 2; g.add(disc);
+  for (const sz of [-1, 1]) {
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(r * 0.66, 0.022, 6, 24), P.MAT.chrome());
+    rim.position.z = sz * (w / 2 - 0.01); g.add(rim);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.16, r * 0.16, 0.03, 12), P.MAT.chrome());
+    hub.rotation.x = Math.PI / 2; hub.position.z = sz * (w / 2 + 0.005); g.add(hub);
+    for (let i = 0; i < 5; i++) {
+      const spoke = box(r * 0.56, 0.045, 0.028, P.MAT.brushed());
+      const a = (i / 5) * Math.PI * 2 + (sz > 0 ? 0 : 0.3);
+      spoke.position.set(Math.cos(a) * r * 0.3, Math.sin(a) * r * 0.3, sz * (w / 2 + 0.004));
+      spoke.rotation.z = a;
+      g.add(spoke);
+    }
   }
   return g;
 }
@@ -412,7 +502,7 @@ function buildAquarium(scene, ctx) {
   const x0 = -30, x1 = -16.2, z0 = 11.0, z1 = 20.9, y0 = LEVEL, y1 = 6.3;  // z0 вплотную к перегородке лобби: иначе в щель виден сад
   const g = new THREE.Group();
   // задняя и боковые стенки — стекло: сквозь бассейн виден сад за окнами
-  const sand = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ color: 0xc9b98a, roughness: 1 }));
+  const sand = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ color: 0x9a9279, roughness: 1 }));
   sand.rotation.x = -Math.PI / 2; sand.position.set((x0 + x1) / 2, y0 + 0.01, (z0 + z1) / 2);
   g.add(sand);
   // каустика — анимированная канва на дне
@@ -420,19 +510,39 @@ function buildAquarium(scene, ctx) {
   caustic.texture.wrapS = caustic.texture.wrapT = THREE.RepeatWrapping; caustic.texture.repeat.set(4, 3);
   const cmesh = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshBasicMaterial({ map: caustic.texture, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
   cmesh.rotation.x = -Math.PI / 2; cmesh.position.set((x0 + x1) / 2, y0 + 0.02, (z0 + z1) / 2);
-  g.add(cmesh);
+  cmesh.renderOrder = 1; g.add(cmesh);
   // камни и водоросли
   for (let i = 0; i < 14; i++) {
     const r = 0.3 + Math.random() * 0.7;
-    const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), new THREE.MeshStandardMaterial({ color: 0x4b5a66, roughness: 0.95 }));
+    // валун, а не правильный многогранник: вершины разбросаны шумом (В9)
+    const geo = new THREE.IcosahedronGeometry(r, 2);
+    const pa = geo.attributes.position;
+    for (let v = 0; v < pa.count; v++) {
+      const vx = pa.getX(v), vy = pa.getY(v), vz = pa.getZ(v);
+      const n = 1 + (Math.sin(vx * 7.3 + i) + Math.cos(vy * 6.1 - i) + Math.sin(vz * 5.7 + i * 2)) * 0.055;
+      pa.setXYZ(v, vx * n, vy * n, vz * n);
+    }
+    geo.computeVertexNormals();
+    const rock = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x4b5a66, roughness: 0.52, metalness: 0.06 }));
     rock.position.set(x0 + 1 + Math.random() * (x1 - x0 - 2), y0 + r * 0.5, z0 + 1 + Math.random() * (z1 - z0 - 2));
-    rock.scale.y = 0.6; g.add(rock);
+    rock.scale.y = 0.6; rock.rotation.y = Math.random() * 3; g.add(rock);
   }
   const kelp = [];
+  const KELP_COLORS = [0x2f7a4a, 0x46925a, 0x1f5c3e];
   for (let i = 0; i < 26; i++) {
     const h = 1.5 + Math.random() * 3;
-    const k = new THREE.Mesh(new THREE.PlaneGeometry(0.25, h, 1, 6), new THREE.MeshStandardMaterial({ color: 0x2f7a4a, roughness: 0.8, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
-    k.position.set(x0 + 0.8 + Math.random() * (x1 - x0 - 1.6), y0 + h / 2, z0 + 0.6 + Math.random() * (z1 - z0 - 1.2));
+    // лента по кривой, а не прямая палка: изгиб задан контрольными точками
+    const bend = (Math.random() - 0.5) * 0.9;
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(bend * 0.3, h * 0.35, bend * 0.2),
+      new THREE.Vector3(bend * 0.8, h * 0.72, bend * 0.5),
+      new THREE.Vector3(bend * 1.3, h, bend * 0.9),
+    ]);
+    const k = new THREE.Mesh(new THREE.TubeGeometry(curve, 10, 0.055, 4, false),
+      new THREE.MeshStandardMaterial({ color: KELP_COLORS[i % 3], roughness: 0.78, side: THREE.DoubleSide, transparent: true, opacity: 0.92 }));
+    k.scale.set(2.2, 1, 0.5);                      // сплющена в лист
+    k.position.set(x0 + 0.8 + Math.random() * (x1 - x0 - 1.6), y0 + 0.02, z0 + 0.6 + Math.random() * (z1 - z0 - 1.2));
     k.rotation.y = Math.random() * Math.PI;
     k.userData.phase = Math.random() * 6;
     g.add(k); kelp.push(k);
@@ -443,13 +553,43 @@ function buildAquarium(scene, ctx) {
     const side = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, y1 - y0), appleGlass(0.1));
     side.position.set((x0 + x1) / 2, (y0 + y1) / 2, zz); g.add(side);
   }
-  // вода: голубая толща (без transmission — она дорогая на такой коробке) + тонирующий слой у стекла
-  const water = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0 - 0.1, y1 - y0 - 0.3, z1 - z0 - 0.1), new THREE.MeshPhysicalMaterial({ color: 0x1f6f9a, transparent: true, opacity: 0.42, roughness: 0.15, metalness: 0, side: THREE.BackSide, depthWrite: false }));
+  // Толща воды: цвет ИДЁТ ПО ГЛУБИНЕ (#1F6F9A у поверхности → #12354E у дна),
+  // а не одна ровная заливка. Плюс слои дымки параллельно стеклу: дальняя
+  // стенка размывается, рыба на глубине мягче, чем у стекла (В9).
+  const depthTex = P.canvasTexture(8, 256, (c, w, h) => {
+    const grad = c.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, '#1f6f9a'); grad.addColorStop(0.55, '#17557a'); grad.addColorStop(1, '#12354e');
+    c.fillStyle = grad; c.fillRect(0, 0, w, h);
+  }).texture;
+  const water = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0 - 0.1, y1 - y0 - 0.3, z1 - z0 - 0.1), new THREE.MeshBasicMaterial({ map: depthTex, transparent: true, opacity: 0.46, side: THREE.BackSide, depthWrite: false, toneMapped: false }));
   water.position.set((x0 + x1) / 2, (y0 + y1) / 2 - 0.15, (z0 + z1) / 2);
-  g.add(water);
+  water.renderOrder = 5; g.add(water);
+  const hazeMat = [];
+  for (let i = 1; i <= 9; i++) {
+    const hx = x1 - 0.4 - (i / 10) * (x1 - x0 - 0.8);
+    const m = new THREE.MeshBasicMaterial({ color: 0x14496c, transparent: true, opacity: 0.085, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    const plate = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0 - 0.1, y1 - y0 - 0.3), m);
+    plate.position.set(hx, (y0 + y1) / 2 - 0.15, (z0 + z1) / 2); plate.rotation.y = Math.PI / 2;
+    plate.renderOrder = 6; g.add(plate); hazeMat.push(m);
+  }
+  // пузыри: спрайты всплывают и лопаются у поверхности
+  const bubbleTex = P.canvasTexture(64, 64, (c) => {
+    const grd = c.createRadialGradient(32, 32, 2, 32, 32, 30);
+    grd.addColorStop(0, 'rgba(255,255,255,.9)'); grd.addColorStop(0.6, 'rgba(200,235,255,.35)'); grd.addColorStop(1, 'rgba(200,235,255,0)');
+    c.fillStyle = grd; c.beginPath(); c.arc(32, 32, 30, 0, 7); c.fill();
+  }).texture;
+  const bubbles = [];
+  for (let i = 0; i < 26; i++) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: bubbleTex, transparent: true, depthWrite: false, opacity: 0.7 }));
+    const r = 0.02 + Math.random() * 0.045;
+    sp.scale.setScalar(r * 2);
+    sp.position.set(x0 + 1 + Math.random() * (x1 - x0 - 2), y0 + Math.random() * (y1 - y0 - 0.6), z0 + 1 + Math.random() * (z1 - z0 - 2));
+    sp.renderOrder = 7; g.add(sp);
+    bubbles.push({ obj: sp, v: 0.25 + Math.random() * 0.4, r });
+  }
   // поверхность воды и крыша над бассейном — сквозь него не должен быть виден сад
   const surface = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshPhysicalMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.1, side: THREE.DoubleSide }));
-  surface.rotation.x = -Math.PI / 2; surface.position.set((x0 + x1) / 2, y1 - 0.12, (z0 + z1) / 2); g.add(surface);
+  surface.rotation.x = -Math.PI / 2; surface.position.set((x0 + x1) / 2, y1 - 0.12, (z0 + z1) / 2); surface.renderOrder = 8; g.add(surface);
   g.add(box(x1 - x0 + 0.4, 0.25, z1 - z0 + 0.4, stoneMaterial(3), (x0 + x1) / 2, y1 + 0.3, (z0 + z1) / 2));
   const lobbyBand = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0 + 0.4, 9 - y1), stoneMaterial(4));
   lobbyBand.position.set(x1 + 0.1, (y1 + 9) / 2, (z0 + z1) / 2); lobbyBand.rotation.y = Math.PI / 2; g.add(lobbyBand);
@@ -458,12 +598,12 @@ function buildAquarium(scene, ctx) {
     const ray = new THREE.Mesh(new THREE.PlaneGeometry(0.8, y1 - y0 - 0.4), new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
     ray.position.set(x0 + 1.5 + i * 1.6, (y0 + y1) / 2, z0 + 2 + (i % 3) * 2.5);
     ray.rotation.y = 0.3 + i * 0.2; ray.rotation.z = 0.08;
-    g.add(ray);
+    ray.renderOrder = 7; g.add(ray);
   }
   // стекло со стороны лобби и рама
   const glass = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0, y1 - y0), new THREE.MeshPhysicalMaterial({ color: 0xcfe6f2, transparent: true, opacity: 0.18, roughness: 0.02, metalness: 0.05, side: THREE.DoubleSide }));
   glass.position.set(x1, (y0 + y1) / 2, (z0 + z1) / 2); glass.rotation.y = Math.PI / 2;
-  g.add(glass);
+  glass.renderOrder = 9; g.add(glass);
   const frameMat = P.MAT.graphite();
   for (const yy of [y0 + 0.07, y1 - 0.07]) g.add(box(0.12, 0.14, z1 - z0 + 0.2, frameMat, x1 + 0.02, yy, (z0 + z1) / 2));
   const ledA = box(0.03, 0.03, z1 - z0, new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.8 }), x1 + 0.06, y1 + 0.02, (z0 + z1) / 2);
@@ -472,7 +612,7 @@ function buildAquarium(scene, ctx) {
   const glow = new THREE.PointLight(0x7fc4ff, 1.6, 12, 1.6); glow.position.set(x1 + 1.5, y0 + 3, (z0 + z1) / 2); g.add(glow);
   // обитатели
   const fauna = [];
-  const whale = bigAnimal('whale'); g.add(whale); fauna.push({ obj: whale, cx: -23.2, cz: 16, rx: 4.4, rz: 2.6, y: 4.2, speed: 0.12, phase: 0, kind: 'whale' });
+  const whale = bigAnimal('whale'); whale.scale.setScalar(0.72); g.add(whale); fauna.push({ obj: whale, cx: -23.2, cz: 16, rx: 4.4, rz: 2.6, y: 4.2, speed: 0.12, phase: 0, kind: 'whale' });
   const orca = bigAnimal('orca'); g.add(orca); fauna.push({ obj: orca, cx: -23.0, cz: 16, rx: 4.8, rz: 3.0, y: 2.9, speed: -0.2, phase: 2.2, kind: 'orca' });
   const shark = bigAnimal('shark'); g.add(shark); fauna.push({ obj: shark, cx: -22.8, cz: 16.1, rx: 4.2, rz: 2.6, y: 2.1, speed: 0.28, phase: 4.1, kind: 'shark' });
   const schools = [];
@@ -506,7 +646,25 @@ function buildAquarium(scene, ctx) {
         c.stroke();
       }
       caustic.texture.needsUpdate = true;
-      for (const k of kelp) k.rotation.z = Math.sin(t * 0.7 + k.userData.phase) * 0.12;
+      caustic.texture.offset.x += dt * 0.03;                 // каустика ползёт (В9)
+      caustic.texture.offset.y += dt * 0.012;
+      for (const k of kelp) {
+        k.rotation.z = Math.sin(t * 0.7 + k.userData.phase) * 0.12;
+        k.rotation.x = Math.cos(t * 0.5 + k.userData.phase) * 0.07;
+      }
+      for (const b of bubbles) {
+        b.obj.position.y += b.v * dt;
+        const top = y1 - 0.35;
+        if (b.obj.position.y > top) {                        // лопается у поверхности
+          b.obj.material.opacity = Math.max(0, b.obj.material.opacity - dt * 4);
+          if (b.obj.material.opacity <= 0.01) {
+            b.obj.position.set(x0 + 1 + Math.random() * (x1 - x0 - 2), y0 + 0.15, z0 + 1 + Math.random() * (z1 - z0 - 2));
+            b.obj.material.opacity = 0.7;
+          }
+        } else {
+          b.obj.position.x += Math.sin(t * 2 + b.v * 9) * dt * 0.05;
+        }
+      }
       const swim = (o, cx, cz, rx, rz, y, speed, phase, extraY = 0) => {
         const a = t * speed + phase;
         const x = cx + Math.cos(a) * rx, z = cz + Math.sin(a) * rz;
@@ -581,7 +739,8 @@ function buildMeetingAndLibrary(scene, ctx) {
     c.fillStyle = '#b95740'; c.fillRect(48, 128, 6, 260);
   });
   const tvMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.46), new THREE.MeshBasicMaterial({ map: tv.texture, toneMapped: false }));
-  tvMesh.position.set(x1 - 0.12, LEVEL + 2.0, 16.3); tvMesh.rotation.y = -Math.PI / 2; g.add(tvMesh);
+  // полотно ПЕРЕД корпусом: при x1−0.12 оно оказывалось внутри графитовой плиты
+  tvMesh.position.set(x1 - 0.155, LEVEL + 2.0, 16.3); tvMesh.rotation.y = -Math.PI / 2; g.add(tvMesh);
   g.add(box(0.06, 1.6, 2.75, P.MAT.graphite(), x1 - 0.1, LEVEL + 2.0, 16.3));
   const pl = P.makeMonstera(1.0); pl.position.set(x1 - 0.9, LEVEL, z1 - 0.9); g.add(pl); ctx.life.plants.push(pl);
   const l1 = new THREE.PointLight(0xfff0dd, 1.2, 9, 1.8); l1.position.set(21, LEVEL + 3.6, 16.3); g.add(l1);
@@ -730,7 +889,22 @@ function buildGarage(scene, ctx) {
   for (let i = 0; i < 4; i++) {
     const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.2, z1 - z0 - 2), new THREE.MeshBasicMaterial({ color: 0xfff6e8 }));
     strip.rotation.x = Math.PI / 2; strip.position.set(x0 + 3 + i * 4, LEVEL + 4.58, (z0 + z1) / 2); g.add(strip);
-    const l = new THREE.PointLight(0xfff0dd, 1.3, 11, 1.6); l.position.set(x0 + 3 + i * 4, LEVEL + 4.2, (z0 + z1) / 2); g.add(l);
+    const l = new THREE.PointLight(0xfff0dd, 1.8, 14, 1.5); l.position.set(x0 + 3 + i * 4, LEVEL + 4.2, (z0 + z1) / 2); g.add(l);
+  }
+  // Акцентный свет на каждую машину: общего потолочного не хватало —
+  // интерьер выходил ровно-серым, и кузова читались плоскими пятнами (К15).
+  for (const [sx, sz] of [[21.5, -6.2], [28.5, -5.0], [21.5, 3.2], [28.6, 2.0], [31.0, 5.2]]) {
+    const spot = new THREE.SpotLight(0xfff4e2, 3.0, 13, 0.75, 0.72, 1.5);
+    spot.position.set(sx + 1.2, LEVEL + 4.3, sz - 0.8);
+    spot.target.position.set(sx, LEVEL + 0.5, sz);
+    g.add(spot); g.add(spot.target);
+    const can = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 0.2, 12), P.MAT.graphite());
+    can.position.set(sx + 1.2, LEVEL + 4.42, sz - 0.8); g.add(can);
+  }
+  // холодная подсветка стен: отделяет кузов от фона
+  for (const zz of [z0 + 3, (z0 + z1) / 2, z1 - 3]) {
+    const rim = new THREE.PointLight(0x7fa8c8, 0.7, 9, 2);
+    rim.position.set(x1 - 0.8, LEVEL + 2.6, zz); g.add(rim);
   }
   // машины
   const gto = makeCar('gto'); gto.position.set(21.5, LEVEL, -6.2); gto.rotation.y = 0.25; g.add(gto);
@@ -856,7 +1030,7 @@ function buildReactor(scene, ctx) {
   for (let i = 0; i < 16; i++) {
     const r = 0.5 + Math.random() * 0.9;
     const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), new THREE.MeshStandardMaterial({ color: [0x3f6b47, 0x4f8a52, 0x6aa35c][i % 3], roughness: 0.9 }));
-    bush.position.set(x0 + 2 + Math.random() * (x1 - x0 - 4), CEIL + 0.06 + r * 0.55, z0 + 2 + Math.random() * (z1 - z0 - 4));
+    bush.position.set(x0 + 2 + Math.random() * (x1 - x0 - 4), CEIL + 0.12 + r * 0.7, z0 + 2 + Math.random() * (z1 - z0 - 4));
     bush.scale.y = 0.7; g.add(bush);
   }
 
@@ -1026,7 +1200,10 @@ function buildRingLounge(scene, ctx) {
   const slabMat = new THREE.MeshStandardMaterial({ color: 0xece6da, roughness: 0.6 });
   const woodTex = P.woodTexture(); woodTex.repeat.set(4, 4);
   const woodFloor = new THREE.MeshStandardMaterial({ map: woodTex, bumpMap: woodTex, bumpScale: 0.005, roughness: 0.35, metalness: 0.03 });
-  for (const r of [ROOMS.ringW, ROOMS.ringE, ROOMS.ringN, ROOMS.ringS]) {
+  // северный участок разрезан проёмом x −9…9: сплошная плита резала главный экран,
+  // а через вырез со второго этажа открывается вид на дашборд
+  const RING_PARTS = [ROOMS.ringW, ROOMS.ringE, ROOMS.ringS, ROOMS.ringN, ROOMS.ringN2];
+  for (const r of RING_PARTS) {
     const w = r[1] - r[0], d = r[3] - r[2];
     const slab = rbox(w, 0.24, d, slabMat, 0.02);
     slab.position.set((r[0] + r[1]) / 2, FLOOR2 - 0.12, (r[2] + r[3]) / 2);
@@ -1034,14 +1211,15 @@ function buildRingLounge(scene, ctx) {
     const top = new THREE.Mesh(new THREE.PlaneGeometry(w, d), woodFloor);
     top.rotation.x = -Math.PI / 2; top.position.set((r[0] + r[1]) / 2, FLOOR2 + 0.004, (r[2] + r[3]) / 2); top.receiveShadow = true; g.add(top);
     const led = box(w, 0.03, 0.03, new THREE.MeshBasicMaterial({ color: 0xfff3e6, transparent: true, opacity: 0.7 }),
-      (r[0] + r[1]) / 2, FLOOR2 - 0.27, r === ROOMS.ringN ? r[3] : r[2]);
+      (r[0] + r[1]) / 2, FLOOR2 - 0.27, r[2] < -7 ? r[3] : r[2]);
     g.add(led); ctx.life.strips.push(led);
   }
   // парапет по внутреннему контуру кольца: цельное стекло, тонкий поручень
   const inner = [
     { axis: 'z', at: ROOMS.ringW[1], from: ROOMS.ringN[3], to: ROOMS.ringS[2] },
     { axis: 'z', at: ROOMS.ringE[0], from: ROOMS.ringN[3], to: ROOMS.ringS[2] },
-    { axis: 'x', at: ROOMS.ringN[3], from: ROOMS.ringW[1], to: ROOMS.ringE[0] },
+    { axis: 'x', at: ROOMS.ringN[3], from: ROOMS.ringW[1], to: -9.0 },
+    { axis: 'x', at: ROOMS.ringN[3], from: 9.0, to: ROOMS.ringE[0] },
     { axis: 'x', at: ROOMS.ringS[2], from: ROOMS.ringW[1], to: ROOMS.ringE[0] },
   ];
   for (const p of inner) {
@@ -1057,6 +1235,14 @@ function buildRingLounge(scene, ctx) {
     }
     g.add(glass, rail);
   }
+  // парапет по кромке северного выреза — смотровая площадка над экраном
+  for (const px of [-9.0, 9.0]) {
+    const gl = new THREE.Mesh(new THREE.PlaneGeometry(ROOMS.ringN[3] - ROOMS.ringN[2], 1.05), appleGlass(0.16));
+    gl.position.set(px, FLOOR2 + 0.52, (ROOMS.ringN[2] + ROOMS.ringN[3]) / 2); gl.rotation.y = Math.PI / 2; g.add(gl);
+    const rl = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, ROOMS.ringN[3] - ROOMS.ringN[2], 10), P.MAT.chrome());
+    rl.position.set(px, FLOOR2 + 1.06, (ROOMS.ringN[2] + ROOMS.ringN[3]) / 2); rl.rotation.x = Math.PI / 2; g.add(rl);
+  }
+
   // лестница из фойе на кольцо и подпись
   // лестница стоит в лобби у края проёма и выходит мостиком через проём на кольцо
   const M = ROOMS.stairMain, SB = ROOMS.stairBridge;
@@ -1079,7 +1265,8 @@ function buildRingLounge(scene, ctx) {
   const spots = [
     [-13.6, -6.0, Math.PI / 2], [-13.6, 0.4, Math.PI / 2], [-13.6, 6.6, Math.PI / 2],
     [13.6, -6.0, -Math.PI / 2], [13.6, -1.4, -Math.PI / 2],
-    [-6.0, -9.0, 0], [6.0, -9.0, 0], [-6.0, 9.0, Math.PI], [6.0, 9.0, Math.PI],
+    // северная сторона кольца разрезана проёмом x −9…9 (Б5): мебель туда не ставится
+    [-12.0, -9.0, 0], [12.0, -9.0, 0], [-6.0, 9.0, Math.PI], [6.0, 9.0, Math.PI],
   ];
   for (const [sx, sz, ry] of spots) {
     const sofa = rbox(2.2, 0.42, 0.9, sofaMat, 0.08); sofa.position.set(sx, FLOOR2 + 0.21, sz); sofa.rotation.y = ry; sofa.castShadow = true; g.add(sofa);
@@ -1091,16 +1278,17 @@ function buildRingLounge(scene, ctx) {
     const sh = P.makeContactShadow(3.2, 2.2, 0.28); sh.position.set(sx, FLOOR2 + 0.006, sz); g.add(sh);
     ctx.blockers.push({ x0: sx - 1.2, x1: sx + 1.2, z0: sz - 0.6, z1: sz + 0.6, above: 3 });
   }
-  for (const [px, pz] of [[-14.6, -9.4], [-14.6, 9.4], [14.6, -9.4], [14.6, 9.4], [-9.0, -9.4], [9.0, -9.4]]) {
+  for (const [px, pz] of [[-14.6, -9.4], [-14.6, 9.4], [14.6, -9.4], [14.6, 9.4], [-10.4, -9.4], [10.4, -9.4]]) {
     const pl = (px + pz) % 2 === 0 ? P.makeMonstera(1.0) : P.makeFicus(1.1);
     pl.position.set(px, FLOOR2, pz); g.add(pl); ctx.life.plants.push(pl);
     ctx.blockers.push({ x: px, z: pz, r: 0.5, above: 3 });
   }
   // кофейная точка на северной стороне кольца
-  const bar = rbox(2.6, 0.95, 0.7, stoneMaterial(2), 0.03); bar.position.set(0, FLOOR2 + 0.48, -9.2); g.add(bar);
-  const barTop = rbox(2.7, 0.06, 0.78, P.MAT.walnut(), 0.02); barTop.position.set(0, FLOOR2 + 0.98, -9.2); g.add(barTop);
-  for (let i = 0; i < 4; i++) { const mug = P.makeMug(); mug.position.set(-0.9 + i * 0.35, FLOOR2 + 1.01, -9.3); g.add(mug); }
-  ctx.blockers.push({ x0: -1.4, x1: 1.4, z0: -9.6, z1: -8.8, above: 3 });
+  // кофейная точка переехала на южную сторону: на северной теперь вырез над экраном
+  const bar = rbox(2.6, 0.95, 0.7, stoneMaterial(2), 0.03); bar.position.set(0, FLOOR2 + 0.48, 9.2); g.add(bar);
+  const barTop = rbox(2.7, 0.06, 0.78, P.MAT.walnut(), 0.02); barTop.position.set(0, FLOOR2 + 0.98, 9.2); g.add(barTop);
+  for (let i = 0; i < 4; i++) { const mug = P.makeMug(); mug.position.set(-0.9 + i * 0.35, FLOOR2 + 1.01, 9.3); g.add(mug); }
+  ctx.blockers.push({ x0: -1.4, x1: 1.4, z0: 8.8, z1: 9.6, above: 3 });
 
   scene.add(g);
   ctx.pickable(bar, { kind: 'room', id: 'lounge' });
@@ -1110,106 +1298,236 @@ function buildRingLounge(scene, ctx) {
 
 /* ================= наружное окружение: сад, лес, река, водопад ================= */
 
-function drawOutside(c, w, h, night) {
-  const sky = c.createLinearGradient(0, 0, 0, h);
-  if (night) { sky.addColorStop(0, '#080f1e'); sky.addColorStop(0.6, '#16283f'); sky.addColorStop(1, '#28405c'); }
-  else { sky.addColorStop(0, '#8dbfe0'); sky.addColorStop(0.55, '#cfe3ee'); sky.addColorStop(1, '#eef0e2'); }
-  c.fillStyle = sky; c.fillRect(0, 0, w, h);
-  if (!night) {
-    c.fillStyle = 'rgba(255,255,255,.5)';
-    for (let i = 0; i < 9; i++) { const x = (i * 613) % w, y = h * 0.1 + (i % 3) * 44; c.beginPath(); c.ellipse(x, y, 130 + i * 18, 26 + (i % 2) * 10, 0, 0, 7); c.fill(); }
-  } else {
-    c.fillStyle = 'rgba(255,255,255,.85)';
-    for (let i = 0; i < 200; i++) c.fillRect((i * 397) % w, (i * 131) % (h * 0.42), 2, 2);
-  }
-  const horizon = h * 0.44;
-  c.fillStyle = night ? '#1b2b3d' : '#9fb6c2';
-  c.beginPath(); c.moveTo(0, horizon);
-  for (let x = 0; x <= w; x += 60) c.lineTo(x, horizon - 60 - Math.sin(x * 0.004) * 70 - ((x * 37) % 40));
-  c.lineTo(w, horizon); c.closePath(); c.fill();
-
-  // штаб-квартира-кольцо среди леса — отсылка к Apple Park
-  const rcx = w * 0.5, rcy = horizon + 44, rOut = w * 0.155, rIn = rOut * 0.72;
-  c.save();
-  c.beginPath();
-  c.ellipse(rcx, rcy, rOut, rOut * 0.26, 0, 0, Math.PI * 2);
-  c.ellipse(rcx, rcy, rIn, rIn * 0.26, 0, 0, Math.PI * 2, true);
-  c.fillStyle = night ? 'rgba(120,170,210,.32)' : 'rgba(228,238,244,.92)'; c.fill();
-  c.strokeStyle = night ? 'rgba(160,210,245,.6)' : 'rgba(120,140,155,.5)'; c.lineWidth = 3; c.stroke();
-  c.strokeStyle = night ? 'rgba(255,225,170,.6)' : 'rgba(140,160,175,.4)'; c.lineWidth = 2;
-  for (let a = 0; a < Math.PI * 2; a += 0.055) {
-    const x1 = rcx + Math.cos(a) * rIn, y1 = rcy + Math.sin(a) * rIn * 0.26;
-    const x2 = rcx + Math.cos(a) * rOut, y2 = rcy + Math.sin(a) * rOut * 0.26;
-    c.beginPath(); c.moveTo(x1, y1 - 15); c.lineTo(x2, y2 - 15); c.stroke();
-  }
-  c.fillStyle = night ? 'rgba(90,140,180,.5)' : 'rgba(208,222,230,.95)';
-  c.beginPath(); c.ellipse(rcx, rcy - 15, rOut, rOut * 0.26, 0, Math.PI, 0); c.fill();
-  c.restore();
-  c.fillStyle = night ? '#122a1c' : '#5f9b62';
-  c.beginPath(); c.ellipse(rcx, rcy, rIn * 0.9, rIn * 0.23, 0, 0, Math.PI * 2); c.fill();
-
-  // лес двумя планами
-  const forest = (y, scale, color) => {
+/**
+ * Дальний план на цилиндре: ТОЛЬКО полоса горизонта, ниже — прозрачно, чтобы
+ * читалась настоящая земля, выше — прозрачно, чтобы читалось небо. Три плана
+ * с дымкой; силуэты разной высоты, период кратен ширине канвы — на стыке
+ * повтора шва нет.
+ */
+function drawHorizon(c, w, h, night) {
+  c.clearRect(0, 0, w, h);
+  const HZ = h * 0.78;                       // линия горизонта на уровне глаз
+  // дальние холмы: почти растворены в дымке
+  const hill = (base, amp, color, period) => {
     c.fillStyle = color;
-    for (let x = -40; x < w + 40; x += 26 * scale) {
-      const th = (70 + ((x * 53) % 62)) * scale;
-      c.beginPath(); c.moveTo(x, y); c.lineTo(x + 13 * scale, y - th); c.lineTo(x + 26 * scale, y); c.closePath(); c.fill();
+    c.beginPath(); c.moveTo(0, base);
+    for (let x = 0; x <= w; x += 8) {
+      const k = (x / w) * Math.PI * 2 * period;
+      c.lineTo(x, base - amp * (0.55 + 0.45 * Math.sin(k) * Math.cos(k * 0.5 + 1.1)));
+    }
+    c.lineTo(w, base); c.closePath(); c.fill();
+  };
+  hill(HZ - 2, h * 0.075, night ? 'rgba(30,48,70,.75)' : 'rgba(150,175,192,.72)', 3);
+  hill(HZ + 1, h * 0.05, night ? 'rgba(22,38,56,.85)' : 'rgba(126,156,150,.8)', 5);
+  // два плана леса: силуэты РАЗНОЙ высоты и с разбросом, не гребёнка
+  const forest = (base, scale, color, period) => {
+    c.fillStyle = color;
+    for (let i = 0; i < period; i++) {
+      const x = (i / period) * w;
+      const step = w / period;
+      const th = (0.5 + 0.5 * Math.abs(Math.sin(i * 2.399))) * h * 0.055 * scale;
+      const lean = Math.sin(i * 1.7) * step * 0.12;
+      c.beginPath();
+      c.moveTo(x - step * 0.55, base);
+      c.lineTo(x + lean, base - th);
+      c.lineTo(x + step * 0.55, base);
+      c.closePath(); c.fill();
+      if (i % 3 === 0) {                      // подлесок: круглые кроны вперемешку
+        c.beginPath(); c.arc(x + step * 0.3, base - th * 0.32, th * 0.3, 0, Math.PI * 2); c.fill();
+      }
     }
   };
-  forest(horizon + 28, 0.85, night ? '#0f2318' : '#3f6b47');
-  forest(horizon + 66, 1.2, night ? '#0c1c13' : '#356040');
-
-  // река с водопадом
-  const riverTop = horizon + 104;
-  c.fillStyle = night ? '#0d2233' : '#4a86a8';
-  c.beginPath();
-  c.moveTo(0, h); c.lineTo(0, riverTop + 130);
-  c.bezierCurveTo(w * 0.25, riverTop + 64, w * 0.4, riverTop + 30, w * 0.5, riverTop);
-  c.bezierCurveTo(w * 0.6, riverTop + 30, w * 0.75, riverTop + 64, w, riverTop + 130);
-  c.lineTo(w, h); c.closePath(); c.fill();
-  c.fillStyle = night ? '#16202a' : '#7d8a91';
-  c.beginPath();
-  c.moveTo(w * 0.34, riverTop + 36); c.lineTo(w * 0.44, riverTop + 6); c.lineTo(w * 0.56, riverTop + 6); c.lineTo(w * 0.66, riverTop + 36);
-  c.lineTo(w * 0.66, riverTop + 104); c.lineTo(w * 0.34, riverTop + 104); c.closePath(); c.fill();
-  const fall = c.createLinearGradient(0, riverTop, 0, riverTop + 104);
-  fall.addColorStop(0, night ? 'rgba(190,225,245,.85)' : 'rgba(255,255,255,.95)');
-  fall.addColorStop(1, night ? 'rgba(140,190,220,.4)' : 'rgba(225,240,248,.62)');
-  c.fillStyle = fall; c.fillRect(w * 0.45, riverTop + 6, w * 0.1, 100);
-  c.fillStyle = night ? 'rgba(190,225,245,.35)' : 'rgba(255,255,255,.6)';
-  for (let i = 0; i < 28; i++) { c.beginPath(); c.arc(w * 0.5 + (Math.random() - 0.5) * w * 0.12, riverTop + 100 + Math.random() * 24, 4 + Math.random() * 12, 0, 7); c.fill(); }
-  c.fillStyle = night ? '#0f1c14' : '#4f7d58';
-  c.beginPath(); c.moveTo(0, riverTop + 128); c.bezierCurveTo(w * 0.22, riverTop + 78, w * 0.36, riverTop + 48, w * 0.44, riverTop + 24); c.lineTo(0, riverTop + 24); c.closePath(); c.fill();
-  c.beginPath(); c.moveTo(w, riverTop + 128); c.bezierCurveTo(w * 0.78, riverTop + 78, w * 0.64, riverTop + 48, w * 0.56, riverTop + 24); c.lineTo(w, riverTop + 24); c.closePath(); c.fill();
-
-  // сад на переднем плане: газон, дорожка, кроны, скамьи
-  c.fillStyle = night ? '#0b1710' : '#59894f';
-  c.fillRect(0, h * 0.84, w, h * 0.16);
-  c.strokeStyle = night ? 'rgba(190,180,150,.25)' : 'rgba(232,226,208,.85)'; c.lineWidth = 26; c.lineCap = 'round';
-  c.beginPath(); c.moveTo(-20, h * 0.97); c.bezierCurveTo(w * 0.3, h * 0.9, w * 0.6, h * 0.95, w + 20, h * 0.87); c.stroke();
-  for (let i = 0; i < 30; i++) {
-    const x = (i * 271) % w, y = h * 0.845 + ((i * 53) % Math.round(h * 0.12));
-    c.fillStyle = night ? '#12281a' : ['#3f6b47', '#4f8a52', '#6aa35c'][i % 3];
-    c.beginPath(); c.arc(x, y, 24 + (i % 4) * 12, 0, Math.PI * 2); c.fill();
-    if (!night && i % 5 === 0) { c.fillStyle = '#6b4a33'; c.fillRect(x - 3, y, 6, 22); }
-  }
-  if (night) { c.fillStyle = 'rgba(255,214,150,.55)'; for (let i = 0; i < 26; i++) { c.beginPath(); c.arc((i * 331) % w, h * 0.9 + ((i * 71) % 60), 3, 0, 7); c.fill(); } }
+  forest(HZ + 2, 0.9, night ? '#0d2016' : 'rgba(86,124,96,.92)', 150);
+  forest(HZ + 7, 1.35, night ? '#0a1810' : '#3f6b47', 96);
+  // дымка у самой земли: стык с настоящим газоном не должен читаться линией
+  const haze = c.createLinearGradient(0, HZ - h * 0.02, 0, HZ + h * 0.05);
+  haze.addColorStop(0, night ? 'rgba(20,32,48,0)' : 'rgba(214,228,232,0)');
+  haze.addColorStop(0.55, night ? 'rgba(20,32,48,.45)' : 'rgba(214,228,232,.5)');
+  haze.addColorStop(1, night ? 'rgba(20,32,48,0)' : 'rgba(214,228,232,0)');
+  c.fillStyle = haze; c.fillRect(0, HZ - h * 0.02, w, h * 0.07);
 }
 
+/** трава: мелкий шум зелени, без видимого рисунка на повторе */
+function grassTexture(size = 512) {
+  const { texture } = P.canvasTexture(size, size, (c) => {
+    c.fillStyle = '#5c7f45'; c.fillRect(0, 0, size, size);
+    for (let i = 0; i < 14000; i++) {
+      const x = Math.random() * size, y = Math.random() * size;
+      const g = 108 + Math.random() * 60;
+      c.strokeStyle = `rgba(${Math.round(g * 0.62)},${Math.round(g)},${Math.round(g * 0.5)},.5)`;
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x + (Math.random() - 0.5) * 3, y - 2 - Math.random() * 3); c.stroke();
+    }
+  });
+  return texture;
+}
+
+/** небо: градиент зенит → горизонт, отдельный для дня и ночи */
+function skyTexture(night) {
+  const { texture } = P.canvasTexture(16, 256, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, 0, h);
+    if (night) { g.addColorStop(0, '#0a1020'); g.addColorStop(0.62, '#1b2a3f'); g.addColorStop(1, '#33404d'); }
+    else { g.addColorStop(0, '#5f93c4'); g.addColorStop(0.55, '#a8c8e2'); g.addColorStop(1, '#dfe8ea'); }
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+  });
+  return texture;
+}
+
+/**
+ * Окружение — замкнутая оболочка, а не четыре щита (В8). Небо сферой, земля
+ * плоскостью до горизонта, дальний план — цилиндрическая панорама без углов,
+ * ближний план — настоящая геометрия: деревья, кусты, дорожка, скамьи. И
+ * кольцо штаб-квартиры вынесено из картинки в объём: параллакс отделяет
+ * ближний план от дальнего, и «обои» перестают читаться обоями.
+ */
 function buildOutside(scene) {
-  const day = P.canvasTexture(4096, 1536, (c, w, h) => drawOutside(c, w, h, false));
-  const night = P.canvasTexture(4096, 1536, (c, w, h) => drawOutside(c, w, h, true));
-  const planes = [];
+  const g = new THREE.Group();
+  scene.add(g);
+
+  // --- небо
+  const skyDay = skyTexture(false), skyNight = skyTexture(true);
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(240, 32, 20), new THREE.MeshBasicMaterial({ map: skyDay, side: THREE.BackSide, toneMapped: false, depthWrite: false, fog: false }));
+  sky.position.y = -20; g.add(sky);
+
+  // --- земля до горизонта
+  const grass = grassTexture();
+  // 460 м газона одной плиткой размывались в кисель: плотность считается от
+  // реального размера плоскости (В6), 128 пикс/м при канве 512
+  const groundMat = new THREE.MeshStandardMaterial({ map: P.tiled(grass, 460, 460, 128, 512), color: 0xffffff, roughness: 0.95, metalness: 0 });
+  /*
+   * В газоне ВЫРЕЗАН след здания. Сплошная плоскость на отметке −0.16 резала
+   * котлован зала реактора (дно −1.9): с балкона поперёк ядра шла зелёная
+   * плита. Отверстие чуть шире наружных граней стен — щели у цоколя нет.
+   */
+  const shape = new THREE.Shape();
+  shape.moveTo(-230, -230); shape.lineTo(230, -230); shape.lineTo(230, 230); shape.lineTo(-230, 230); shape.closePath();
+  const hole = new THREE.Path();
+  hole.moveTo(-34.1, -11.4); hole.lineTo(34.1, -11.4); hole.lineTo(34.1, 21.2); hole.lineTo(-34.1, 21.2); hole.closePath();
+  shape.holes.push(hole);
+  const groundGeo = new THREE.ShapeGeometry(shape);
+  // ShapeGeometry кладёт UV в мировых единицах — плитка считается тем же правилом
+  const gp = groundGeo.attributes.position, guv = groundGeo.attributes.uv;
+  for (let i = 0; i < gp.count; i++) guv.setXY(i, gp.getX(i) / 460, gp.getY(i) / 460);
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2; ground.position.y = -0.16; ground.receiveShadow = true; g.add(ground);
+
+  // --- дальний план: одна цилиндрическая панорама, углов и стыков нет
+  const day = P.canvasTexture(4096, 1024, (c, w, h) => drawHorizon(c, w, h, false));
+  const night = P.canvasTexture(4096, 1024, (c, w, h) => drawHorizon(c, w, h, true));
+  for (const t of [day.texture, night.texture]) { t.wrapS = THREE.RepeatWrapping; t.repeat.x = 3; }
+  const pano = new THREE.Mesh(
+    new THREE.CylinderGeometry(96, 96, 46, 96, 1, true),
+    new THREE.MeshBasicMaterial({ map: day.texture, side: THREE.BackSide, toneMapped: false, transparent: true, depthWrite: false, fog: false }),
+  );
+  pano.position.set(0, 15, 4); pano.renderOrder = -1; g.add(pano);
+
+  // --- ближний план: деревья инстансами (ствол + две кроны)
+  const N = 22;
+  const trunkG = new THREE.CylinderGeometry(0.16, 0.24, 4.2, 6);
+  const crownG = new THREE.IcosahedronGeometry(1.9, 1);
+  const trunks = new THREE.InstancedMesh(trunkG, P.MAT.walnut(), N);
+  const crowns = new THREE.InstancedMesh(crownG, new THREE.MeshStandardMaterial({ color: 0x3e6f3f, roughness: 0.9, flatShading: true }), N * 2);
+  trunks.castShadow = true; crowns.castShadow = true;
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pos = new THREE.Vector3();
+  let ci = 0;
+  const spots = [];
+  for (let i = 0; i < N; i++) {
+    // по дуге в 26…44 м от фасада, врассыпную, но не в створе окон
+    const a = (i / N) * Math.PI * 2 + (i % 3) * 0.11;
+    const r = 26 + ((i * 7) % 19);
+    const x = Math.cos(a) * r * 1.35, z = Math.sin(a) * r + 4;
+    if (Math.abs(x) < 36 && z > -13 && z < 24) continue;   // не внутри здания
+    spots.push([x, z]);
+    const hgt = 0.85 + ((i * 13) % 7) / 10;
+    pos.set(x, hgt * 2.1 - 0.16, z); sc.set(hgt, hgt, hgt);
+    m4.compose(pos, q, sc); trunks.setMatrixAt(i, m4);
+    for (let k = 0; k < 2; k++) {
+      pos.set(x + (k ? 0.7 : -0.5), hgt * (4.3 + k * 0.9), z + (k ? -0.6 : 0.4));
+      sc.setScalar(hgt * (k ? 0.78 : 1));
+      m4.compose(pos, q, sc); crowns.setMatrixAt(ci++, m4);
+    }
+  }
+  for (; ci < N * 2; ci++) { m4.compose(pos.set(0, -50, 0), q, sc.setScalar(0.01)); crowns.setMatrixAt(ci, m4); }
+  trunks.instanceMatrix.needsUpdate = true; crowns.instanceMatrix.needsUpdate = true;
+  g.add(trunks); g.add(crowns);
+
+  // кусты у фасада
+  const bushG = new THREE.IcosahedronGeometry(0.9, 1);
+  const bushes = new THREE.InstancedMesh(bushG, new THREE.MeshStandardMaterial({ color: 0x4d7c46, roughness: 0.95, flatShading: true }), 34);
+  let bi = 0;
+  for (let i = 0; i < 34; i++) {
+    const side = i < 17 ? -1 : 1;
+    const z = -12 + ((i % 17) * 2.3);
+    const x = side * (37 + (i % 3) * 0.9);
+    pos.set(x, 0.5, z); sc.setScalar(0.7 + ((i * 5) % 6) / 12);
+    m4.compose(pos, q, sc); bushes.setMatrixAt(bi++, m4);
+  }
+  bushes.instanceMatrix.needsUpdate = true; bushes.castShadow = true; g.add(bushes);
+
+  // дорожка вокруг здания + скамьи
+  const pathMat = new THREE.MeshStandardMaterial({ color: 0xcfc6b4, roughness: 0.9 });
   for (const side of [-1, 1]) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(120, 46), new THREE.MeshBasicMaterial({ map: day.texture, toneMapped: false }));
-    m.position.set(side * 58, 15, 4); m.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
-    scene.add(m); planes.push(m);
+    const walk = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 62), pathMat);
+    walk.rotation.x = -Math.PI / 2; walk.position.set(side * 40, -0.14, 4); walk.receiveShadow = true; g.add(walk);
   }
-  for (const [z, ry] of [[-52, 0], [58, Math.PI]]) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(120, 46), new THREE.MeshBasicMaterial({ map: day.texture, toneMapped: false }));
-    m.position.set(0, 15, z); m.rotation.y = ry;
-    scene.add(m); planes.push(m);
+  const cross = new THREE.Mesh(new THREE.PlaneGeometry(82, 2.6), pathMat);
+  cross.rotation.x = -Math.PI / 2; cross.position.set(0, -0.14, 30); cross.receiveShadow = true; g.add(cross);
+  for (const [bx, bz, ry] of [[-40, 12, 0], [-40, -6, 0], [40, 12, Math.PI], [40, -6, Math.PI], [-8, 30, -Math.PI / 2], [8, 30, Math.PI / 2]]) {
+    const bench = new THREE.Group();
+    const seat = box(1.9, 0.08, 0.5, P.MAT.walnut(), 0, 0.44, 0); seat.castShadow = true; bench.add(seat);
+    bench.add(box(1.9, 0.4, 0.06, P.MAT.walnut(), 0, 0.66, -0.22));
+    for (const dx of [-0.75, 0.75]) bench.add(box(0.07, 0.44, 0.44, P.MAT.graphite(), dx, 0.22, 0));
+    bench.position.set(bx, -0.16, bz); bench.rotation.y = ry; g.add(bench);
   }
-  return { setDark(dark) { for (const m of planes) { m.material.map = dark ? night.texture : day.texture; m.material.needsUpdate = true; } }, update() {} };
+
+  // --- река с водопадом: настоящая вода на земле, а не синий клин на щите
+  const waterMat = new THREE.MeshStandardMaterial({ color: 0x3f7ea3, roughness: 0.12, metalness: 0.25, transparent: true, opacity: 0.92 });
+  const river = new THREE.Mesh(new THREE.PlaneGeometry(300, 16, 40, 2), waterMat);
+  const rp = river.geometry.attributes.position;
+  for (let i = 0; i < rp.count; i++) rp.setY(i, rp.getY(i) + Math.sin(rp.getX(i) * 0.035) * 5);  // русло изгибается
+  river.geometry.computeVertexNormals();
+  river.rotation.x = -Math.PI / 2; river.position.set(0, -0.12, -62); g.add(river);
+  // уступ и падающая вода
+  const ledge = new THREE.Mesh(new THREE.BoxGeometry(26, 2.4, 7), new THREE.MeshStandardMaterial({ color: 0x8b8578, roughness: 0.95 }));
+  ledge.position.set(-46, 1.3, -68); ledge.rotation.y = 0.12; g.add(ledge);
+  const fallMat = new THREE.MeshBasicMaterial({ color: 0xeef7fb, transparent: true, opacity: 0.85, side: THREE.DoubleSide, fog: false });
+  const fall = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.8), fallMat);
+  fall.position.set(-46, 1.26, -64.55); fall.rotation.y = 0.12; g.add(fall);
+  const foam = new THREE.Mesh(new THREE.CircleGeometry(5.5, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, fog: false }));
+  foam.rotation.x = -Math.PI / 2; foam.position.set(-46, -0.08, -63.2); g.add(foam);
+  // верхнее русло за уступом
+  const upper = new THREE.Mesh(new THREE.PlaneGeometry(60, 14), waterMat);
+  upper.rotation.x = -Math.PI / 2; upper.position.set(-62, 2.62, -72); g.add(upper);
+
+  // --- кольцо штаб-квартиры: объём, а не рисунок в лесу
+  const ring = new THREE.Group();
+  const R = 26, band = 7.2;
+  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0x9fc0cf, roughness: 0.08, metalness: 0.2, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
+  const outer = new THREE.Mesh(new THREE.CylinderGeometry(R, R, band, 72, 1, true), glassMat);
+  const inner = new THREE.Mesh(new THREE.CylinderGeometry(R - 8.5, R - 8.5, band, 64, 1, true), glassMat);
+  outer.position.y = band / 2; inner.position.y = band / 2; ring.add(outer); ring.add(inner);
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0xe6e3da, roughness: 0.7 });
+  const roof = new THREE.Mesh(new THREE.RingGeometry(R - 8.5, R, 72), roofMat);
+  roof.rotation.x = -Math.PI / 2; roof.position.y = band + 0.05; ring.add(roof);
+  const base = new THREE.Mesh(new THREE.RingGeometry(R - 8.9, R + 0.4, 72), new THREE.MeshStandardMaterial({ color: 0xd7d2c6, roughness: 0.85 }));
+  base.rotation.x = -Math.PI / 2; base.position.y = 0.02; ring.add(base);
+  // горизонтальные членения этажей — чтобы кольцо читалось зданием, а не трубой
+  for (const y of [band / 3, (band * 2) / 3]) {
+    const fl = new THREE.Mesh(new THREE.TorusGeometry(R, 0.09, 6, 72), new THREE.MeshStandardMaterial({ color: 0xf1eee6, roughness: 0.6 }));
+    fl.rotation.x = Math.PI / 2; fl.position.y = y; ring.add(fl);
+  }
+  ring.position.set(-32, -0.15, -88); ring.rotation.y = 0.35; g.add(ring);   // за рекой, но ближе дальнего плана
+
+  let fog = null;
+  return {
+    setDark(dark) {
+      sky.material.map = dark ? skyNight : skyDay; sky.material.needsUpdate = true;
+      pano.material.map = dark ? night.texture : day.texture; pano.material.needsUpdate = true;
+      groundMat.color.setHex(dark ? 0x40506a : 0xffffff);
+      roofMat.color.setHex(dark ? 0x7d8ba0 : 0xe6e3da);
+    },
+    update() { if (fog) fog.needsUpdate = true; },
+  };
 }
 
 /* ================= сборка ================= */

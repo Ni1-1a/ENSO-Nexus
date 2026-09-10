@@ -119,8 +119,23 @@ export class WalkRig {
     try { this.dom.requestPointerLock(); } catch { /* телефон — замка нет, взгляд по касанию */ }
   }
 
-  teleport(pos, lookAt, floorY = null) {
+  teleport(pos, lookAt, floorY = null, name = '') {
     const p = new THREE.Vector3(...pos);
+    // точка вне плана выносила ходока наружу здания: берём ближайшую внутреннюю
+    if (!this.inside(p.x, p.z)) {
+      let best = null, bestD = Infinity;
+      for (let r = 0.5; r <= 6 && !best; r += 0.5) {
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
+          const x = p.x + Math.cos(a) * r, z = p.z + Math.sin(a) * r;
+          if (!this.inside(x, z) || this.blocked(x, z, floorY === null ? 0 : floorY)) continue;
+          const d = Math.hypot(x - p.x, z - p.z);
+          if (d < bestD) { bestD = d; best = [x, z]; }
+        }
+      }
+      console.warn(`[office] якорь${name ? ' «' + name + '»' : ''} вне помещений: (${p.x.toFixed(1)}, ${p.z.toFixed(1)})`,
+        best ? `→ (${best[0].toFixed(1)}, ${best[1].toFixed(1)})` : '— замены не нашлось');
+      if (best) { p.x = best[0]; p.z = best[1]; }
+    }
     this.floorY = floorY === null ? this.heightAt(p.x, p.z, p.y || 0) : floorY;
     p.y = this.floorY + EYE;
     this.camera.position.copy(p);
