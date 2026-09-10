@@ -14,9 +14,12 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
-import * as P from './office-props.js?v=7';
-import { RING, FLOOR1, FLOOR2, PAVILIONS, CORES, ATRIUM, pt } from './office-plan.mjs?v=7';
-import { stairStep, railPose } from './office-geom.mjs?v=7';
+import * as P from './office-props.js?v=8';
+import {
+  RING, FLOOR1, FLOOR2, PAVILIONS, CORES, ATRIUM, pt,
+  OPENINGS, openingHalfAngle, openingOnFloor, wallGaps, coreLink, structuralBlockers,
+} from './office-plan.mjs?v=8';
+import { stairStep, railPose } from './office-geom.mjs?v=8';
 
 /* ---------- Н1: три градации светлого ---------- */
 
@@ -96,6 +99,14 @@ function ringSlab(rIn, rOut, y, thickness = 0.2, tone = TONE.floor) {
   m.name = 'плита';
   return m;
 }
+
+/**
+ * Угол плана φ (от юга, к востоку) в угол шейпа. `ExtrudeGeometry` строится в
+ * плоскости XY и после `rotateX(−π/2)` ложится так: shape +X → мир +X,
+ * shape +Y → мир −Z. Значит направление φ = (sin φ, cos φ) в мире отвечает
+ * углу шейпа φ − π/2.
+ */
+const SA = (phi) => phi - Math.PI / 2;
 
 function arcWall(r, from, to, y0, y1, mat, t = RING.wallT, seg = 64) {
   const shape = new THREE.Shape();
@@ -210,16 +221,58 @@ export function buildShell(scene, ctx) {
     [RING.floor2 + 0.95, RING.floor2 + 3.35, glassMat, true],
     [RING.floor2 + 3.35, topY, wallMat, false],
   ];
+  /*
+   * П2 ТЗ №3. Стена режется ПО РЕЕСТРУ ПРОЁМОВ: вместо одной дуги на 360° —
+   * набор дуг между проёмами плюс перемычка над каждым. Толщина 300 мм в
+   * проёме видна — ради этого стену и делали объёмом.
+   */
+  const rW = RING.rOut - RING.wallT / 2;
+  const segFor = (a0, a1) => Math.max(8, Math.round(((a1 - a0) / (Math.PI * 2)) * 128));
   for (const [y0, y1, mat, isGlass] of bands) {
-    const w = arcWall(RING.rOut - RING.wallT / 2, 0, Math.PI * 2, y0, y1, mat, RING.wallT, 128);
-    if (isGlass) { P.air(w, 'окно'); ctx.windows.push(w); } else P.air(w, 'наружная стена');
-    g.add(w);
+    const level = y0 >= RING.floor2 - 0.1 ? 2 : 1;
+    for (const [a0, a1] of wallGaps(level)) {
+      const w = arcWall(rW, SA(a0), SA(a1), y0, y1, mat, RING.wallT, segFor(a0, a1));
+      if (isGlass) { P.air(w, 'окно'); ctx.windows.push(w); } else P.air(w, 'наружная стена');
+      g.add(w);
+    }
+    // перемычка над проёмом: полоса стены выше его верха
+    for (const o of OPENINGS) {
+      if (!openingOnFloor(o, level)) continue;
+      const base = level === 2 ? RING.floor2 : RING.floor1;
+      const top = base + o.height;
+      if (top >= y1 - 0.01 || top <= y0 + 0.01) continue;
+      const half = openingHalfAngle(o);
+      const lint = arcWall(rW, SA(o.at - half), SA(o.at + half), Math.max(y0, top), y1, mat, RING.wallT, 16);
+      P.air(lint, `перемычка ${o.name}`);
+      g.add(lint);
+    }
+  }
+  /* --- косяки проёмов: четверть стены по краям, тушью --- */
+  for (const o of OPENINGS) {
+    for (const level of [1, 2]) {
+      if (!openingOnFloor(o, level)) continue;
+      const base = level === 2 ? RING.floor2 : RING.floor1;
+      const half = openingHalfAngle(o);
+      for (const side of [-1, 1]) {
+        const q = pt(rW, o.at + side * half);
+        const jamb = new THREE.Mesh(new THREE.BoxGeometry(RING.wallT - 0.02, o.height, 0.1), P.MAT.ink());
+        jamb.position.set(q.x, base + o.height / 2, q.z);
+        jamb.rotation.y = o.at + side * half;
+        P.air(jamb, `косяк ${o.name}`);
+        g.add(jamb);
+      }
+      const head = arcWall(rW, SA(o.at - half), SA(o.at + half), base + o.height - 0.1, base + o.height, P.MAT.ink(), RING.wallT - 0.02, 16);
+      P.air(head, `притолока ${o.name}`);
+      g.add(head);
+    }
   }
   // подоконник — деталь темнее пола (Н1)
-  for (const y of [0.95, RING.floor2 + 0.95]) {
-    const sill = arcWall(RING.rOut - RING.wallT / 2 - 0.06, 0, Math.PI * 2, y, y + 0.05, stoneMat(TONE.detail, 2), 0.2, 128);
-    P.air(sill);
-    g.add(sill);
+  for (const [y, level] of [[0.95, 1], [RING.floor2 + 0.95, 2]]) {
+    for (const [a0, a1] of wallGaps(level)) {
+      const sill = arcWall(rW - 0.06, SA(a0), SA(a1), y, y + 0.05, stoneMat(TONE.detail, 2), 0.2, segFor(a0, a1));
+      P.air(sill);
+      g.add(sill);
+    }
   }
 
   /* --- перекрытие над вторым этажом и стеклянная крыша атриума --- */
@@ -242,11 +295,21 @@ export function buildShell(scene, ctx) {
     g.add(beam);
   }
 
+  /*
+   * П2.4 ТЗ №3. СТЕНЫ СТАНОВЯТСЯ ПРЕПЯТСТВИЯМИ. Раньше `office-ring.js` не
+   * регистрировал ни одного: стены было видно, но сквозь них ходили, а
+   * единственной преградой была проверка радиуса в `insideWalkable`.
+   * Список считается в плане — тем же кодом, которым его проверяет тест.
+   */
+  for (const b of structuralBlockers()) ctx.block(b);
+
   /* --- теневой шов в стыке стены и пола: 45 мм тушью (Н1) --- */
-  for (const y of [RING.floor1, RING.floor2]) {
-    const seam = arcWall(RING.rOut - RING.wallT, 0, Math.PI * 2, y, y + SEAM, P.MAT.ink(), 0.03, 128);
-    P.air(seam);
-    g.add(seam);
+  for (const [y, level] of [[RING.floor1, 1], [RING.floor2, 2]]) {
+    for (const [a0, a1] of wallGaps(level)) {
+      const seam = arcWall(RING.rOut - RING.wallT, SA(a0), SA(a1), y, y + SEAM, P.MAT.ink(), 0.03, segFor(a0, a1));
+      P.air(seam);
+      g.add(seam);
+    }
   }
 
   /* --- парапет по всему контуру атриума на втором этаже --- */
@@ -286,18 +349,56 @@ export function buildShell(scene, ctx) {
     // пол, стены-коробка и кровля ядра
     const fl = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, d), stoneMat(TONE.floor, 3));
     fl.position.set(cx, RING.floor1 - 0.11, cz); fl.receiveShadow = true; cg.add(fl);
-    for (const [bw, bd, bx, bz] of [[w, 0.24, cx, c.z0], [w, 0.24, cx, c.z1], [0.24, d, c.x0, cz], [0.24, d, c.x1, cz]]) {
-      const wall = box(bw, topY, bd, wallMat, bx, topY / 2, bz);
+    /*
+     * П2.3 ТЗ №3. У стены ядра со стороны кольца ЕСТЬ ПРОЁМ: раньше это была
+     * глухая коробка из четырёх стен, и в ядро, куда по плану ведёт лестница,
+     * было не войти.
+     */
+    const door = c.door;
+    for (const side of ['z0', 'z1', 'x0', 'x1']) {
+      const vertical = side === 'x0' || side === 'x1';
+      const bx = vertical ? c[side] : cx;
+      const bz = vertical ? cz : c[side];
+      if (side === door.wall) {
+        // стена с проёмом: две части по краям плюс перемычка над дверью
+        const lo = vertical ? c.z0 : c.x0, hi = vertical ? c.z1 : c.x1;
+        for (const [f, t] of [[lo, door.from], [door.to, hi]]) {
+          if (t - f < 0.05) continue;
+          const len = t - f, mid = (f + t) / 2;
+          const wall = vertical ? box(0.24, topY, len, wallMat, bx, topY / 2, mid) : box(len, topY, 0.24, wallMat, mid, topY / 2, bz);
+          wall.castShadow = true; wall.receiveShadow = true;
+          P.air(wall, 'стена ядра'); cg.add(wall);
+        }
+        const dl = door.to - door.from, dm = (door.from + door.to) / 2;
+        const lint = vertical
+          ? box(0.24, topY - door.height, dl, wallMat, bx, door.height + (topY - door.height) / 2, dm)
+          : box(dl, topY - door.height, 0.24, wallMat, dm, door.height + (topY - door.height) / 2, bz);
+        P.air(lint, 'перемычка ядра'); cg.add(lint);
+        // косяки: четверть проёма видна тушью
+        for (const q of [door.from, door.to]) {
+          const j = vertical ? box(0.26, door.height, 0.1, P.MAT.ink(), bx, door.height / 2, q) : box(0.1, door.height, 0.26, P.MAT.ink(), q, door.height / 2, bz);
+          P.air(j, 'косяк ядра'); cg.add(j);
+        }
+        continue;
+      }
+      const wall = vertical ? box(0.24, topY, d, wallMat, bx, topY / 2, bz) : box(w, topY, 0.24, wallMat, bx, topY / 2, bz);
       wall.castShadow = true; wall.receiveShadow = true;
       P.air(wall, 'стена ядра');
       cg.add(wall);
     }
+    // пол коридора от кольца до ядра
+    const L = coreLink(c);
+    const lf = new THREE.Mesh(new THREE.BoxGeometry(L.x1 - L.x0, 0.2, L.z1 - L.z0), stoneMat(TONE.floor, 3));
+    lf.position.set((L.x0 + L.x1) / 2, RING.floor1 - 0.1, (L.z0 + L.z1) / 2);
+    lf.receiveShadow = true; cg.add(lf);
     const top = box(w, 0.22, d, stoneMat(TONE.wall, 3), cx, topY + 0.11, cz);
     P.air(top); cg.add(top);
     cg.add(coreStair(c.stair));
     // площадка второго этажа в ядре
-    const land = box(w - 0.5, 0.2, 1.6, stoneMat(TONE.floor, 2), cx, RING.floor2 - 0.1, c.stair.yFrom > c.stair.yTo ? c.z1 - 0.8 : c.z0 + 0.8);
-    P.air(land); cg.add(land);
+    // площадка второго этажа: полоса перед маршем, по ней возвращаются к двери
+    const landZ = c.stair.yFrom > c.stair.yTo ? (c.z0 + c.stair.z0) / 2 : (c.z1 + c.stair.z1) / 2;
+    const land = box(w - 0.4, 0.2, Math.abs(c.stair.yFrom > c.stair.yTo ? c.stair.z0 - c.z0 : c.z1 - c.stair.z1) + 0.4, stoneMat(TONE.floor, 2), cx, RING.floor2 - 0.1, landZ);
+    P.air(land, 'площадка ядра'); cg.add(land);
     g.add(cg);
   }
 
@@ -374,6 +475,9 @@ export function buildAtrium(scene, ctx) {
     // деревья стоят по КРОМКЕ сада и не заходят в его середину: с прежним
     // r = rIn − 1.5 и высотой кроны 3.4 крона висела ровно на уровне глаз
     const a = (i / N) * Math.PI * 2 + 0.35;
+    // ОСЬ ЭКРАНА СВОБОДНА: дерево на φ ≈ 180° закрывало главный экран, ради
+    // которого атриум и построен (скриншот 02 круга 3)
+    if (Math.abs(Math.PI - a) < 0.55) continue;
     // деревья отодвинуты от кромки атриума: на r = rIn − 1.5 крона висела ровно
     // на уровне глаз того, кто идёт по кольцу
     const r = RING.rIn - 1.4 - (i % 3) * 0.5;
@@ -435,5 +539,20 @@ export function buildPavilionShell(scene, spec) {
   }
   const lt = box(lw, 0.2, ld, stoneMat(TONE.wall, 3), lx, 3.3, lz);
   P.air(lt); g.add(lt);
+  /*
+   * Свет в переходе: проём в павильон читался чёрным прямоугольником — за ним
+   * не было ни одного источника (скриншот 08 круга 3).
+   */
+  const n = Math.max(2, Math.round(Math.max(lw, ld) / 2.2));
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n;
+    const px = lw > ld ? L.x0 + (L.x1 - L.x0) * t : lx;
+    const pz = lw > ld ? lz : L.z0 + (L.z1 - L.z0) * t;
+    const lamp = new THREE.PointLight(0xfff0dd, 1.4, 7, 1.6);
+    lamp.position.set(px, 3.0, pz); g.add(lamp);
+    const can = new THREE.Mesh(new THREE.CircleGeometry(0.16, 14), new THREE.MeshBasicMaterial({ color: 0xfff7ea }));
+    can.rotation.x = Math.PI / 2; can.position.set(px, 3.18, pz);
+    P.air(can); g.add(can);
+  }
   return g;
 }

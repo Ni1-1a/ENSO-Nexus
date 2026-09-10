@@ -332,3 +332,78 @@ test('офис: план кольца собран по согласованно
   for (let d = 1; d < 10; d += 0.3) heights.add(+P.atriumFloor(0, -P.RING.rIn + d).toFixed(2));
   assert.ok(heights.size >= 5, `в атриуме ${heights.size} отметок вместо пяти рядов`);
 });
+
+/**
+ * ТЗ №3, П1 и П2. Заливка по сетке 0,25 м из вестибюля — С УЧЁТОМ капитальных
+ * препятствий. Ловит оба замечания владельца сразу: невидимую мебель первого
+ * этажа, перекрывавшую второй, и глухую стену там, где по плану дверь.
+ */
+test('офис: из вестибюля достижимы все сектора, павильоны и ядра', async () => {
+  const P = await import(new URL('../public/office-plan.mjs', `file://${__filename}`));
+  const { stairSurface } = await import(new URL('../public/office-geom.mjs', `file://${__filename}`));
+  const STEP = 0.25;
+  const walls = P.structuralBlockers();
+  const lvl = (y) => (y >= P.RING.floor2 - 1.2 ? 2 : 1);
+  const key = (i, j, f) => `${i},${j},${f}`;
+  const start = [0, 21.0];
+  const seen = new Set();
+  const queue = [[Math.round(start[0] / STEP), Math.round(start[1] / STEP), 0]];
+  seen.add(key(queue[0][0], queue[0][1], 1));
+  const got = { f1: new Set(), f2: new Set(), pav: new Set(), cores: new Set() };
+  let guard = 0;
+  while (queue.length) {
+    if (++guard > 400000) break;
+    const [i, j, y] = queue.shift();
+    const x = i * STEP, z = j * STEP;
+    const s1 = P.sectorAt(1, x, z), s2 = P.sectorAt(2, x, z);
+    if (lvl(y) === 1 && s1) got.f1.add(s1.id);
+    if (lvl(y) === 2 && s2) got.f2.add(s2.id);
+    for (const [name, r] of Object.entries(P.PAVILIONS)) if (x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1) got.pav.add(name);
+    for (const [name, c] of Object.entries(P.CORES)) if (x > c.x0 && x < c.x1 && z > c.z0 && z < c.z1) got.cores.add(name);
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ni = i + di, nj = j + dj;
+      const nx = ni * STEP, nz = nj * STEP;
+      if (!P.insideWalkable(nx, nz, y)) continue;
+      if (P.blockedBy(walls, nx, nz, y)) continue;
+      const ny = P.floorHeight(nx, nz, y, stairSurface);
+      if (Math.abs(ny - y) >= 0.45) continue;
+      const k = key(ni, nj, lvl(ny));
+      if (seen.has(k)) continue;
+      seen.add(k);
+      queue.push([ni, nj, ny]);
+    }
+  }
+  for (const s of P.FLOOR1) assert.ok(got.f1.has(s.id), `первый этаж: не дошли в «${s.name}»`);
+  for (const s of P.FLOOR2) assert.ok(got.f2.has(s.id), `второй этаж: не дошли в «${s.name}»`);
+  for (const name of Object.keys(P.PAVILIONS)) assert.ok(got.pav.has(name), `не дошли в павильон ${name}`);
+  for (const name of Object.keys(P.CORES)) assert.ok(got.cores.has(name), `не дошли в ядро ${name}`);
+  assert.ok(seen.size > 40000, `достижимо всего ${seen.size} клеток — план распался`);
+});
+
+/**
+ * ТЗ №3, П2. Проём — сущность плана: стена, ходьба и препятствие берут его из
+ * одного реестра. Проверяем, что на месте каждого проёма стены НЕТ, а между
+ * проёмами она есть.
+ */
+test('офис: в каждом проёме стены нет, между проёмами есть', async () => {
+  const P = await import(new URL('../public/office-plan.mjs', `file://${__filename}`));
+  const walls = P.structuralBlockers().filter((b) => b.r0 !== undefined && String(b.name).startsWith('наружная'));
+  const r = P.RING.rOut - 0.1;
+  for (const o of P.OPENINGS) {
+    for (const level of [1, 2]) {
+      if (!P.openingOnFloor(o, level)) continue;
+      const y = level === 2 ? P.RING.floor2 : 0;
+      const q = P.pt(r, o.at);
+      assert.equal(P.blockedBy(walls, q.x, q.z, y), null, `проём «${o.name}» на этаже ${level} перекрыт стеной`);
+      // а в 1,5 ширины от оси проёма стена обязана быть
+      const off = P.openingHalfAngle(o) * 3;
+      for (const side of [-1, 1]) {
+        const w = P.pt(r, o.at + side * off);
+        const near = P.OPENINGS.some((x) => x !== o && P.openingOnFloor(x, level)
+          && Math.abs(((x.at - (o.at + side * off) + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < P.openingHalfAngle(x) * 2);
+        if (near) continue;
+        assert.ok(P.blockedBy(walls, w.x, w.z, y), `рядом с «${o.name}» на этаже ${level} стены нет`);
+      }
+    }
+  }
+});

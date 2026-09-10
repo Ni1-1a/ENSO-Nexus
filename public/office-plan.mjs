@@ -71,15 +71,17 @@ export const PAVILIONS = {
   reactor: {
     name: 'Зал реактора', x0: -45.5, x1: -27.5, z0: -8, z1: 8,
     floor: RING.pit, ceiling: RING.floor2 + RING.height, // двойной свет
-    link: { from: 265 * D, x0: -27.5, x1: -22.5, z0: -2.4, z1: 2.4 },
+    // переход ЗАХОДИТ в павильон на 0,3 м: строгие неравенства на общей грани
+    // оставляли шов нулевой ширины, в который проваливалась любая сеточная проверка
+    link: { from: 270 * D, x0: -27.8, x1: -22.5, z0: -2.4, z1: 2.4 },
     // вход по мостику на отметке 0.00, дальше лестница ВДОЛЬ стены вниз к яме
-    balcony: { x0: -32.6, x1: -27.5, z0: -6.4, z1: 6.4, y: RING.floor1 },
-    stair: { axis: 'x', x0: -41.0, x1: -32.6, z0: -5.2, z1: -2.0, yFrom: RING.floor1, yTo: RING.pit, steps: 20, railSide: 1 },
+    balcony: { x0: -32.6, x1: -27.2, z0: -6.4, z1: 6.4, y: RING.floor1 },
+    stair: { axis: 'x', x0: -41.0, x1: -32.3, z0: -5.2, z1: -2.0, yFrom: RING.floor1, yTo: RING.pit, steps: 20, railSide: 1 },
   },
   workshop: {
     name: 'Мастерская', x0: -35, x1: -15, z0: 20, z1: 34,
     floor: 0, ceiling: RING.floor2 + RING.height,
-    link: { from: 315 * D, x0: -22.0, x1: -15.4, z0: 16.6, z1: 21.4 },
+    link: { from: 315.5 * D, x0: -22.0, x1: -15.4, z0: 16.6, z1: 21.7 },
   },
 };
 
@@ -87,18 +89,90 @@ export const PAVILIONS = {
  * Лестничные ядра — в противоположных четвертях, СНАРУЖИ кольца, чтобы марш
  * не занимал ни вестибюль, ни рабочие сектора. Марш идёт по оси ядра.
  */
+/** Коридор от наружной стены кольца до ядра — перекрывает оба на 0,3 м. */
+export function coreLink(c) {
+  const inner = { x: Math.sin(c.at) * (RING.rOut - 0.4), z: Math.cos(c.at) * (RING.rOut - 0.4) };
+  const d = c.door;
+  const mid = (d.from + d.to) / 2;
+  const outer = d.wall === 'x0' ? { x: c.x0 + 0.3, z: mid }
+    : d.wall === 'x1' ? { x: c.x1 - 0.3, z: mid }
+      : d.wall === 'z0' ? { x: mid, z: c.z0 + 0.3 }
+        : { x: mid, z: c.z1 - 0.3 };
+  return {
+    x0: Math.min(inner.x, outer.x) - 1.4, x1: Math.max(inner.x, outer.x) + 1.4,
+    z0: Math.min(inner.z, outer.z) - 1.4, z1: Math.max(inner.z, outer.z) + 1.4,
+  };
+}
+
 export const CORES = {
+  /*
+   * Дверь ядра — в стене, ПЕРПЕНДИКУЛЯРНОЙ маршу, и у НИЗА марша: войдя, человек
+   * оказывается перед первой ступенью, а не посреди пролёта. Рядом с маршем
+   * оставлена площадка шириной 1,6 м — по ней со второго этажа возвращаются
+   * к двери. Прежняя дверь в продольной стене выводила на середину марша,
+   * перепад 3,7 м, и на второй этаж было не подняться вовсе.
+   */
+  /*
+   * Ядро стоит ЦЕЛИКОМ за наружной стеной: у прежнего прямоугольника ближний
+   * угол лежал на радиусе 23,4 — внутри кольца, — и его стена перегораживала
+   * подход к собственной двери.
+   */
   se: {
-    name: 'Ядро 1 · лестница', at: 45 * D,
-    x0: 17.4, x1: 22.2, z0: 15.6, z1: 24.4,
-    stair: { axis: 'z', x0: 18.2, x1: 21.4, z0: 16.2, z1: 23.8, yFrom: RING.floor1, yTo: RING.floor2, steps: 24, railSide: 1 },
+    name: 'Ядро 1 · лестница', at: 62 * D,
+    x0: 22.5, x1: 31.3, z0: 9.56, z1: 14.36,
+    // дверь на луче ядра, марш начинается в 2 м за ней; полоса x 22.5…24.5 —
+    // площадка обоих этажей, по ней со второго возвращаются к двери
+    door: { wall: 'x0', from: 10.96, to: 12.96, height: 2.4 },
+    stair: { axis: 'x', x0: 24.5, x1: 30.7, z0: 10.16, z1: 13.76, yFrom: RING.floor2, yTo: RING.floor1, steps: 22, railSide: 1 },
   },
   nw: {
-    name: 'Ядро 2 · лестница и лифт', at: 225 * D,
-    x0: -22.2, x1: -17.4, z0: -24.4, z1: -15.6,
-    stair: { axis: 'z', x0: -21.4, x1: -18.2, z0: -23.8, z1: -16.2, yFrom: RING.floor2, yTo: RING.floor1, steps: 24, railSide: -1 },
+    name: 'Ядро 2 · лестница и лифт', at: 242 * D,
+    x0: -31.3, x1: -22.5, z0: -14.36, z1: -9.56,
+    door: { wall: 'x1', from: -12.96, to: -10.96, height: 2.4 },
+    stair: { axis: 'x', x0: -30.7, x1: -24.5, z0: -13.76, z1: -10.16, yFrom: RING.floor1, yTo: RING.floor2, steps: 22, railSide: -1 },
   },
 };
+
+/**
+ * ПРОЁМЫ — сущность плана (П2 ТЗ №3), а не вырез в геометрии. Из этого
+ * реестра берут и стена (где не строить дугу), и препятствия (где разрыв), и
+ * проходимость. Пока проёмов не было, наружная стена строилась сплошной дугой
+ * на 360°: человек упирался в глухую стену там, где по плану дверь.
+ *
+ * `at` — угол φ, `width` — ширина по дуге в метрах, `height` — высота проёма,
+ * `floor` — 1, 2 или 'all' (сквозной по обоим этажам).
+ */
+export const OPENINGS = [
+  { id: 'entrance', name: 'Вход', at: 0, width: 4.2, height: 3.3, floor: 1 },
+  { id: 'coreSE', name: 'Ядро 1', at: 62 * D, width: 2.6, height: 2.4, floor: 'all' },
+  { id: 'toReactor', name: 'В зал реактора', at: 270 * D, width: 4.4, height: 2.9, floor: 1 },
+  { id: 'coreNW', name: 'Ядро 2', at: 242 * D, width: 2.6, height: 2.4, floor: 'all' },
+  { id: 'toWorkshop', name: 'В мастерскую', at: 315.5 * D, width: 5.0, height: 3.2, floor: 1 },
+];
+
+/** половина углового размера проёма на радиусе наружной стены */
+export function openingHalfAngle(o, r = RING.rOut) { return o.width / 2 / r; }
+
+/** проём действует на этой отметке? */
+export function openingOnFloor(o, level) { return o.floor === 'all' || o.floor === level; }
+
+/**
+ * Промежутки глухой стены между проёмами на заданном этаже: пары [от, до] в
+ * радианах, по возрастанию φ. Из них строятся дуги стены и препятствия.
+ */
+export function wallGaps(level) {
+  const cuts = OPENINGS.filter((o) => openingOnFloor(o, level))
+    .map((o) => ({ from: o.at - openingHalfAngle(o), to: o.at + openingHalfAngle(o) }))
+    .sort((a, b) => a.from - b.from);
+  if (!cuts.length) return [[0, Math.PI * 2]];
+  const gaps = [];
+  for (let i = 0; i < cuts.length; i++) {
+    const from = cuts[i].to;
+    const to = cuts[(i + 1) % cuts.length].from + (i === cuts.length - 1 ? Math.PI * 2 : 0);
+    if (to - from > 1e-4) gaps.push([from, to]);
+  }
+  return gaps;
+}
 
 /** Атриум: сад и амфитеатр из пяти рядов лицом к главному экрану. */
 export const ATRIUM = {
@@ -147,13 +221,83 @@ export function atriumFloor(x, z) {
   return Math.min(ATRIUM.rows - 1, i) * ATRIUM.rowRise;
 }
 
+/**
+ * КАПИТАЛЬНЫЕ ПРЕПЯТСТВИЯ — наружная стена, простенки секторов и стены ядер —
+ * считаются здесь, из того же реестра проёмов, что режет геометрию (П2 ТЗ №3).
+ * Один источник для стены, для ходьбы и для теста связности: пока их было
+ * два, стены было видно, но сквозь них ходили.
+ */
+export function structuralBlockers() {
+  const out = [];
+  for (const level of [1, 2]) {
+    for (const [a0, a1] of wallGaps(level)) {
+      out.push({ name: `наружная стена, этаж ${level}`, floor: level, r0: RING.rOut - RING.wallT - 0.08, r1: RING.rOut + 0.5, a0, a1 });
+    }
+  }
+  for (const [list, level] of [[FLOOR1, 1], [FLOOR2, 2]]) {
+    for (const sct of list) {
+      const len = RING.rOut - RING.wallT - (RING.rIn + 0.2);
+      const seg = (len - 3.2) / 2;
+      for (const k of [seg / 2, len - seg / 2]) {
+        const rMid = RING.rIn + 0.2 + k;
+        const half = 0.16 / Math.max(1, rMid);
+        out.push({ name: `простенок ${sct.name}, этаж ${level}`, floor: level, r0: rMid - seg / 2, r1: rMid + seg / 2, a0: sct.from - half, a1: sct.from + half });
+      }
+    }
+  }
+  for (const c of Object.values(CORES)) {
+    const cx = (c.x0 + c.x1) / 2, cz = (c.z0 + c.z1) / 2;
+    for (const side of ['z0', 'z1', 'x0', 'x1']) {
+      const vertical = side === 'x0' || side === 'x1';
+      const bx = vertical ? c[side] : cx;
+      const bz = vertical ? cz : c[side];
+      if (side === c.door.wall) {
+        const lo = vertical ? c.z0 : c.x0, hi = vertical ? c.z1 : c.x1;
+        for (const [f, t] of [[lo, c.door.from], [c.door.to, hi]]) {
+          if (t - f < 0.05) continue;
+          out.push({ name: `стена ядра ${c.name}`, floor: 'all',
+            x0: vertical ? bx - 0.16 : f, x1: vertical ? bx + 0.16 : t,
+            z0: vertical ? f : bz - 0.16, z1: vertical ? t : bz + 0.16 });
+        }
+        continue;
+      }
+      out.push({ name: `стена ядра ${c.name}`, floor: 'all',
+        x0: vertical ? bx - 0.16 : c.x0, x1: vertical ? bx + 0.16 : c.x1,
+        z0: vertical ? c.z0 : bz - 0.16, z1: vertical ? c.z1 : bz + 0.16 });
+    }
+  }
+  return out;
+}
+
+/** попадает ли точка в препятствие на этой отметке (та же логика, что в сцене) */
+export function blockedBy(list, x, z, floorY = 0) {
+  const level = floorY >= RING.floor2 - 1.2 ? 2 : 1;
+  for (const b of list) {
+    if (b.floor !== 'all' && b.floor !== level) continue;
+    let hit;
+    if (b.r !== undefined) hit = Math.hypot(x - b.x, z - b.z) < b.r;
+    else if (b.r0 !== undefined) {
+      const rr = Math.hypot(x, z);
+      if (rr < b.r0 || rr > b.r1) hit = false;
+      else {
+        let a = angleAt(x, z);
+        const norm = (v) => { let q = v % (Math.PI * 2); if (q < 0) q += Math.PI * 2; return q; };
+        const f = norm(b.a0), t = norm(b.a1);
+        hit = f <= t ? (a >= f && a <= t) : (a >= f || a <= t);
+      }
+    } else hit = x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1;
+    if (hit) return b;
+  }
+  return null;
+}
+
 /** Точка внутри проходимой части здания на заданной отметке. */
 export function insideWalkable(x, z, floorY = 0) {
   const r = radiusAt(x, z);
   const second = floorY > RING.floor2 - 1.2;
   if (r > RING.rIn + 0.15 && r < RING.rOut - RING.wallT) return true;   // кольцо на любом этаже
   if (!second && r <= RING.rIn + 0.15) return true;                     // атриум только внизу
-  for (const c of Object.values(CORES)) if (inRect(x, z, c)) return true;
+  for (const c of Object.values(CORES)) { if (inRect(x, z, c) || inRect(x, z, coreLink(c))) return true; }
   for (const p of Object.values(PAVILIONS)) {
     if (inRect(x, z, p)) return true;
     if (inRect(x, z, p.link)) return true;
@@ -179,6 +323,7 @@ export function floorHeight(x, z, prevY = 0, stairSurface = null) {
     if (p.stair && stairSurface && inRect(x, z, p.stair)) cands.push(stairSurface(p.stair, x, z));
   }
   for (const c of Object.values(CORES)) {
+    if (inRect(x, z, coreLink(c))) { cands.push(RING.floor1); cands.push(RING.floor2); }
     if (!inRect(x, z, c)) continue;
     if (stairSurface && inRect(x, z, c.stair)) cands.push(stairSurface(c.stair, x, z));
     else { cands.push(RING.floor1); cands.push(RING.floor2); }
