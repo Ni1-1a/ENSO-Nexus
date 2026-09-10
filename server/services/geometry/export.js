@@ -63,11 +63,14 @@ function saveResult(sessionId, filename, title, format, buffer) {
   fs.mkdirSync(dir, { recursive: true });
   const stored = path.join(dir, filename);
   fs.writeFileSync(stored, buffer);
-  const prev = db.prepare('SELECT id FROM results WHERE session_id = ? AND filename = ? AND stored_path = ?')
-    .get(sessionId, filename, stored);
+  // прежняя запись ищется по имени в ЭТОЙ сессии, а не по пути: после переноса
+  // DATA_DIR строка с прежним абсолютным путём иначе никогда не заменялась —
+  // в списке результатов старые (несуществующие) файлы стояли рядом с новыми
+  const prev = db.prepare('SELECT id FROM results WHERE session_id = ? AND filename = ? ORDER BY created_at DESC LIMIT 1')
+    .get(sessionId, filename);
   if (prev) {
-    db.prepare('UPDATE results SET title = ?, format = ?, size = ?, created_at = ? WHERE id = ?')
-      .run(title, format, buffer.length, now(), prev.id);
+    db.prepare('UPDATE results SET title = ?, format = ?, size = ?, stored_path = ?, created_at = ? WHERE id = ?')
+      .run(title, format, buffer.length, stored, now(), prev.id);
     return { id: prev.id, filename, title, format, size: buffer.length };
   }
   const id = crypto.randomUUID();

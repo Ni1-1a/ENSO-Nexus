@@ -125,8 +125,10 @@ test('проекты: сессия посадки, проверка ТЗ и пр
   const dcMine = await api(`/api/doccheck/checks?project=${projectId}`, { headers: asUser() });
   assert.strictEqual(dcOther.body.checks.length, 1);
   assert.strictEqual(dcMine.body.checks.length, 1);
+  // несуществующий проект в фильтре — тот же 404, что и чужой: пустой список
+  // подтверждал бы, что чужой проект существует (аудит 09.09.2026)
   const abNone = await api('/api/doccheck/ab?project=nope', { headers: asUser() });
-  assert.strictEqual(abNone.body.list.length, 0);
+  assert.strictEqual(abNone.status, 404);
 
   // сводка проекта видит всё привязанное
   const p = await api(`/api/projects/${projectId}`, { headers: asUser() });

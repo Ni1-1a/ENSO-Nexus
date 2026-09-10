@@ -661,6 +661,90 @@ function messagesChars(messages) {
 }
 
 /**
+ * Справедливый делёж бюджета между документами: маленькие идут целиком,
+ * большие делят остаток поровну. Раньше усечение резало ХВОСТ общего текста —
+ * последние загруженные документы теряли конец (а то и исчезали целиком),
+ * тогда как первый, самый объёмный скан, уходил модели без потерь.
+ */
+function fairLimits(sizes, budget) {
+  const limits = sizes.slice();
+  const total = sizes.reduce((s, x) => s + x, 0);
+  if (!sizes.length || total <= budget) return limits;
+  const order = sizes.map((s, i) => [s, i]).sort((a, b) => a[0] - b[0]);
+  let remaining = Math.max(0, budget);
+  let left = order.length;
+  for (const [size, i] of order) {
+    const share = Math.floor(remaining / left);
+    const take = Math.min(size, share);
+    limits[i] = take;
+    remaining -= take;
+    left--;
+  }
+  return limits;
+}
+
+/** Ни один документ не должен исчезнуть из контекста совсем: минимум на документ. */
+const DOC_MIN_CHARS = 2500;
+
+/** Честное усечение текста одного документа с пометкой и закрывающим тегом. */
+function cutDocText(text, limit, floor = DOC_MIN_CHARS) {
+  const s = String(text || '');
+  if (s.length <= limit) return s;
+  const closing = /<\/uploaded_document>\s*$/.test(s) ? '\n</uploaded_document>\n\n' : '';
+  const keep = Math.max(floor, limit - 220);
+  return s.slice(0, keep) +
+    `\n…[⚠ Текст документа ОБРЕЗАН по лимиту контекста модели: показано ${keep} из ${s.length} символов ` +
+    `(${Math.round((keep / s.length) * 100)} %). Конец документа модели не передан.]` + closing;
+}
+
+/** Пол на документ: обычно DOC_MIN_CHARS, но при десятке документов и тесном бюджете — доля бюджета. */
+function docFloor(count, budgetChars) {
+  return Math.max(300, Math.min(DOC_MIN_CHARS, Math.floor(Math.max(0, budgetChars) / Math.max(1, count))));
+}
+
+/**
+ * Укладывает строку с документами (<uploaded_document>…</uploaded_document>
+ * подряд) в бюджет символов: делит его между документами по справедливости.
+ */
+function fitDocumentsText(content, budgetChars) {
+  const parts = String(content || '').split(/(?=<uploaded_document\b)/);
+  const sizes = parts.map((p) => p.length);
+  const limits = fairLimits(sizes, budgetChars);
+  const floor = docFloor(parts.length, budgetChars);
+  return parts.map((p, i) => (limits[i] < p.length ? cutDocText(p, limits[i], floor) : p)).join('');
+}
+
+/** То же для массива блоков документов (до склейки в строку). */
+function fitDocumentBlocks(blocks, budgetChars) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const sizes = list.map((b) => (b.type === 'text' ? String(b.text || '').length : IMAGE_CHARS_EST));
+  const limits = fairLimits(sizes, budgetChars);
+  const floor = docFloor(list.length, budgetChars);
+  return list.map((b, i) => (b.type === 'text' && limits[i] < sizes[i] ? { ...b, text: cutDocText(b.text, limits[i], floor) } : b));
+}
+
+/**
+ * Одно и то же предупреждение о сокращении не пишется в журнал десять раз
+ * подряд: на боевом прогоне 09.09.2026 карточка «Материалы сокращены под
+ * контекст модели» появлялась после каждого повтора запроса — тринадцать
+ * одинаковых строк за полтора часа, и человек прочитал это как ошибку.
+ */
+const trimEventSeen = new Map();
+const TRIM_EVENT_REPEAT_MS = 30 * 60 * 1000;
+function recordTrimEvent(sessionId, detail) {
+  if (!sessionId) return;
+  const key = `${sessionId}|${detail}`;
+  const last = trimEventSeen.get(key) || 0;
+  if (Date.now() - last < TRIM_EVENT_REPEAT_MS) return;
+  trimEventSeen.set(key, Date.now());
+  if (trimEventSeen.size > 500) trimEventSeen.delete(trimEventSeen.keys().next().value);
+  try {
+    db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
+      .run(sessionId, 'Материалы сокращены под контекст модели', detail, 'warn', now());
+  } catch { /* журнал не должен ронять обработку */ }
+}
+
+/**
  * Усекает промпт до budgetChars, жертвуя в порядке важности:
  * старая история диалога → выдержки базы знаний → тексты документов → состояние сессии.
  * System (первое) и текущая инструкция (последнее сообщение) не трогаются.
@@ -701,14 +785,16 @@ function trimToBudget(messages, budgetChars) {
     }
   }
 
-  // 3) тексты документов (усечение с конца, последние документы страдают первыми)
+  // 3) тексты документов — бюджет делится между документами по справедливости:
+  //    маленькие целиком, большие поровну (fairLimits), а не хвост общего текста
   if (over() > 0) {
     const docs = messages.find((m) => kindOf(m) === 'docs' && typeof m.content === 'string');
     if (docs && docs.content.length > 8000) {
       const keep = Math.max(8000, docs.content.length - over());
       if (keep < docs.content.length) {
-        docs.content = docs.content.slice(0, keep) + '\n…[тексты документов обрезаны по лимиту контекста модели]';
-        notes.push('усечены тексты документов');
+        const before = docs.content.length;
+        docs.content = fitDocumentsText(docs.content, keep);
+        notes.push(`тексты документов ужаты с ${Math.round(before / 1000)} до ${Math.round(docs.content.length / 1000)} тыс. символов`);
       }
     }
   }
@@ -768,7 +854,7 @@ const openaiNoReasoningEffort = new Set();
  * карточка прогресса на каждой странице перескакивала с «Изучение документации»
  * на «Обработка запроса моделью» и обратно — семнадцать раз на один скан.
  */
-async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true, signal = null, progressStep = null, internal = false, netRetry = 0 }) {
+async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey = '', model, provider = '', jsonSchema = true, maxTokens, stream = true, attempt = 1, logTrimEvent = true, signal = null, progressStep = null, internal = false, netRetry = 0, noThink = false }) {
   const modelId = model || config.localAiModel;
   const isLmStudio = baseUrl === config.localAiBaseUrl;
   const providerId = provider || (isLmStudio ? 'lmstudio' : 'openai-compat');
@@ -812,9 +898,19 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
    */
   const ctxTokens = isLmStudio ? modelManager.desiredContext(modelId) : 0;
   const reserveTokens = ctxTokens ? Math.max(2048, Math.round(ctxTokens * 0.05)) : 0;
-  /** Ниже этого ответа не собрать: отчёт со схемой в него не поместится. */
-  const MIN_OUTPUT_TOKENS = 4096;
   const modelCaps = registry.capabilities(providerId, modelId);
+  /**
+   * Ниже этого ответа не собрать: отчёт со схемой в него не поместится.
+   *
+   * Думающей модели минимума в 4 тыс. мало: размышления идут в тот же лимит,
+   * и при промпте в 65 тыс. токенов окна 72 тыс. ответу оставалось ~3 тыс. —
+   * модель додумывала до обрыва, JSON не завершался, и платформа переспрашивала
+   * «короче» двенадцать раз по шесть минут (боевой прогон 09.09.2026). Поэтому
+   * думающей модели гарантируется пятая часть окна, а промпт ужимается под неё.
+   */
+  const MIN_OUTPUT_TOKENS = modelCaps.reasoning && !noThink
+    ? Math.min(16384, Math.max(4096, Math.round(ctxTokens * 0.2)))
+    : 4096;
   let effMaxTokens = maxTokens
     || registry.maxOutputTokens({ provider: providerId, model: modelId })
     || config.localAiMaxTokens;
@@ -868,14 +964,12 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
     if (beforeChars > budgetChars) {
       const notes = trimToBudget(body.messages, budgetChars);
       const afterChars = messagesChars(body.messages);
-      const detail = `${Math.round(beforeChars / 1000)} → ${Math.round(afterChars / 1000)} тыс. символов: ${notes.join('; ') || 'сокращать нечего'}`;
+      const detail = `${Math.round(beforeChars / 1000)} → ${Math.round(afterChars / 1000)} тыс. символов `
+        + `(окно модели ${ctxTokens.toLocaleString('ru-RU')} токенов, ответу оставлено ${MIN_OUTPUT_TOKENS.toLocaleString('ru-RU')}): `
+        + `${notes.join('; ') || 'сокращать нечего'}. `
+        + 'Модель видит документы не полностью — для полного разбора нужна модель с большим окном.';
       console.warn(`[local-ai] промпт превышает контекст ${ctxTokens} токенов — ${notes.length ? 'усечён' : 'усечь не удалось'} (${detail})`);
-      if (logTrimEvent && notes.length) {
-        try {
-          db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
-            .run(sessionId, 'Материалы сокращены под контекст модели', detail, 'warn', now());
-        } catch { /* журнал не должен ронять обработку */ }
-      }
+      if (logTrimEvent && notes.length) recordTrimEvent(sessionId, detail);
     }
     // финальный зажим: ответу — не больше, чем осталось в окне после промпта
     const promptTokensEst = Math.ceil(messagesChars(body.messages) / CHARS_PER_TOKEN);
@@ -885,6 +979,11 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       if (jsonSchema) body.messages[0].content = system + compactRule(body.max_tokens);
     }
   }
+
+  // Служебным запросам (конспект документа, резюме диалога) размышления не
+  // нужны: у думающей локальной модели они съедали весь бюджет ответа, и
+  // конспект выходил пустым — без единой ошибки в журнале.
+  if (noThink && isLmStudio && modelCaps.reasoning) body.chat_template_kwargs = { enable_thinking: false };
 
   // Kimi K2.6+: temperature фиксирована моделью («only 1 is allowed») — не отправляем
   if (providerId === 'kimi') delete body.temperature;
@@ -1018,7 +1117,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
           sessionId, providerId, modelId, signal, progressStep, delay, netRetry,
           why: `${label} перегружен (${res.status})`,
         });
-        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry: netRetry + 1 });
+        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry: netRetry + 1, noThink });
       }
       const tried = netRetry
         ? `не принял запрос ${timesRu(netRetry + 1)} подряд, с паузами до ${humanDuration(retryDelayMs(null, netRetry - 1))}`
@@ -1048,7 +1147,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       } else {
         await new Promise((r) => setTimeout(r, attempt * 15000));
       }
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal, netRetry });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal, netRetry, noThink });
     }
     // запрошенный лимит больше потолка модели — повтор с её собственным потолком
     const capMatch = detail.match(/(?:at most|maximum(?: of)?|<=)\s*(\d{4,})/i);
@@ -1056,23 +1155,23 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
       const cap = parseInt(capMatch[1], 10);
       if (cap > 0 && cap < effMaxTokens) {
         console.warn(`[openai] модель ${modelId} поддерживает максимум ${cap} выходных токенов — повтор с этим лимитом`);
-        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens: cap, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal, netRetry });
+        return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens: cap, stream, attempt: attempt + 1, logTrimEvent: false, signal, progressStep, internal, netRetry, noThink });
       }
     }
     // модель не принимает reasoning_effort — запомнить и повторить без него
     if (providerId === 'chatgpt' && /reasoning[._]?effort/i.test(detail) && !openaiNoReasoningEffort.has(modelId)) {
       openaiNoReasoningEffort.add(modelId);
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry, noThink });
     }
     // сервер не понял параметры стриминга — повтор без стриминга
     if (stream && /stream/i.test(detail)) {
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream: false, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry, noThink });
     }
     // некоторые модели не принимают json_schema — один повтор в режиме «просто JSON»
     if (jsonSchema && /json_schema|response_format|structured/i.test(detail)) {
       return callOpenAiCompat({
         system: system + '\n\n' + prompts.load('tasks/json-only'),
-        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false, signal, progressStep, internal, netRetry,
+        messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema: false, maxTokens, stream, logTrimEvent: false, signal, progressStep, internal, netRetry, noThink,
       });
     }
     throw new AiUnavailableError(humanizeProviderError(providerId, res.status, detail));
@@ -1118,7 +1217,7 @@ async function callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey =
         sessionId, providerId, modelId, signal, progressStep, delay: retryDelayMs(null, netRetry), netRetry,
         why: `Ответ ${label} оборвался на середине (${reason})`,
       });
-      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry: netRetry + 1 });
+      return callOpenAiCompat({ system, messages, sessionId, baseUrl, apiKey, model, provider: providerId, jsonSchema, maxTokens, stream, attempt, logTrimEvent: false, signal, progressStep, internal, netRetry: netRetry + 1, noThink });
     }
     throw new AiUnavailableError(`Соединение с ${label} оборвалось на середине ответа: ${reason}.` +
       (netRetry ? ` Платформа повторила запрос ${timesRu(netRetry)} — не помогло.` : '') + ' Повторите попытку.');
@@ -1322,9 +1421,41 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
     messages.push({ role: 'user', content: `<workplan>\n${workplan.promptText(wp)}\n</workplan>` });
   } catch (err) { console.warn('[workplan]', err.message); }
 
-  if (ctx.docBlocks.length) messages.push({ role: 'user', content: ctx.docBlocks });
+  // документы — отдельным сообщением, ссылка на него нужна ниже: при обрыве
+  // ответа именно документы ужимаются, чтобы освободить окно под ответ
+  const docsMessage = ctx.docBlocks.length ? { role: 'user', content: ctx.docBlocks } : null;
+  if (docsMessage) messages.push(docsMessage);
   for (const m of ctx.history) messages.push(m);
   messages.push({ role: 'user', content: instruction });
+
+  /*
+   * Локальная модель: документы укладываются в окно ЗАРАНЕЕ, по справедливости
+   * между документами, а не хвостом на последнем шаге. Иначе первый скан на
+   * 96 тыс. символов уходил целиком, последний документ терял конец, а ответу
+   * доставалось три тысячи токенов — и думающая модель обрывалась на JSON.
+   */
+  if (docsMessage && route.provider === 'lmstudio') {
+    const modelId = resolveModel(route);
+    const ctxTokens = modelManager.desiredContext(modelId);
+    if (ctxTokens) {
+      const caps = registry.capabilities('lmstudio', modelId);
+      const outputTokens = caps.reasoning ? Math.min(16384, Math.max(4096, Math.round(ctxTokens * 0.2))) : 4096;
+      const reserve = Math.max(2048, Math.round(ctxTokens * 0.05));
+      // системный промпт уходит с хвостом compactRule, и запас в 2 тыс. символов —
+      // иначе callOpenAiCompat находил перебор в 160 символов и писал второе событие
+      const others = messagesChars([{ content: prompts.load('system-prompt') + compactRule(outputTokens) },
+        ...messages.filter((m) => m !== docsMessage)]) + 2000;
+      const docsBudget = Math.floor((ctxTokens - outputTokens - reserve) * CHARS_PER_TOKEN) - others;
+      const docsChars = messagesChars([docsMessage]);
+      if (docsChars > docsBudget && docsBudget > 0) {
+        docsMessage.content = fitDocumentBlocks(docsMessage.content, docsBudget);
+        recordTrimEvent(sessionId, `документы ${Math.round(docsChars / 1000)} → ${Math.round(messagesChars([docsMessage]) / 1000)} тыс. символов `
+          + `(окно модели ${ctxTokens.toLocaleString('ru-RU')} токенов, ответу оставлено ${outputTokens.toLocaleString('ru-RU')}): `
+          + 'бюджет поделен между документами — маленькие целиком, большие поровну. '
+          + 'Модель видит документы не полностью — для полного разбора нужна модель с большим окном или конспекты документов.');
+      }
+    }
+  }
 
   /*
    * Бюджет обращений на один анализ.
@@ -1371,16 +1502,32 @@ async function analyzeOnce(sessionId, { instruction, route, signal }) {
     'Ответ по-прежнему не помещается. Выдай МИНИМАЛЬНЫЙ допустимый ответ: report_markdown — 5–7 строк, message — одно предложение, facts — не больше 8, остальные массивы пустые. Полный валидный JSON и ничего больше.',
   ];
   let retry = 0;
-  while (!check.ok && calls.left > 0) {
+  const maxRetries = Math.max(1, config.maxAnalysisRetries);
+  while (!check.ok && calls.left > 0 && retry < maxRetries) {
     progress.set(sessionId, {
       phase: 'validating',
-      label: `Ответ не прошёл проверку схемы — повторный запрос (${retry + 1} из ${MAX_ANALYSIS_CALLS - 1})…`,
+      label: `Ответ не прошёл проверку схемы — повторный запрос (${retry + 1} из ${maxRetries})…`,
     });
     const session2 = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     checkBudget(session2);
     const correction = out.truncated
       ? COMPACT[Math.min(retry, COMPACT.length - 1)]
       : `Твой предыдущий ответ не прошёл валидацию схемы (${check.error}). Верни корректный JSON строго по схеме, без пояснений и без текста вокруг него.`;
+    /*
+     * Ответ обрезан у локальной модели — дело не в многословии, а в окне:
+     * просьба «короче» не помогает, когда ответу негде поместиться. Документы
+     * ужимаются вдвое, и следующий повтор получает место под ответ. Событие
+     * пишется один раз на сочетание «сессия + объём» (recordTrimEvent).
+     */
+    if (out.truncated && docsMessage && route.provider === 'lmstudio') {
+      const docsChars = messagesChars([docsMessage]);
+      if (docsChars > 20000) {
+        const target = Math.floor(docsChars / 2);
+        docsMessage.content = fitDocumentBlocks(docsMessage.content, target);
+        recordTrimEvent(sessionId, `ответ модели оборвался по лимиту токенов — документы ужаты вдвое `
+          + `(${Math.round(docsChars / 1000)} → ${Math.round(messagesChars([docsMessage]) / 1000)} тыс. символов), чтобы освободить окно под ответ`);
+      }
+    }
     messages.push({ role: 'assistant', content: out.text.slice(0, 6000) || '(пустой ответ)' });
     messages.push({ role: 'user', content: correction });
     out = await callWithBudget(messages);
@@ -1525,7 +1672,7 @@ async function structuredCall({ system, messages, sessionId, route, signal, sche
  * Обычный текстовый запрос без JSON-схемы (свободный чат, конспекты документов).
  * Возвращает { text, truncated }.
  */
-async function plainCall({ system, messages, sessionId, route, signal, maxTokens, progressStep = null, internal = false }) {
+async function plainCall({ system, messages, sessionId, route, signal, maxTokens, progressStep = null, internal = false, noThink = false }) {
   if (route.provider === 'claude') {
     if (!config.anthropicApiKey) throw new AiUnavailableError('Claude не настроен: нужен ANTHROPIC_API_KEY на сервере.');
     const claudeModel = route.model || config.anthropicModel;
@@ -1551,7 +1698,7 @@ async function plainCall({ system, messages, sessionId, route, signal, maxTokens
   if (route.provider === 'gemini') {
     return callGemini({ system, messages, sessionId, route, signal, jsonSchema: null, maxTokens, internal });
   }
-  const opts = { system, messages, sessionId, jsonSchema: false, maxTokens, signal, progressStep, internal };
+  const opts = { system, messages, sessionId, jsonSchema: false, maxTokens, signal, progressStep, internal, noThink };
   if (route.provider === 'chatgpt') {
     if (!config.openaiApiKey) throw new AiUnavailableError('ChatGPT не настроен: нужен OPENAI_API_KEY на сервере.');
     return callOpenAiCompat({ ...opts, baseUrl: config.openaiBaseUrl, apiKey: config.openaiApiKey, model: route.model || config.openaiModel, provider: 'chatgpt' });
@@ -1663,14 +1810,34 @@ function tryParse(text) {
   return null;
 }
 
-/** Compact conversation memory when history grows. Stores rolling summary in the session row. */
+/**
+ * Резюме диалога, когда лента разрослась. Хранится в строке сессии.
+ *
+ * Пересоставляется не после каждого сообщения, а когда с прошлого резюме
+ * накопилось не меньше COMPACT_AFTER_MESSAGES новых: раньше порог сравнивался
+ * с общим числом сообщений, и после сорокового каждое следующее сообщение
+ * стоило отдельного вызова модели — на локальной модели это минуты ожидания
+ * ради резюме, которое никто не просил.
+ */
 async function maybeCompact(sessionId) {
   const count = db.prepare('SELECT COUNT(*) AS c FROM messages WHERE session_id = ?').get(sessionId).c;
   if (count < config.compactAfterMessages) return;
+  // колонка добавляется миграцией при старте; база, открытая только на чтение,
+  // её не получит — тогда резюме ведёт себя как раньше, а анализ не падает
+  let row = null;
+  try { row = db.prepare('SELECT summary_msg_count FROM sessions WHERE id = ?').get(sessionId); } catch { row = null; }
+  const since = count - ((row && row.summary_msg_count) || 0);
+  if (row && row.summary_msg_count > 0 && since < config.compactAfterMessages) return;
+  const saveSummary = (summary) => {
+    try {
+      db.prepare('UPDATE sessions SET summary = ?, summary_msg_count = ?, updated_at = ? WHERE id = ?').run(summary, count, now(), sessionId);
+    } catch {
+      db.prepare('UPDATE sessions SET summary = ?, updated_at = ? WHERE id = ?').run(summary, now(), sessionId);
+    }
+  };
   const ctx = await buildContext(sessionId, config.aiMode === 'local' ? 'extracted' : 'native');
   if (config.aiMode === 'mock') {
-    const summary = mock.summarize(ctx);
-    db.prepare('UPDATE sessions SET summary = ?, updated_at = ? WHERE id = ?').run(summary, now(), sessionId);
+    saveSummary(mock.summarize(ctx));
     return;
   }
   try {
@@ -1686,6 +1853,7 @@ async function maybeCompact(sessionId) {
     if (config.aiMode === 'local') {
       ({ text: summary } = await callOpenAiCompat({
         system, messages: [{ role: 'user', content: userText }], sessionId, baseUrl: config.localAiBaseUrl, jsonSchema: false, maxTokens: 1500,
+        internal: true, noThink: true, // резюме — служебный запрос: без размышлений и без счётчика запросов
       }));
     } else {
       // единственный вызов Anthropic мимо streamClaude — проверка и пометка
@@ -1702,7 +1870,7 @@ async function maybeCompact(sessionId) {
       recordUsage(sessionId, response.usage, { provider: 'claude', model: config.anthropicModel });
       summary = response.content.find((b) => b.type === 'text')?.text || '';
     }
-    if (summary) db.prepare('UPDATE sessions SET summary = ?, updated_at = ? WHERE id = ?').run(summary, now(), sessionId);
+    if (summary) saveSummary(summary);
   } catch (err) {
     console.warn('[compact] failed:', err.message); // non-fatal: full history is still in DB
   }
@@ -1739,6 +1907,7 @@ module.exports = {
   structuredCall, runAnalysis, analyzeOnce, chatOnce, plainCall, checkBudget, effectiveProvider, resolveModel, maybeCompact, BudgetExceededError, AiUnavailableError, tryParse,
   // открыто для тестов: поведение, которое обязано оставаться проверяемым
   humanizeProviderError, toOpenAiContent, redactSecrets, maxTokensEnv, providerLabel, recordUsage,
+  fairLimits, fitDocumentBlocks, fitDocumentsText, trimToBudget,
   unionTypesToAnyOf, isLocalGrammarEngine, retryDelayMs, retryableProviderStatus,
   // единая оценка «символы → токены» платформы: ей же считает модуль «Датасет»
   CHARS_PER_TOKEN,

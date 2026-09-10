@@ -457,6 +457,32 @@ async function chat({ kind, projectId = '', message, user = null, host = '', pro
   return { reply, provider: route.provider, model: route.model || '', truncated: !!out.truncated };
 }
 
+/* ---------------- база знаний для библиотеки ---------------- */
+
+/**
+ * Корешки книг библиотеки — НАСТОЯЩИЕ документы базы знаний: имя, число
+ * фрагментов, база. Ничего не пишется, только чтение kb_chunks.
+ */
+function kbDocs(limit = 120) {
+  try {
+    const rows = db.prepare(`
+      SELECT doc, COUNT(*) AS chunks, SUM(embedding IS NOT NULL) AS vectors, kb
+      FROM kb_chunks GROUP BY doc, kb ORDER BY COUNT(*) DESC LIMIT ?`).all(limit);
+    const byName = new Map();
+    for (const r of rows) {
+      const name = String(r.doc || '').replace(/\.(md|txt|pdf|docx)$/i, '').trim();
+      if (!name) continue;
+      const cur = byName.get(name) || { name, chunks: 0, bases: new Set() };
+      cur.chunks += r.chunks;
+      cur.bases.add(r.kb || 'main');
+      byName.set(name, cur);
+    }
+    return [...byName.values()]
+      .sort((a, b) => b.chunks - a.chunks)
+      .map((d) => ({ name: d.name, chunks: d.chunks, bases: [...d.bases] }));
+  } catch { return []; }
+}
+
 /* ---------------- миниатюры документов ---------------- */
 
 const THUMB_DIR = () => path.join(config.dataDir, 'office-thumbs');
@@ -497,7 +523,7 @@ async function docThumb({ fileId, projectId, user = null }) {
 }
 
 module.exports = {
-  sceneData, agentCard, chat, chatHistory, recordVisit, docThumb,
+  sceneData, agentCard, chat, chatHistory, recordVisit, docThumb, kbDocs,
   PERSONAS, SECRETARY, TEA_MASTER,
   // открыто для тестов
   ensureServiceSession, odb, tableGeometry, latestSiteSession,

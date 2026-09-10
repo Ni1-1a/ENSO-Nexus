@@ -42,6 +42,12 @@ function createApp() {
   // `trust proxy = 1` доверял ЛЮБОМУ, кто прислал заголовок, и ограничитель
   // попыток входа обходился одной строкой (см. middleware/index.js).
   app.set('trust proxy', config.trustProxy);
+  // Домен решает, какие модели доступны (CLOUD_AI_HOSTS), и берётся из Host.
+  // С trust proxy Express подставляет в req.hostname клиентский X-Forwarded-Host,
+  // а cloudflared его не вырезает — Claude открывался на .ru одной строкой
+  // заголовка (аудит 09.09.2026). Заголовок выбрасывается до всех маршрутов;
+  // X-Forwarded-For (адрес для лимитов) остаётся.
+  app.use((req, res, next) => { delete req.headers['x-forwarded-host']; next(); });
   app.disable('x-powered-by');
   app.use(securityHeaders);
   app.use(cors);

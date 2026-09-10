@@ -250,6 +250,12 @@ function errorHandler(err, req, res, next) {
   if (err.status === 400 && /^Failed to decode param/.test(String(err.message || ''))) {
     return res.status(400).json({ error: 'Некорректный адрес запроса: путь содержит неверное percent-кодирование' });
   }
+  // Битая multipart-форма (управляющий символ в имени файла, оборванное тело,
+  // нет границы): busboy бросает обычный Error, и он уходил в 500 со стеком
+  // в логе на всех пятнадцати маршрутах с файлами. Это ошибка запроса — 400.
+  if (/Malformed part header|Unexpected end of form|Boundary not found|Unexpected end of multipart|Multipart: /i.test(String(err && err.message || ''))) {
+    return res.status(400).json({ error: 'Тело multipart не разобрано: проверьте имя файла и границы формы' });
+  }
   if (err.name === 'MulterError') {
     // файл пришёл не в том поле — это ошибка формы (400), а не размера (413)
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {

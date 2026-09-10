@@ -291,6 +291,7 @@ async function reindex({ log = () => {} } = {}) {
   }
   log(`Чанков к индексации: ${chunks.length}`);
   db.exec('DELETE FROM kb_chunks');
+  invalidateStatus();
   const insert = db.prepare('INSERT INTO kb_chunks (doc, clause, text, priority, embedding, kb) VALUES (?,?,?,?,?,?)');
 
   let embedded = 0, failed = false;
@@ -335,8 +336,28 @@ async function reindex({ log = () => {} } = {}) {
  * пикере стояло бы «Общая база (9571 фрагм.)» при том, что две с половиной
  * тысячи из них поиску недоступны, — цифра, которой нельзя верить.
  */
+/*
+ * Сводка базы знаний считается GROUP BY по всей таблице чанков (13 тыс. строк с
+ * векторами) — ~120 мс синхронно, а /api/health её спрашивает каждая страница
+ * каркаса, вход и офис раз в 10 с. Под сотней параллельных запросов очередь
+ * доходила до 11 с и стояла лента. Кэш на минуту; сбрасывается при переиндексации
+ * и при смене отметки indexed_at.
+ */
+let statusCache = null;
+const STATUS_TTL_MS = 60 * 1000;
+function invalidateStatus() { statusCache = null; }
+
 function status() {
   const indexedAt = db.prepare("SELECT value FROM kb_meta WHERE key = 'indexed_at'").get()?.value || null;
+  if (statusCache && statusCache.indexedAt === indexedAt && Date.now() - statusCache.at < STATUS_TTL_MS) {
+    return statusCache.value;
+  }
+  const value = computeStatus(indexedAt);
+  statusCache = { at: Date.now(), indexedAt, value };
+  return value;
+}
+
+function computeStatus(indexedAt) {
   const live = new Set(config.kbBases.map((b) => b.id));
   const rows = db.prepare('SELECT kb, doc, COUNT(*) c, SUM(embedding IS NOT NULL) v FROM kb_chunks GROUP BY kb, doc').all();
 

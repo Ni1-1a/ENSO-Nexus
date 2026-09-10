@@ -506,6 +506,58 @@ function objectEditInChat(sessionId, saved) {
     `[Правка объекта плана со слоя «${src.sourceLayer || '—'}»]\n` +
     bits.join('; ') + (p.comment ? `\n${p.comment}` : ''));
 }
+/**
+ * Выбранный вариант посадки последнего запуска — для показа на плане.
+ *
+ * После согласования варианта здание на плане не появлялось вовсе: пятно
+ * жило только в карточке варианта и в чертеже. Человек согласовывал форму —
+ * и открывал план, где её нет. Здесь пятно отдаётся вместе с планом; признак
+ * `approved` различает «выбран» и «согласован» (этап drawing/done).
+ */
+function selectedVariantView(session) {
+  try {
+    const v = require('../services/geometry/placement-runs').selected(session.id);
+    if (!v) return null;
+    return {
+      id: v.id,
+      number: v.number,
+      footprint: v.footprint,
+      metrics: v.metrics,
+      status: v.status,
+      approved: ['drawing', 'done'].includes(session.stage),
+    };
+  } catch (err) {
+    console.warn('[plan] выбранный вариант не прочитан:', err.message);
+    return null;
+  }
+}
+
+/** Момент времени из строки ISO или числа; 0, если разобрать нельзя. */
+function toMs(v) {
+  if (typeof v === 'number') return v;
+  const t = Date.parse(String(v || ''));
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Устарел ли запуск вариантов: план правился или зоны пересчитывались ПОСЛЕ него.
+ * Пятна посчитаны по прежней схеме — карточка обязана об этом сказать, а не
+ * показывать варианты так, будто они учитывают последние решения человека.
+ */
+function runIsStale(sessionId, run) {
+  if (!run || !run.createdAt) return false;
+  const runAt = toMs(run.createdAt);
+  const edit = db.prepare('SELECT MAX(updated_at) AS t FROM plan_object_edits WHERE session_id = ?').get(sessionId);
+  const zones = db.prepare('SELECT MAX(updated_at) AS t FROM plan_zones WHERE session_id = ?').get(sessionId);
+  const parcel = db.prepare('SELECT updated_at AS t FROM plan_parcel_source WHERE session_id = ?').get(sessionId);
+  // отмена правки удаляет строку — MAX(updated_at) падает, а план менялся дважды:
+  // поэтому смотрятся и события журнала о правках, зонах и границах
+  const ev = db.prepare(`SELECT MAX(created_at) AS t FROM events WHERE session_id = ? AND stage IN (
+    'Свойства объекта плана исправлены', 'Правка свойств объекта отменена', 'Зоны построены',
+    'Границы участка заданы координатами', 'Границы участка взяты из документа', 'Граница участка из документа отменена')`).get(sessionId);
+  return [edit && edit.t, zones && zones.t, parcel && parcel.t, ev && ev.t].some((t) => t && toMs(t) > runAt + 1000);
+}
+
 // Разбор чертежей детерминирован и модель не зовёт, поэтому отдаётся синхронно.
 router.get('/sessions/:id/plan', sessionAuth, async (req, res, next) => {
   try {
@@ -523,6 +575,10 @@ router.get('/sessions/:id/plan', sessionAuth, async (req, res, next) => {
       version,
       annotations: annotations.list(req.session.id, planId),
       objectEdits: edits,
+      // выбранный (а после согласования — согласованный) вариант посадки: план
+      // обязан показывать здание там, где оно решено стоять, а не только зоны
+      variant: selectedVariantView(req.session),
+      stage: req.session.stage || 'idle',
       // перечень слоёв отдаётся сервером, а не дублируется в разметке: список
       // общий с разбором чертежа и с выгрузкой DXF (services/geometry/layers.js)
       layers: require('../services/geometry/layers').forUi(),
@@ -570,7 +626,18 @@ router.post('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, expen
     }
 
     if (hasPoints) {
-      // точки набраны человеком — модель не нужна
+      // Точки набраны человеком — модель не нужна. Но три точки на прямой или
+      // координаты за пределами любой земной системы давали 200 и участок без
+      // площади на каждом показе плана — молча. Это ошибка ввода, и о ней
+      // говорится сразу.
+      const G = require('../services/geometry/site-geometry');
+      if (body.points.some(([x, y]) => Math.abs(x) > 1e8 || Math.abs(y) > 1e8)) {
+        return res.status(400).json({ error: 'points: координаты вне допустимого диапазона (по модулю больше 100 000 000 м)' });
+      }
+      const areaM2 = G.polygonArea(body.points);
+      if (!(areaM2 >= 1)) {
+        return res.status(400).json({ error: `points: точки не образуют участок — площадь ${Math.round(areaM2 * 100) / 100} м²` });
+      }
       const saved = parcelSource.save(req.session.id, {
         points: body.points,
         meta: { ...(body.meta || {}), sourceDocument: (body.meta && body.meta.sourceDocument) || 'введено вручную' },
@@ -610,6 +677,11 @@ router.post('/sessions/:id/plan/objects/:objectId', sessionAuth, sessionOwner, e
     const objectEdits = require('../services/geometry/object-edits');
     // снимок берём с ЧИСТОГО разбора: обучающий пример должен хранить догадку
     // разбора, а не её же, уже исправленную прошлой правкой
+    // подпись и комментарий — только строки: они уходят в ленту, в контекст
+    // модели и в выгрузку для дообучения, «[object Object]» там недопустим
+    for (const [field, value] of [['label', req.body?.label], ['comment', req.body?.comment], ['type', req.body?.type], ['relocation', req.body?.relocation]]) {
+      if (notString(res, value, field)) return;
+    }
     const { planId, site } = await planSvc.ensurePlan(req.session.id, { raw: true });
     const found = objectEdits.findObject(site, req.params.objectId);
     if (!found) return res.status(404).json({ error: 'Объект не найден в текущей версии плана' });
@@ -626,7 +698,37 @@ router.post('/sessions/:id/plan/objects/:objectId', sessionAuth, sessionOwner, e
       `${req.params.objectId}: ${[p.type && `тип → ${p.type}`, p.label && `назначение «${p.label}»`,
         p.relocation && `решение: ${p.relocation}`].filter(Boolean).join(', ') || 'комментарий'}`);
     objectEditInChat(req.session.id, saved);
-    res.json(saved);
+    /*
+     * Что правка ИЗМЕНИЛА — в ответе, а не «сохранено» и тишина.
+     *
+     * Человек назначал объекту другой тип и не видел никакой реакции: план
+     * перечитывался, но что произошло — уехал ли объект в другой слой,
+     * пересчитались ли зоны, стало ли больше места, — платформа не говорила.
+     * План здесь собирается заново с правкой: зоны пересчитываются в этом же
+     * вызове (geometry/zones.js по отпечатку правок), и их сообщение попадает
+     * в ответ ровно один раз.
+     */
+    let effect = null;
+    try {
+      const layers = require('../services/geometry/layers');
+      const { site: after } = await planSvc.ensurePlan(req.session.id);
+      const where = objectEdits.findObject(after, req.params.objectId);
+      const zoneNote = (after.warnings || []).find((w) => ['zones-recomputed', 'zones-stale', 'zones-recompute-failed'].includes(w.code));
+      effect = {
+        layer: where ? where.layer : null,
+        type: where ? where.obj.type : null,
+        typeLabel: where && layers.get(where.obj.type) ? layers.get(where.obj.type).label : null,
+        dxfLayer: where ? layers.dxfNameOf(where.obj.type) : null,
+        parcelReplaced: !!(after.parcel && after.parcel.id === req.params.objectId && p.type === 'parcel'),
+        buildableM2: after.buildable ? after.buildable.areaM2 : null,
+        zonesRecomputed: !!(zoneNote && zoneNote.code === 'zones-recomputed'),
+        zonesStale: !!(zoneNote && zoneNote.code !== 'zones-recomputed'),
+        note: zoneNote ? zoneNote.message : '',
+      };
+    } catch (err) {
+      console.warn('[plan] последствия правки не посчитаны:', err.message);
+    }
+    res.json({ ...saved, effect });
   } catch (err) {
     if (/Недопустим|пустая|не указан/i.test(err.message)) return res.status(400).json({ error: err.message });
     next(err);
@@ -670,7 +772,13 @@ router.get('/sessions/:id/plan/drawing', sessionAuth, async (req, res, next) => 
 
     const wantDxf = String(req.query.format || '').toLowerCase() === 'dxf';
     dir = fsMod.mkdtempSync(pathMod.join(config.dataDir, 'plan-cad-'));
+    // выбранное пятно застройки уходит в чертёж по слоям тем же слоем
+    // AI_ПЯТНО_ЗАСТРОЙКИ, что и в комплекте: план без здания после выбора
+    // варианта — это план, на котором решения человека не видно
+    const variant = selectedVariantView(req.session);
     const built = await cadDrawing.buildDrawing(site, {
+      variant,
+      buildable: site.buildable || null,
       title: req.session.title || 'План участка',
       subtitle: `Enso-nexus · объекты по слоям · ${new Date(now()).toLocaleDateString('ru-RU')}`,
       dir, acad: false,
@@ -705,6 +813,16 @@ router.get('/sessions/:id/plan/corrections.jsonl', sessionAuth, (req, res) => {
 router.post('/sessions/:id/annotations', sessionAuth, sessionOwner, express.json(), (req, res, next) => {
   try {
     const annotations = require('../services/geometry/annotations');
+    // текстовые поля — только строки: объект уходил в ленту и в контекст модели как «[object Object]»
+    for (const [field, value] of [['comment', req.body?.comment], ['author', req.body?.author], ['coordinateSystem', req.body?.coordinateSystem], ['geometryType', req.body?.geometryType]]) {
+      if (notString(res, value, field)) return;
+    }
+    // версия плана обязана быть версией ЭТОЙ сессии: с чужим или выдуманным
+    // planId комментарий попадал в ленту, а на плане его не было
+    const planId = String(req.body?.planId || '').trim();
+    if (planId && !db.prepare('SELECT id FROM plans WHERE id = ? AND session_id = ?').get(planId, req.session.id)) {
+      return res.status(400).json({ error: 'Версия плана не найдена в этой сессии' });
+    }
     const created = annotations.create(req.session.id, {
       planId: req.body?.planId,
       geometry: req.body?.geometry,
@@ -1024,7 +1142,8 @@ router.post('/sessions/:id/plan/variants', sessionAuth, sessionOwner, expensiveL
     });
     if (gen.errors.length) return res.status(400).json({ error: gen.errors.join(' ') });
 
-    const { variants, notes } = V.build(site, gen.candidates, { criterion });
+    const { variants, notes: buildNotes } = V.build(site, gen.candidates, { criterion });
+    const notes = [...buildNotes, ...(gen.warnings || []).map((w) => (w && w.message) || String(w)).filter(Boolean)];
     const runId = runs.saveRun(req.session.id, {
       planId, requirements, criterion, variants,
       stats: { перебрано: gen.tried, найдено: gen.total, отобрано: variants.length },
@@ -1037,7 +1156,45 @@ router.post('/sessions/:id/plan/variants', sessionAuth, sessionOwner, expensiveL
 
 router.get('/sessions/:id/plan/variants', sessionAuth, (req, res) => {
   const run = require('../services/geometry/placement-runs').latestRun(req.session.id);
-  res.json(run || { variants: [] });
+  if (!run) return res.json({ variants: [] });
+  // план правился после подбора — пятна посчитаны по прежней схеме
+  res.json({ ...run, stale: runIsStale(req.session.id, run) });
+});
+
+/**
+ * Живая сводка по зонам для карточки согласования.
+ *
+ * Тело карточки замораживается в момент отправки, и после правки объекта на
+ * плане она продолжала показывать прежнюю допустимую территорию и прежние
+ * подсказки — человек менял тип объекта и не видел, что это дало. Здесь те же
+ * сводки считаются по ТЕКУЩЕМУ плану (правки и пересчёт зон уже наложены).
+ */
+router.get('/sessions/:id/stages/zones/summary', sessionAuth, async (req, res, next) => {
+  try {
+    const planSvc = require('../services/geometry/plan');
+    const zonesSvc = require('../services/geometry/zones');
+    const { planId, site } = await planSvc.ensurePlan(req.session.id);
+    const rec = zonesSvc.get(planId);
+    const built = (rec && rec.zones) || {};
+    const b = site.buildable;
+    res.json({
+      planId,
+      computed: !!(rec && rec.zones),
+      updatedAt: rec ? rec.updatedAt : null,
+      zones: stages.zonesSummary(site),
+      sources: stages.zonesBySource(site),
+      buildable: b
+        ? {
+          areaM2: b.areaM2,
+          sharePercent: b.sharePercent,
+          forbidden: b.forbidden ? { areaM2: b.forbidden.areaM2, sharePercent: b.forbidden.sharePercent } : null,
+        }
+        : null,
+      unresolved: (built.unresolved || []).map((u) => ({ kind: u.kind, reason: u.reason })),
+      manualHints: stages.manualHints(site, built),
+      warnings: (site.warnings || []).filter((w) => /^zones-/.test(w.code)).map((w) => w.message),
+    });
+  } catch (err) { next(err); }
 });
 
 /**
@@ -1054,6 +1211,7 @@ function decisionAuthor(req) {
 /** Решение по мероприятию, затрагивающему критический объект (ТЗ, п. 46). */
 router.post('/sessions/:id/plan/actions/:actionId', sessionAuth, sessionOwner, express.json(), (req, res, next) => {
   try {
+    if (notString(res, req.body?.decidedBy, 'decidedBy')) return; // подпись решения уходит в комплект PDF
     const decidedBy = decisionAuthor(req);
     const updated = require('../services/geometry/placement-runs')
       .decideAction(req.session.id, req.params.actionId, { decision: req.body?.decision, decidedBy });
@@ -1108,9 +1266,12 @@ router.post('/sessions/:id/plan/variants/:variantId/select', sessionAuth, sessio
   try {
     const applied = applyDecisions(req, req.params.variantId);
     if (!applied.ok) return res.status(applied.status).json({ error: applied.error });
-    const chosen = require('../services/geometry/placement-runs').select(req.session.id, req.params.variantId);
+    const runs = require('../services/geometry/placement-runs');
+    const before = runs.selected(req.session.id);
+    const chosen = runs.select(req.session.id, req.params.variantId);
     if (!chosen) return res.status(404).json({ error: 'Вариант не найден' });
-    pipeline.logEvent(req.session.id, 'Выбран вариант посадки', `вариант ${chosen.number}`);
+    // повторный выбор того же варианта идемпотентен и в журнале: второго события нет
+    if (!before || before.id !== chosen.id) pipeline.logEvent(req.session.id, 'Выбран вариант посадки', `вариант ${chosen.number}`);
     res.json(chosen);
   } catch (err) {
     if (/не принято решений/.test(err.message)) return res.status(409).json({ error: err.message });
@@ -1413,8 +1574,16 @@ router.get('/sessions/:id/results/:resultId/download', sessionAuth, (req, res) =
   const row = db.prepare('SELECT * FROM results WHERE id = ? AND session_id = ?').get(req.params.resultId, req.session.id);
   if (!row) return res.status(404).json({ error: 'Файл не найден' });
   const base = path.resolve(config.dataDir, 'outputs', req.session.id);
-  const resolved = path.resolve(row.stored_path);
-  if (!resolved.startsWith(base + path.sep)) return res.status(403).json({ error: 'Доступ запрещён' });
+  let resolved = path.resolve(row.stored_path);
+  if (!resolved.startsWith(base + path.sep)) {
+    // путь записан абсолютным при другом DATA_DIR (перенос, восстановление из
+    // копии): файл ищется по имени в папке результатов ЭТОЙ сессии, иначе
+    // хозяин получал 403 на собственный комплект
+    const alt = path.join(base, path.basename(row.stored_path));
+    if (!fs.existsSync(alt)) return res.status(404).json({ error: 'Файл результата не найден на диске' });
+    resolved = alt;
+  }
+  if (!fs.existsSync(resolved)) return res.status(404).json({ error: 'Файл результата не найден на диске' });
   res.download(resolved, row.filename);
 });
 

@@ -157,7 +157,20 @@ router.post('/documents/:docId/elements/:elementId/defer', express.json(), wrap(
 /* ---------------- пары ---------------- */
 
 /** Ручная пара — всегда pending; статус с клиента не принимается. */
+/** Вопрос и ответ пары — только строки: объект превращался в «[object Object]» и уходил в выгрузку. */
+function badPairField(req, res) {
+  for (const field of ['question', 'answer']) {
+    const v = req.body && req.body[field];
+    if (v !== undefined && v !== null && typeof v !== 'string') {
+      res.status(400).json({ error: `Поле ${field} должно быть строкой` });
+      return true;
+    }
+  }
+  return false;
+}
+
 router.post('/elements/:elementId/pairs', express.json({ limit: '256kb' }), wrap((req, res) => {
+  if (badPairField(req, res)) return;
   const pair = store.createPair({
     elementId: req.params.elementId,
     question: req.body && req.body.question,
@@ -169,6 +182,7 @@ router.post('/elements/:elementId/pairs', express.json({ limit: '256kb' }), wrap
 }));
 
 router.patch('/pairs/:pairId', express.json({ limit: '256kb' }), wrap((req, res) => {
+  if (badPairField(req, res)) return;
   const pair = store.editPair(req.params.pairId, {
     question: req.body && req.body.question,
     answer: req.body && req.body.answer,

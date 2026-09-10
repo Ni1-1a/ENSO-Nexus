@@ -48,12 +48,16 @@ function words(text) {
 }
 
 function similarity(a, b) {
-  const wa = new Set(words(a));
-  const wb = new Set(words(b));
+  return similaritySets(a instanceof Set ? a : new Set(words(a)), b instanceof Set ? b : new Set(words(b)));
+}
+
+/** Похожесть по готовым множествам слов: доля общих от меньшего множества. */
+function similaritySets(wa, wb) {
   if (!wa.size || !wb.size) return 0;
+  const [small, big] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
   let common = 0;
-  for (const w of wa) if (wb.has(w)) common += 1;
-  return common / Math.min(wa.size, wb.size);
+  for (const w of small) if (big.has(w)) common += 1;
+  return common / small.size;
 }
 
 const MATCH_THRESHOLD = 0.5;
@@ -85,14 +89,40 @@ function compare(actsTable, journalTable) {
     used: false,
   }));
 
+  /*
+   * Индекс журнала по словам. Кандидаты ищутся по РАЗЛИЧАЮЩИМ словам: слово,
+   * встречающееся больше чем в трети записей («устройство», «работы»), в
+   * отборе не участвует — иначе кандидатами оказывается весь журнал и сверка
+   * 5000 × 5000 снова квадратичная (17 с с остановкой событийного цикла).
+   * Порог похожести 0,5 требует не меньше половины общих слов, поэтому
+   * запись без единого редкого общего слова его почти наверняка не проходит;
+   * если у акта редких слов нет вовсе, берутся все его слова.
+   */
+  const byWord = new Map();
+  for (const j of journal) {
+    j.wordSet = new Set(words(j.text));
+    for (const w of j.wordSet) {
+      if (!byWord.has(w)) byWord.set(w, []);
+      byWord.get(w).push(j);
+    }
+  }
+  const COMMON_SHARE = 0.33;
+  const commonLimit = Math.max(10, Math.ceil(journal.length * COMMON_SHARE));
+  const rare = (w) => (byWord.get(w) || []).length <= commonLimit;
+
   const rows = actsTable.rows.map((r, i) => {
     const actDate = parseDate(r[actDateCol]);
     const work = r[actWorkCol];
     // лучшая по похожести запись журнала; при равной похожести — ближайшая по дате
     let best = null;
     let bestScore = 0;
-    for (const j of journal) {
-      const score = similarity(work, j.text);
+    const actWords = new Set(words(work));
+    const keys = [...actWords].filter(rare);
+    const search = keys.length ? keys : [...actWords];
+    const candidates = new Set();
+    for (const w of search) for (const j of byWord.get(w) || []) candidates.add(j);
+    for (const j of candidates) {
+      const score = similaritySets(actWords, j.wordSet);
       if (score < MATCH_THRESHOLD) continue;
       const better = score > bestScore
         || (score === bestScore && best && actDate && j.date

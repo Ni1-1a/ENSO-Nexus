@@ -14,6 +14,7 @@
 const jts = require('./jts');
 const G = require('./site-geometry');
 const shapes = require('./shapes');
+const gridShape = require('./grid-shape');
 
 /** Углы поворота пробуются не наугад: здание обычно ставят вдоль границ участка. */
 const EXTRA_ANGLES = [0, 90];
@@ -28,6 +29,7 @@ const GRID_PASSES = [30, 70];
 const GRID_STEPS = 30;        // узлов сетки по длинной стороне (совместимость)
 const MAX_CANDIDATES = 1200;  // потолок перебора НА ФОРМУ: движок обязан отвечать быстро
 const PER_SHAPE_KEEP = 24;    // сколько удачных пятен запоминать на форму
+const TOL_M = 0.01;           // допуск у границ: 1 см — предел точности чертежа (вершины округляются до см)
 
 /* ---------------- требования к зданию ---------------- */
 
@@ -51,6 +53,8 @@ function normalizeRequirements(raw = {}) {
     orientationDeg: Number.isFinite(Number(raw.orientationDeg)) ? Number(raw.orientationDeg) : null,
     allowRotate: raw.allowRotate !== false,
     allowReshape: raw.allowReshape !== false,
+    // шаг колонн для контура по сетке (К8): по умолчанию 6 м, см. grid-shape.js
+    gridStepM: num(raw.gridStepM),
     notes: String(raw.notes || '').slice(0, 2000),
   };
 
@@ -94,7 +98,9 @@ function dimensionVariants(req) {
     push('rect', req.width, req.length, false);
     if (req.allowRotate) push('rect', req.length, req.width, false); // та же форма, другая ориентация
   }
-  if (req.areaM2 && req.allowReshape) {
+  // площадь при заданных габаритах формы не выдумывает: коробка пользователя
+  // остаётся коробкой, даже если он назвал ещё и площадь
+  if (req.areaM2 && req.allowReshape && !(req.width && req.length)) {
     for (const id of shapes.ids()) {
       for (const k of ASPECT_RATIOS) {
         const box = shapes.boxFor(id, req.areaM2, k);
@@ -239,7 +245,11 @@ function validate(site, footprintPoints, req, ctx = {}) {
   // выход за границы участка
   const parcel = ctx.parcelJts || (site.parcel ? jts.toJts(site.parcel.geometry) : null);
   if (parcel) {
-    if (!fp.within(parcel)) {
+    // допуск 2 мм: пятно, лежащее ВПЛОТНУЮ к границе (ячейки сетки колонн),
+    // в МСК и в локальных координатах давало разный ответ within из-за
+    // плавающей точки — и «выход за участок на 0 м²» в одной из систем
+    const parcelTol = ctx.parcelTol || (ctx.parcelTol = parcel.buffer(TOL_M));
+    if (!fp.within(parcelTol)) {
       const outside = jts.difference(fp, parcel);
       violations.push({
         code: 'outside-parcel',
@@ -397,17 +407,36 @@ function generate(site, buildable, rawReq, { limit = 24 } = {}) {
    * то есть больше половины узлов заведомо мимо. Раньше бюджет уходил на них:
    * пятно строилось, переводилось в JTS и только потом отбрасывалось.
    */
-  const makeSpots = (steps) => {
+  /*
+   * Прореживание — по фиксированной решётке (каждый m-й узел по обеим осям),
+   * а не по индексу списка: число узлов внутри территории зависит от шума
+   * плавающей точки на граничных узлах, и при том же участке в МСК и в
+   * локальных координатах пробовались разные сочетания (проверено 09.09.2026).
+   *
+   * У Г/Т/П/ступенчатой форм центр габарита лежит в вырезе — он может быть вне
+   * территории (корпус огибает дыру или угол зоны), поэтому отсев по центру
+   * делается только для прямоугольника.
+   */
+  const makeSpots = (steps, { insideOnly = true, every = 1 } = {}) => {
     const sx = Math.max((b.maxX - b.minX) / steps, 0.5);
     const sy = Math.max((b.maxY - b.minY) / steps, 0.5);
     const out = [];
-    for (let cx = localMinX; cx <= localMaxX; cx += sx) {
-      for (let cy = localMinY; cy <= localMaxY; cy += sy) {
-        if (pointInGeometry(areaGeometry, cx + origin[0], cy + origin[1])) out.push([cx, cy]);
+    let ix = 0;
+    for (let cx = localMinX; cx <= localMaxX; cx += sx, ix++) {
+      if (ix % every) continue;
+      let iy = 0;
+      for (let cy = localMinY; cy <= localMaxY; cy += sy, iy++) {
+        if (iy % every) continue;
+        if (insideOnly && !pointInGeometry(areaGeometry, cx + origin[0], cy + origin[1])) continue;
+        out.push([cx, cy]);
       }
     }
     return out;
   };
+  // коробка пользователя — один-два варианта размеров: бюджет на неё не делится,
+  // иначе из 19 годных положений грубой сетки пробовались два
+  const userBox = !!(req.width && req.length);
+  const budget = userBox ? MAX_CANDIDATES * 5 : MAX_CANDIDATES;
 
   const found = [];
   let tried = 0;
@@ -422,22 +451,42 @@ function generate(site, buildable, rawReq, { limit = 24 } = {}) {
      * узкое: на треугольнике в Горбунках 1790 м² в 2919 м² свободных с шагом
      * 2,5 м не ловились ни в одном узле.
      */
-    for (const steps of GRID_PASSES) {
-      const spots = makeSpots(steps);
-      if (!spots.length) continue;
-
-      // Сочетания «габарит × поворот × узел сетки». Раньше они перебирались
-      // подряд и упирались в потолок бюджета на левом краю участка: на реальной
-      // площадке в Горбунках здание 200 м² помещалось в правой её половине,
-      // а движок туда просто не доходил и отвечал «мест нет». Теперь сочетания
-      // берутся с равномерным шагом — бюджет тот же, но покрывает ВЕСЬ участок.
-      const combos = [];
-      for (const v of list) {
-        for (const angle of angles) {
-          for (const [cx, cy] of spots) combos.push([v, angle, cx, cy]);
-        }
+    /*
+     * Сочетания «габарит × поворот» отсеиваются по габариту заранее: повёрнутый
+     * прямоугольник, не входящий в габарит территории, не встанет ни в одном
+     * узле, а бюджет на него тратился (на дыре 80×80 из семи пропорций Г-формы
+     * живут одна-две, и прореживание узлов губило редкие годные положения).
+     */
+    const spanX = b.maxX - b.minX; const spanY = b.maxY - b.minY;
+    const fits = (v, angle) => {
+      const a = rad(angle); const w = Math.abs(v.width * Math.cos(a)) + Math.abs(v.length * Math.sin(a));
+      const h = Math.abs(v.width * Math.sin(a)) + Math.abs(v.length * Math.cos(a));
+      return w <= spanX + 0.01 && h <= spanY + 0.01;
+    };
+    const pairs = [];
+    for (const v of list) {
+      for (const angle of angles) {
+        if (fits(v, angle)) pairs.push([v, angle]);
+        else tried++; // отсев по габариту — тоже проверка: «мест нет» не должно выглядеть как «не искали»
       }
-      const stride = Math.max(1, Math.ceil(combos.length / MAX_CANDIDATES));
+    }
+    if (!pairs.length) continue;
+    for (const [pass, steps] of GRID_PASSES.entries()) {
+      // Сочетания «габарит × поворот × узел сетки» с равномерным шагом по
+      // решётке: бюджет тот же, покрытие — всё поле, а набор проверяемых
+      // положений не зависит от того, сколько узлов отсеялось на границе.
+      // Уплотнённый проход получает бюджет вчетверо: он и так идёт только
+      // когда грубый нашёл меньше четырёх положений.
+      const passBudget = budget * (pass ? 4 : 1);
+      const lattice = (steps + 1) * (steps + 1) * pairs.length;
+      const every = Math.max(1, Math.ceil(Math.sqrt(lattice / passBudget)));
+      const spots = makeSpots(steps, { insideOnly: shape === 'rect', every });
+      if (!spots.length) continue;
+      const combos = [];
+      for (const [v, angle] of pairs) {
+        for (const [cx, cy] of spots) combos.push([v, angle, cx, cy]);
+      }
+      const stride = Math.max(1, Math.ceil(combos.length / (passBudget * 1.5)));
       for (let i = 0; i < combos.length && shapeFound.length < PER_SHAPE_KEEP; i += stride) {
         const [v, angle, cx, cy] = combos[i];
         tried++;
@@ -465,15 +514,107 @@ function generate(site, buildable, rawReq, { limit = 24 } = {}) {
           admissible: check.violations.length === 0,
         });
       }
-      if (shapeFound.length) break; // грубой сетки хватило — частить незачем
+      // грубой сетки хватило на четыре различающихся положения — частить незачем;
+      // одно-два найденных — повод пройти уплотнённой: иначе коробка 30×40
+      // получала два положения под одним углом там, где годных было девятнадцать
+      if (shapeFound.length >= 4) break;
     }
     found.push(...shapeFound);
   }
 
-  // сортировка: сначала допустимые, потом крупные, потом ближе к центру территории
+  /*
+   * Контур ПО СЕТКЕ КОЛОНН — там, где готовые формы не встают.
+   *
+   * Готовые Г/Т/П-формы — это пропорции, и на клиновидной площадке ни одна
+   * из них не помещается: в Горбунках при 2900 м² свободных под 1790 м²
+   * застройки движок находил только треугольник. Здание с косыми стенами
+   * человек отверг («все углы прямые»), и здесь контур собирается из ячеек
+   * шага колонн внутри допустимой территории: все углы прямые, а число углов
+   * минимизируется при росте контура (geometry/grid-shape.js). Габариты не
+   * заданы — иначе это коробка пользователя, и форму выдумывать нельзя.
+   */
+  const gridNotes = [];
+  const gridStats = {};
+  const areaTol = area.buffer(TOL_M); // тот же допуск, что у сетки: ячейка вплотную к границе — внутри
+  if (req.allowReshape && req.areaM2 && !(req.width && req.length)) {
+    const gridFound = [];
+    for (const angle of angles) {
+      let shapesAtAngle = [];
+      try {
+        shapesAtAngle = gridShape.generate(area, {
+          areaM2: req.areaM2, angleDeg: angle, origin, geometry: areaGeometry, notes: gridNotes, stats: gridStats,
+          cellM: req.gridStepM || undefined, minWidthM: req.minWidth || undefined, limit: 6,
+        });
+      } catch (err) {
+        console.warn('[placement] контур по сетке не построен:', err.message);
+      }
+      for (const g of shapesAtAngle) gridFound.push(g);
+    }
+    // проверяются лучшие по числу углов: полная проверка (зоны, объекты) дорогая
+    gridFound.sort((p, q) => p.corners - q.corners || p.perimeterM - q.perimeterM);
+    for (const g of gridFound.slice(0, PER_SHAPE_KEEP)) {
+      tried++;
+      // страховка от округления вершин: как и у готовых форм, пятно обязано
+      // лежать в территории целиком, иначе validate находит фантомное
+      // «пересечение с зоной — 0 м²» по общему ребру
+      const gfp = jts.toJts({ type: 'polygon', closed: true, points: g.points });
+      if (!gfp || !gfp.within(areaTol)) continue;
+      const check = validate(site, g.points, req, { parcelJts });
+      found.push({
+        footprint: { type: 'polygon', closed: true, points: g.points },
+        shape: 'grid',
+        shapeLabel: shapes.label('grid'),
+        shapeNote: `${g.corners} углов, ячейка ${g.cellM} × ${g.cellM} м (${g.cells} ячеек)`,
+        width: g.width,
+        length: g.length,
+        rotationDeg: g.rotationDeg,
+        reshaped: true,
+        center: g.center,
+        areaM2: check.areaM2,
+        floors: req.floors,
+        violations: check.violations,
+        warnings: check.warnings,
+        affected: check.affected,
+        removed: check.removed,
+        admissible: check.violations.length === 0,
+      });
+    }
+  }
+
+  // у каждого кандидата — число углов: по нему идёт и сортировка, и отбор вариантов
+  for (const c of found) {
+    c.corners = gridShape.cornerCount(c.footprint.points);
+    c.orthogonal = gridShape.isOrthogonal(c.footprint.points);
+  }
+
+  /*
+   * Заданный поворот при разрешённом вращении — предпочтение, а не запрет:
+   * кандидаты с другим поворотом остаются, но идут после совпавших и несут
+   * замечание. Раньше orientationDeg лишь ставился первым в перебор, и человек,
+   * просивший 45°, получал вариант 1 под 10° без единого слова.
+   */
+  const wantAngle = req.orientationDeg !== null ? normAngle(req.orientationDeg) : null;
+  for (const c of found) {
+    c.angleDiff = 0;
+    if (wantAngle === null) continue;
+    const d = Math.abs(normAngle(c.rotationDeg) - wantAngle);
+    c.angleDiff = Math.min(d, 180 - d);
+    if (c.angleDiff > 2) {
+      c.warnings.push({
+        code: 'orientation',
+        message: `Поворот ${c.rotationDeg}° отличается от заданного ${req.orientationDeg}° на ${round(c.angleDiff)}°`,
+      });
+    }
+  }
+
+  // сортировка: сначала допустимые, потом с МЕНЬШИМ числом углов (площадь у
+  // всех кандидатов одна — требуемая), потом ближе к заданному повороту,
+  // потом крупные, потом ближе к центру
   const centre = [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
   found.sort((p, q) =>
     (q.admissible - p.admissible)
+    || (p.corners - q.corners)
+    || (p.angleDiff - q.angleDiff)
     || (q.areaM2 - p.areaM2)
     || (dist(p.center, centre) - dist(q.center, centre)));
 
@@ -508,7 +649,11 @@ function generate(site, buildable, rawReq, { limit = 24 } = {}) {
       // вовсе, и тогда допустимая территория — это сам участок
       const territory = buildable && buildable.geometry ? buildable
         : (site.parcel ? { geometry: site.parcel.geometry } : null);
-      relief = require('./placement-relief').analyse(site, territory, req);
+      relief = require('./placement-relief').analyse(site, territory, req, {
+        shapesTried: !!req.allowReshape,
+        // потолок по сетке колонн — наибольшая связная часть полных блоков: главное число отказа
+        maxCandidateAreaM2: gridStats.ceilingM2 || 0,
+      });
     } catch (err) {
       // мероприятия — надстройка: их отсутствие не должно ронять ответ движка
       console.warn('[placement] мероприятия не посчитаны:', err.message);
@@ -528,14 +673,21 @@ function generate(site, buildable, rawReq, { limit = 24 } = {}) {
   // В выдачу попадают ВСЕ формы по очереди, а не только лучшая: иначе список
   // кандидатов состоит из одного прямоугольника, сдвинутого на метр, и отбирать
   // из него различающиеся варианты не из чего.
-  return { candidates: interleaveByShape(found, limit), errors: [], tried, total: found.length, warnings: [] };
+  return {
+    candidates: interleaveByShape(found, limit), errors: [], tried, total: found.length,
+    warnings: gridNotes.map((message) => ({ code: 'grid-skipped', message })),
+  };
 }
 
 /** Круговой обход групп «форма + габарит»: каждая форма получает место в выдаче. */
 function interleaveByShape(candidates, limit) {
   const groups = new Map();
   for (const c of candidates) {
-    const key = `${c.shape || 'rect'}:${c.width}x${c.length}`;
+    // у контура по сетке габарит плавает от положения к положению — группа
+    // по числу углов, иначе он забирает всю выдачу одними «своими» группами
+    const key = c.shape === 'grid'
+      ? `grid:${c.corners || 0}`
+      : `${c.shape || 'rect'}:${c.width}x${c.length}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
   }

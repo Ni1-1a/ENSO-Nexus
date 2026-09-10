@@ -361,6 +361,10 @@ for (const sql of [
   'CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_at)',
   // токен сессии хранится хешем (аудит безопасности 02.09.2026); token остаётся пустым
   "ALTER TABLE sessions ADD COLUMN token_hash TEXT NOT NULL DEFAULT ''",
+  // сколько сообщений было в ленте, когда резюме диалога составлялось в последний раз:
+  // без этого резюме пересоставлялось (отдельным вызовом модели) после КАЖДОГО
+  // сообщения, стоило ленте перевалить за порог (2026-09-09)
+  'ALTER TABLE sessions ADD COLUMN summary_msg_count INTEGER NOT NULL DEFAULT 0',
 ]) {
   try { db.exec(sql); } catch { /* колонка уже есть */ }
 }
@@ -380,6 +384,32 @@ try {
   const moved = db.prepare("UPDATE sessions SET kb_choice = 'verified' WHERE kb_choice = 'grisha'").run().changes;
   if (moved) console.log(`[kb] проектов переведено с базы Гриши на «Верифицировано»: ${moved}`);
 } catch { /* колонки ещё нет — свежая база */ }
+
+/*
+ * Пути файлов и результатов записаны абсолютными. После переноса DATA_DIR,
+ * восстановления из копии (scripts/backup.sh) или запуска стенда на копии базы
+ * они указывают на чужой каталог: хозяин получал 403 на собственный комплект,
+ * а исходные документы анализа «не читались». Здесь путь переписывается на
+ * текущий каталог, если файл на старом месте отсутствует, а на новом есть.
+ */
+function repairStoredPaths() {
+  const dataDir = path.resolve(config.dataDir);
+  let fixed = 0;
+  for (const [table, folder] of [['files', 'uploads'], ['results', 'outputs']]) {
+    let rows = [];
+    try { rows = db.prepare(`SELECT id, session_id, stored_path FROM ${table}`).all(); } catch { continue; }
+    for (const r of rows) {
+      const stored = String(r.stored_path || '');
+      if (!stored || path.resolve(stored).startsWith(dataDir + path.sep) || fs.existsSync(stored)) continue;
+      const alt = path.join(dataDir, folder, r.session_id, path.basename(stored));
+      if (!fs.existsSync(alt)) continue;
+      db.prepare(`UPDATE ${table} SET stored_path = ? WHERE id = ?`).run(alt, r.id);
+      fixed++;
+    }
+  }
+  if (fixed) console.log(`[db] путей файлов переписано на текущий DATA_DIR: ${fixed}`);
+}
+try { repairStoredPaths(); } catch (err) { console.warn('[db] пути файлов не проверены:', err.message); }
 
 const now = () => new Date().toISOString();
 

@@ -207,9 +207,27 @@ function selectDiverse(candidates, count, scale, seeds = []) {
   return picked.map((i) => candidates[i]);
 }
 
-/** Сортировка кандидатов по выбранному критерию (ТЗ, п. 44). */
+/**
+ * Сортировка кандидатов по выбранному критерию (ТЗ, п. 44).
+ *
+ * Площади у кандидатов практически одинаковые — все построены под требуемую,
+ * и разница в десятые доли метра ничего не значит. Поэтому при равной (в
+ * пределах 2 %) площади первым идёт контур с МЕНЬШИМ числом углов: прямоугольник
+ * раньше Г-образного, Г-образный раньше ступенчатого (решение владельца 09.09.2026).
+ */
 function rank(candidates, criterion) {
-  const byArea = (a, b) => b.areaM2 - a.areaM2;
+  const corners = (c) => (Number.isFinite(c.corners) ? c.corners : 4);
+  // «та же площадь» считается от максимума списка, а не попарно: попарный допуск
+  // нетранзитивен, и порядок зависел от порядка входа (рецензия 09.09.2026)
+  const ref = Math.max(0, ...candidates.map((c) => Number(c.areaM2) || 0)) || 1;
+  const near = (c) => ((ref - (Number(c.areaM2) || 0)) / ref <= 0.02 ? 0 : 1);
+  // заданный поворот — предпочтение (angleDiff считает движок): иначе 0,3 м²
+  // площади перевешивали просьбу «45°», и вариант 1 выходил под чужим углом
+  const angleOff = (c) => (Number.isFinite(c.angleDiff) ? c.angleDiff : 0);
+  const byArea = (a, b) => (near(a) - near(b))
+    || (near(a) === 0 ? corners(a) - corners(b) : 0)
+    || (near(a) === 0 ? angleOff(a) - angleOff(b) : 0)
+    || (b.areaM2 - a.areaM2);
   const byImpact = (a, b) => a.affected.length - b.affected.length || byArea(a, b);
   if (criterion === 'minRelocations' || criterion === 'minImpact') return [...candidates].sort(byImpact);
   return [...candidates].sort(byArea); // maxArea по умолчанию
@@ -294,6 +312,12 @@ function toVariant(c, number, site) {
       shape: c.shape || 'rect',
       shapeLabel: c.shapeLabel || 'прямоугольник',
       shapeNote: c.shapeNote || '',
+      // число углов и прямоугольность контура — то, по чему человек судит о форме
+      corners: Number.isFinite(c.corners) ? c.corners : (c.footprint && c.footprint.points ? c.footprint.points.length : null),
+      orthogonal: typeof c.orthogonal === 'boolean' ? c.orthogonal : null,
+      // отклонение от заданного поворота (0, если поворот не задан): клиент и отчёт
+      // различают «повёрнут не так» без разбора текста замечания
+      orientationDiffDeg: Number.isFinite(c.angleDiff) ? Math.round(c.angleDiff * 100) / 100 : 0,
       rotationDeg: c.rotationDeg,
       floors: c.floors || null,
       reshaped: c.reshaped,

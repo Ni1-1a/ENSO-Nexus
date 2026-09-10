@@ -132,13 +132,18 @@ function fromJts(geom) {
     return { type: 'polygon', closed: true, points: dropClosing(round(outer)), holes: holes.map((h) => dropClosing(round(h))) };
   }
   if (gj.type === 'MultiPolygon') {
-    return {
-      type: 'multipolygon',
-      polygons: gj.coordinates.map(([outer, ...holes]) => ({
-        points: dropClosing(round(outer)),
-        holes: holes.map((h) => dropClosing(round(h))),
-      })),
-    };
+    // «щепки» после булевых операций (доли площадью в квадратные сантиметры)
+    // в описание территории не идут: на посадку они не влияют, а «3 доли»
+    // в предупреждении выходили неправдой
+    const polygons = [];
+    for (let i = 0; i < geom.getNumGeometries(); i++) {
+      const part = geom.getGeometryN(i);
+      if (!(part.getArea() >= 0.01)) continue;
+      const [outer, ...holes] = gj.coordinates[i];
+      polygons.push({ points: dropClosing(round(outer)), holes: holes.map((h) => dropClosing(round(h))) });
+    }
+    if (polygons.length === 1) return { type: 'polygon', closed: true, points: polygons[0].points, holes: polygons[0].holes };
+    return { type: 'multipolygon', polygons };
   }
   if (gj.type === 'LineString') return { type: 'polyline', closed: false, points: round(gj.coordinates) };
   return null;
@@ -199,11 +204,15 @@ function area(geom) {
   return geom ? geom.getArea() : 0;
 }
 
-/** Пересекаются ли геометрии по площади (касание границами не считается). */
+/**
+ * Пересекаются ли геометрии по площади (касание границами не считается).
+ * Порог — квадратный сантиметр: пятно, лежащее вплотную к зоне (ячейки сетки
+ * колонн по общему ребру), в МСК давало «пересечение 0 м²» из-за плавающей точки.
+ */
 function overlaps(a, b) {
   if (!a || !b) return false;
   const i = a.intersection(b);
-  return !i.isEmpty() && i.getArea() > 1e-9;
+  return !i.isEmpty() && i.getArea() > 1e-4;
 }
 
 /** Полностью ли a внутри b. */

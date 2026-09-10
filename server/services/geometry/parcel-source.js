@@ -171,8 +171,18 @@ function build(record, site = null) {
   const warnings = [];
   const errors = [];
   const meta = record.meta || {};
+  /*
+   * Точки приходят двумя способами: от модели — как {label, first, second}
+   * (числа из колонок таблицы ГПЗУ, как напечатаны), от человека — парами
+   * [x, y] в системе чертежа. Пары молча превращались в NaN, полигон не
+   * строился, и участок откатывался на случайный контур покрытия — тот самый
+   * провал Горбунков, ради которого модуль и написан (круг 3).
+   */
+  const manual = (record.points || []).some((p) => Array.isArray(p));
   const raw = (record.points || [])
-    .map((p) => ({ label: String(p.label ?? ''), first: Number(p.first), second: Number(p.second) }))
+    .map((p) => (Array.isArray(p)
+      ? { label: '', first: Number(p[0]), second: Number(p[1]) }
+      : { label: String(p.label ?? ''), first: Number(p.first), second: Number(p.second) }))
     .filter((p) => Number.isFinite(p.first) && Number.isFinite(p.second));
 
   if (raw.length < 3) {
@@ -195,14 +205,19 @@ function build(record, site = null) {
    * случайно давала верный ответ, но опереться на неё нельзя.
    */
   let chosen = null;
-  const byGrid = orientationByGrid(raw, grid);
+  // человек вводит координаты в системе чертежа — переставлять их местами
+  // (это делается для колонок документа) значит переворачивать его же ввод
+  if (manual) {
+    chosen = variants.find((v) => v.id === 'direct');
+  }
+  const byGrid = chosen ? null : orientationByGrid(raw, grid);
   if (byGrid) {
     chosen = { ...variants.find((v) => v.id === byGrid.id), label: byGrid.label };
     if (byGrid.unknown) {
       warnings.push(`Из ${byGrid.total} точек границы ${byGrid.unknown} не легли ни на одну ось координатной сетки — `
         + 'проверьте эти строки таблицы в документе.');
     }
-  } else {
+  } else if (!chosen) {
     const why = grid && grid.ok
       ? 'координаты из документа не совпали ни с одной осью сетки'
       : `координатной сетки в чертеже не прочитано (${(grid && grid.note) || 'подписей нет'})`;

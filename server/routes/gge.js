@@ -46,6 +46,9 @@ router.post('/check',
     const target = String(req.query.project || '').trim() ? projects.markable(req.query.project, req.user) : null;
     const files = (req.files || []).map((f) => ({
       name: decodeName(f),
+      // имя по 783/пр длинное по природе («Раздел ПД 5. Подраздел 5.1 … Книга 2»):
+      // проверяется ПОЛНОЕ имя, а обрезанное до 120 знаков остаётся для временных файлов
+      fullName: Buffer.from(String(f.originalname), 'latin1').toString('utf8').replace(/[\x00-\x1f]/g, ' ').trim(),
       size: f.size,
       buffer: f.buffer,
     }));
@@ -59,8 +62,11 @@ router.post('/check',
     if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
       return res.status(400).json({ error: 'Поле fields должно быть JSON-объектом «реквизит → эталонное значение»' });
     }
+    // значение реквизита — строка или число: объект попадал в отчёт как «[object Object]»
+    const badField = Object.entries(fields).find(([, v]) => v !== null && !['string', 'number'].includes(typeof v));
+    if (badField) return res.status(400).json({ error: `Эталонное значение реквизита «${badField[0]}» должно быть строкой` });
 
-    const filenames = check.checkFilenames(files);
+    const filenames = check.checkFilenames(files.map((f) => ({ ...f, name: f.fullName || f.name })));
     const textLayers = await check.checkTextLayers(files);
 
     // тексты для сверки реквизитов: PDF — из проверки слоя, DOCX/TXT — извлечь

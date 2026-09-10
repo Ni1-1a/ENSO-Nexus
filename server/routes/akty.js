@@ -87,7 +87,20 @@ router.post('/generate',
     markProject(target, req, `черновиков: ${table.rowCount}`);
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('Черновики актов.zip')}`);
-    res.setHeader('X-Akty-Report', encodeURIComponent(JSON.stringify(out.report)));
+    /*
+     * В заголовок — сводка, а не перечень: на реестре в 3000 строк с пропусками
+     * X-Akty-Report вырастал до 539 КБ, и curl, браузеры и Cloudflare молча
+     * отбрасывали ответ — zip «не скачивался». Полный перечень пропусков и так
+     * лежит в архиве (ОТЧЁТ-пропуски.txt); здесь — счётчики и первые 50 имён.
+     */
+    const report = {};
+    for (const [key, value] of Object.entries(out.report || {})) {
+      if (Array.isArray(value) && value.length > 50) {
+        report[key] = value.slice(0, 50);
+        report[`${key}Total`] = value.length;
+      } else report[key] = value;
+    }
+    res.setHeader('X-Akty-Report', encodeURIComponent(JSON.stringify(report)));
     res.send(out.zip);
   }));
 

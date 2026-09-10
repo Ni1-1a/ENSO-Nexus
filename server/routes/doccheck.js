@@ -30,7 +30,8 @@ const upload = multer({
 });
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-const bigJson = express.json({ limit: '2mb' });
+// лимит от DOC_CHAR_LIMIT: кириллица в JSON — до 3 байт на знак, «2mb» резали на миллионе
+const bigJson = express.json({ limit: `${Math.max(2, Math.ceil((require('../config').docCharLimit * 3.5) / 1048576))}mb` });
 // общий парсер приложения этот роутер обходит — JSON разбирается здесь, до 2 МБ
 router.use(bigJson);
 
@@ -225,6 +226,10 @@ router.delete('/checks/:id', wrap(async (req, res) => {
  * Запуск прогона. Возвращает { runId } или null, если прогон уже идёт.
  * Ошибки конвейера уходят в строку прогона, не в HTTP.
  */
+/** Подсказка при прогоне без нейросети: классификация по маркерам будет, профильной проверки — нет. */
+const NO_MODEL_HINT = 'Нейросеть не выбрана: прогон определит тип документа по маркерам, но профильную проверку не выполнит. Выберите нейросеть в карточке проверки и нажмите «Проверить».';
+const hasModel = (check) => !!String(check.ai_provider || '').trim();
+
 function startRun(check, req) {
   const running = store.listRuns(check.id).find((r) => ['queued', 'running'].includes(r.status));
   if (running) return null;
@@ -258,6 +263,7 @@ router.put('/checks/:id/document', bigJson, wrap(async (req, res) => {
   res.json({
     document: { name: check.document_name, chars: check.document_text.length },
     runId,
+    hint: !hasModel(check) ? NO_MODEL_HINT : undefined,
   });
 }));
 
@@ -273,6 +279,7 @@ router.post('/checks/:id/document/file',
     res.status(201).json({
       document: { name: check.document_name, chars: check.document_text.length, note: extracted.note },
       runId,
+      hint: !hasModel(check) ? NO_MODEL_HINT : undefined,
     });
   }));
 

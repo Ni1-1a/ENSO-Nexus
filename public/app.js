@@ -1039,8 +1039,17 @@ function actionsHtml(vv, fresh) {
         <button class="btn btn-danger btn-sm" type="button" data-decide="${esc(a.id)}" data-decision="forbid">Запретить</button>
       </span></li>`;
   }).join('');
+  // на боевом плане таких мероприятий бывает четыре десятка: по два клика и
+  // отдельному окну на каждое — это полтораста действий ради одного варианта
+  const pending = acts.filter((a) => !a.decision);
+  const bulk = fresh && pending.length > 1
+    ? `<div class="pc-acts-bulk">
+        <button class="btn btn-primary btn-sm" type="button" data-decide-all="${esc(vv.id)}" data-decision="allow">Разрешить все (${pending.length})</button>
+      </div>`
+    : '';
   return `<div class="pc-decisions">
     <p class="pc-decisions-head">Вариант ${vv.number}: воздействие на критические объекты — нужно ваше решение</p>
+    ${bulk}
     <ul class="pc-acts">${rows}</ul></div>`;
 }
 
@@ -1146,7 +1155,9 @@ function variantsCardHtml(data, fresh) {
     ${done ? '' : variantHintsHtml(run)}
     ${(data.notes || []).length ? `<p class="pc-note">${(data.notes || []).map(esc).join(' ')}</p>` : ''}
     ${done
-      ? `<div class="pc-done">✓ Вариант ${picked ? picked.number : ''} согласован</div>`
+      ? `<div class="pc-done">✓ Вариант ${picked ? picked.number : ''} согласован
+          <button class="btn btn-quiet btn-sm" type="button" data-stage-act="variants-revise">Подобрать заново с замечанием</button>
+        </div>`
       : cardActionsHtml(fresh,
         `<button class="btn btn-primary btn-sm" type="button" data-stage-act="variants-approve"${picked ? '' : ' disabled'}>
             ${picked ? `Согласовать вариант ${picked.number} и собрать чертёж` : 'Выберите вариант'}</button>
@@ -1203,6 +1214,14 @@ async function ensureCardData(v) {
   // заморожено, а правки объектов меняют и допустимую территорию, и подсказки
   // сводка привязана к ПОСЛЕДНЕЙ карточке зон: после замечания приходит новая
   // карточка с новым расчётом, и старую сводку надо забыть
+  /*
+   * Карточка вариантов несёт runId. Пришла карточка нового подбора, а в руках
+   * прежний запуск — перечитать: после «Переделать с замечанием» лента
+   * показывала пятна ПРОШЛОГО подбора (и уже «выбранный» треугольник) до
+   * перезагрузки страницы (обход в браузере, круг 3).
+   */
+  const lastVariants = [...v.messages].reverse().map(cardOf).find((c) => c && c.card === 'variants');
+  if (lastVariants && lastVariants.runId && state.run && state.run.id && state.run.id !== lastVariants.runId) state.run = null;
   const lastZones = [...v.messages].reverse().find((m) => (cardOf(m) || {}).card === 'zones');
   const needZones = !!lastZones && (state.zonesLiveFor !== String(lastZones.id) || !state.zonesLive);
   if (!needPlan && !needRun && !needZones) return;
@@ -1321,6 +1340,42 @@ async function decideAction(actionId, decision) {
     toast(decision === 'allow' ? 'Воздействие разрешено' : 'Воздействие запрещено');
     render();
   } catch (err) { toast(err.message, 'error'); }
+}
+
+/**
+ * Решения по ВСЕМ мероприятиям варианта разом. Подтверждение спрашивается один
+ * раз и называет число: сорок отдельных окон подряд человек просто закликивает,
+ * не читая, — а это подпись под переносом критических сетей (ТЗ, п. 46).
+ */
+async function decideAllActions(variantId, decision) {
+  const id = state.session && state.session.id;
+  if (!id || !state.run) return;
+  const variant = (state.run.variants || []).find((v) => v.id === variantId);
+  if (!variant) return;
+  const pending = (variant.actions || []).filter((a) => a.requiresDecision && !a.decision);
+  if (!pending.length) return;
+  const u = (window.Auth && window.Auth.user) || null;
+  const decidedBy = u ? `${u.lastName} ${u.firstName}`.trim() : '';
+  if (!decidedBy) { toast('Решение подписывается именем — войдите на платформу заново', 'error'); return; }
+  const ok = await appDialog({
+    title: `Разрешить все воздействия варианта ${variant.number}?`,
+    message: `Мероприятий: ${pending.length}. Все они будут считаться согласованными, решение записывается от вашего имени: ${decidedBy}. `
+      + 'Каждое остаётся в комплекте отдельной строкой — при необходимости решение по любому можно поменять.',
+    confirmText: `Разрешить все (${pending.length})`,
+  });
+  if (ok === null) return;
+  let done = 0;
+  const failed = [];
+  for (const a of pending) {
+    try {
+      await api(`/sessions/${id}/plan/actions/${a.id}`, { method: 'POST', json: { decision, decidedBy } });
+      done++;
+    } catch (err) { failed.push(err.message); }
+  }
+  state.run = await api(`/sessions/${id}/plan/variants`);
+  render();
+  toast(failed.length ? `Принято решений: ${done} из ${pending.length}; не удалось: ${failed[0]}` : `Принято решений: ${done}`,
+    failed.length ? 'error' : undefined);
 }
 
 /** Требования к зданию: подставляются из фактов, но подтверждает их человек. */
@@ -2997,6 +3052,13 @@ async function init() {
       stageBtn.disabled = true;
       await stageAction(stageBtn.dataset.stageAct);
       stageBtn.disabled = false;
+      return;
+    }
+    const decideAll = e.target.closest('[data-decide-all]');
+    if (decideAll) {
+      decideAll.disabled = true;
+      await decideAllActions(decideAll.dataset.decideAll, decideAll.dataset.decision);
+      decideAll.disabled = false;
       return;
     }
     const decideBtn = e.target.closest('[data-decide]');

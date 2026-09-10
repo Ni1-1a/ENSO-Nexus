@@ -29,8 +29,11 @@ const upload = multer({
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// текст ЗнП больше общего лимита JSON платформы (256 КБ) — свой разбор тела
-const bigJson = express.json({ limit: '2mb' });
+// текст ЗнП больше общего лимита JSON платформы (256 КБ) — свой разбор тела.
+// Лимит считается от DOC_CHAR_LIMIT: кириллица в JSON занимает до 3 байт на знак
+// (2 в UTF-8 + экранирование), и при «2mb» потолок в 1,5 млн знаков был
+// недостижим — вставка обрывалась на миллионе безликим 413 (аудит 09.09.2026)
+const bigJson = express.json({ limit: `${Math.max(2, Math.ceil((require('../config').docCharLimit * 3.5) / 1048576))}mb` });
 // общий парсер приложения этот роутер обходит — JSON разбирается здесь, до 2 МБ
 router.use(bigJson);
 

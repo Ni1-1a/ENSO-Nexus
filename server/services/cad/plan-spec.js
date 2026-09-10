@@ -350,7 +350,8 @@ function build(site, { variant = null, buildable = null, title = '', subtitle = 
       y -= textH;
       line('ТЭП ВАРИАНТА');
       line(`  Площадь застройки: ${m.areaM2} м²`);
-      line(`  Габарит: ${m.width} × ${m.length} м, конфигурация: ${m.shapeLabel || 'прямоугольник'}`);
+      line(`  Габарит: ${m.width} × ${m.length} м, конфигурация: ${m.shapeLabel || 'прямоугольник'}`
+        + (Number.isFinite(m.corners) ? `, углов: ${m.corners}` : ''));
       if (m.floors) line(`  Этажность: ${m.floors}`);
       line(`  Поворот: ${m.rotationDeg}°`);
       line(`  Статус: ${variantStatusLabel(variant)}`);

@@ -523,6 +523,8 @@ async function startVariantsStage(sessionId, requirements) {
       }
 
       const { variants, notes: buildNotes } = V.build(site, gen.candidates, { criterion: 'maxArea' });
+      // предупреждения движка (сетка пропущена на огромном участке и т. п.) — в карточку
+      const engineNotes = (gen.warnings || []).map((w) => (w && w.message) || String(w)).filter(Boolean);
       const runId = runs.saveRun(sessionId, {
         planId, requirements, criterion: 'maxArea', variants,
         stats: { перебрано: gen.tried, найдено: gen.total, отобрано: variants.length },
@@ -531,7 +533,7 @@ async function startVariantsStage(sessionId, requirements) {
         `вариантов ${variants.length}, кандидатов ${gen.total}`);
 
       stages.addCard(sessionId, 'variants', {
-        runId, requirements, notes: buildNotes,
+        runId, requirements, notes: [...buildNotes, ...engineNotes],
         forms: variants.map((v) => v.metrics.shapeLabel),
       });
       stages.set(sessionId, 'variants_review');

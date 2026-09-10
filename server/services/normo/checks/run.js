@@ -77,7 +77,10 @@ async function runDocumentCheck(versionId, { force = false, llm = true, wait = f
     `SELECT * FROM analysis_runs WHERE version_id = $1 AND (cache_key = $2 OR cache_key LIKE $3)
        AND status IN ('done','running','queued') ORDER BY id DESC`, [versionId, key, `${ownKey}%`]);
   if (existing.rows.length && !force) {
-    return { run: existing.rows[0], cached: true };
+    // идущий прогон — не «из кэша»: клиент печатал «результат из кэша» на
+    // прогоне, который только стартовал
+    const done = existing.rows[0].status === 'done';
+    return { run: existing.rows[0], cached: done, running: !done };
   }
   if (existing.rows.length && force) {
     params.forced_at = new Date().toISOString();

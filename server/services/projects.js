@@ -101,9 +101,10 @@ function resolveProjectId(raw, user) {
 }
 
 /**
- * ?project= в списках: пусто — все записи; не по форме — 400; чужой или мягко
- * удалённый — 404 «Проект не найден» (то же правило, что у resolveProjectId).
- * Несуществующий id пропускается: список по нему просто пуст.
+ * ?project= в списках: пусто — все записи; не по форме — 400; чужой, мягко
+ * удалённый И несуществующий — одинаковый 404 «Проект не найден» (то же правило,
+ * что у resolveProjectId). Раньше несуществующий давал 200 с пустым списком —
+ * и тем самым подтверждал, что чужой проект существует (аудит 09.09.2026).
  */
 function filterId(raw, user) {
   // ?project=a&project=b приходит массивом — это не идентификатор
@@ -112,7 +113,7 @@ function filterId(raw, user) {
   if (!s) return '';
   if (!ID_RE.test(s)) throw httpError(400, 'Некорректный идентификатор проекта');
   const project = byIdAny(s);
-  if (project && (project.deleted_at || !canSee(project, user))) throw httpError(404, 'Проект не найден');
+  if (!project || project.deleted_at || !canSee(project, user)) throw httpError(404, 'Проект не найден');
   return s;
 }
 

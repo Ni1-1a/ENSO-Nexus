@@ -1256,9 +1256,16 @@ body.modal-open { overflow: hidden; }
 .vw-legend-item { cursor: default; }
 .vw-legend-sub .vw-legend-item:hover { color: var(--text); }
 
-.pm-stage { flex: 1; min-height: 0; margin: 0 18px 18px; border-radius: var(--radius); }
+.pm-stage { flex: 1; min-height: 260px; margin: 0 18px 18px; border-radius: var(--radius); }
 .pm-empty { margin: 0 18px 18px; }
-.pm-warnings { margin: 0 18px 18px; padding-left: 18px; }
+/* Предупреждений разбора бывает десяток, и на телефоне они забирали всю
+   высоту: плану оставалась полоса в 15 px, попасть по объекту было нельзя
+   (обход в браузере, круг 3). Список ограничен по высоте и прокручивается сам. */
+.pm-warnings { margin: 0 18px 18px; padding-left: 18px; max-height: 22vh; overflow-y: auto; }
+@media (max-width: 700px) {
+  .pm-warnings { max-height: 15vh; }
+  .pm-stage { min-height: 45vh; }
+}
 
 .vw-stage {
   position: relative;
@@ -1381,6 +1388,8 @@ body.modal-open { overflow: hidden; }
 .vw-props-field input, .vw-props-field select, .vw-props-field textarea { font-size: 12.5px; }
 .vw-props-foot { display: flex; gap: 8px; margin-top: 2px; }
 .vw-props .hint:empty { display: none; }
+/* «Разрешить все» — отдельной строкой над списком мероприятий */
+.pc-acts-bulk { margin: 6px 0 8px; }
 /* Что означает выбранный пункт списка. Без этой строки «переносится» и
    «сносится» выглядят одинаково безобидно, хотя меняют и разрывы, и пятно. */
 .vw-props-help { font-size: 11px; line-height: 1.45; color: var(--text-3); }
