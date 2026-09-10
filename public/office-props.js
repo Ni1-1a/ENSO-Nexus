@@ -40,6 +40,17 @@ export const MAT = {
   glass: () => new THREE.MeshPhysicalMaterial({ color: 0xdfe9ee, transmission: 0.55, roughness: 0.08, thickness: 0.02, transparent: true, opacity: 0.55 }),
 };
 
+/**
+ * Пометка «висит по замыслу» (Р3 ТЗ №2). Аудит парящих пропускает предмет и
+ * всё, что внутри него: светильники, вывески, картины, лучи, рыбы, парапеты,
+ * плиты перекрытия. Всё НЕпомеченное обязано стоять на полу или на предмете.
+ */
+export function air(obj, name) {
+  obj.userData.airborne = true;
+  if (name) obj.name = name;
+  return obj;
+}
+
 /* ---------- канва ---------- */
 
 export function canvasTexture(w, h, draw) {
@@ -261,18 +272,34 @@ export function makeChair() {
   seat.position.y = 0.46;
   seat.castShadow = true;
   g.add(seat);
-  const back = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.34, 0.34, 0.58, 24, 1, true, Math.PI - 0.75, 1.5),
-    std(0xf6f2ea, { side: THREE.DoubleSide, roughness: 0.4 }),
-  );
-  back.position.set(0, 0.8, 0.28);
-  g.add(back);
   const cushion = new THREE.Mesh(new RoundedBoxGeometry(0.42, 0.04, 0.4, 2, 0.02), std(0xd8cfbf, { roughness: 0.8 }));
   cushion.position.y = 0.5;
   g.add(cushion);
+  /*
+   * Н3. Спинка стояла посреди сиденья плоской доской и ни с чем не
+   * соединялась: дуга R 0.34 с центром на z 0.28 давала переднюю точку на
+   * z −0.06, то есть в середине сиденья, а между низом спинки и подушкой не
+   * было ни стойки, ни касания. Теперь дуга глубже, стоит у ЗАДНЕЙ кромки,
+   * отклонена назад и держится на двух видимых стойках от сиденья.
+   */
+  const back = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.30, 0.30, 0.46, 28, 1, true, Math.PI - 0.85, 1.7),
+    std(0xf6f2ea, { side: THREE.DoubleSide, roughness: 0.4 }),
+  );
+  back.position.set(0, 0.83, 0.42);
+  back.rotation.x = -0.10;                       // верх отклонён назад
+  g.add(back);
+  for (const sx of [-0.16, 0.16]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.018, 0.19, 8), MAT.chrome());
+    post.position.set(sx, 0.585, 0.185);
+    post.rotation.x = -0.32;
+    g.add(post);
+  }
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.34, 10), MAT.chrome());
   pole.position.y = 0.26;
   g.add(pole);
+  // Р5.4: у кресла 15 мешей, а кресел в зале 46 — это 690 вызовов на кадр.
+  // Склеиваем по материалам сразу при сборке: кресло статично целиком.
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2;
     const arm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.02, 0.04), MAT.chrome());
@@ -283,6 +310,7 @@ export function makeChair() {
     wheel.position.set(Math.cos(a) * 0.29, 0.03, Math.sin(a) * 0.29);
     g.add(wheel);
   }
+  mergeStatic(g);
   return g;
 }
 
@@ -401,16 +429,26 @@ export function makeMonstera(scale = 1) {
   g.add(soil);
   const leaves = new THREE.Group();
   const geo = new THREE.ShapeGeometry(leafShape(0.42, 0.17, true), 12);
+  /*
+   * Н4. Лист крепится к КОНЦУ черешка, а не на отдельный радиус. Прежний
+   * наклон уводил верх черешка на 0.18 м в сторону, ПРОТИВОПОЛОЖНУЮ листу, —
+   * между ними висело 100 мм воздуха. Черешок строится по вектору
+   * «основание → точка листа», лист ставится ровно в его конец.
+   */
+  const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2 + 0.3;
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.012, 0.6 + (i % 3) * 0.15, 6), MAT.leafDark());
     const h = 0.6 + (i % 3) * 0.15;
-    stem.position.set(Math.cos(a) * 0.05, 0.41 + h / 2, Math.sin(a) * 0.05);
-    stem.rotation.z = Math.cos(a) * 0.35;
-    stem.rotation.x = -Math.sin(a) * 0.35;
+    const base = new THREE.Vector3(Math.cos(a) * 0.05, 0.41, Math.sin(a) * 0.05);
+    const tip = new THREE.Vector3(Math.cos(a) * 0.26, 0.41 + h, Math.sin(a) * 0.26);
+    const dir = tip.clone().sub(base);
+    const len = dir.length();
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.012, len, 6), MAT.leafDark());
+    stem.position.copy(base).addScaledVector(dir, 0.5);
+    stem.quaternion.setFromUnitVectors(up, dir.clone().normalize());
     leaves.add(stem);
     const leaf = new THREE.Mesh(geo, i % 2 ? MAT.leaf() : MAT.leafDark());
-    leaf.position.set(Math.cos(a) * 0.28, 0.41 + h * 0.92, Math.sin(a) * 0.28);
+    leaf.position.copy(tip);
     leaf.rotation.y = -a + Math.PI / 2;
     leaf.rotation.x = -0.9 - (i % 2) * 0.25;
     leaf.userData.sway = { phase: i * 0.9, amp: 0.05 };
@@ -419,6 +457,7 @@ export function makeMonstera(scale = 1) {
   g.add(leaves);
   g.userData.leaves = leaves;
   g.scale.setScalar(scale);
+  g.userData.dynamic = true;
   finishPlant(g, 0.05);
   return g;
 }
@@ -451,6 +490,7 @@ export function makeFicus(scale = 1) {
   g.add(inst);
   g.scale.setScalar(scale);
   g.userData.sway = { phase: Math.random() * 6, amp: 0.02 };
+  g.userData.dynamic = true;
   return g;
 }
 
@@ -487,6 +527,7 @@ function finishPlant(g, amp) {
   mergeStatic(g);
   g.traverse((m) => { if (m.isMesh) m.userData.keep = true; });
   g.userData.sway = { phase: Math.random() * 6, amp };
+  g.userData.dynamic = true;
   return g;
 }
 
@@ -683,6 +724,7 @@ export function makePoster({ width = 0.8, draw, frame = 'red', pickInfo = null }
   back.position.z = -0.016;   // 6 мм за тыльной гранью брусков: в одной плоскости они мерцали
   g.add(back);
   if (pickInfo) g.traverse((m) => { m.userData.pick = pickInfo; });
+  air(g, 'постер');            // картина в раме висит на стене по замыслу
   return g;
 }
 
@@ -874,6 +916,12 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
     armL.elbow.rotation.x = 0.86; armR.elbow.rotation.x = 0.86;
   }
 
+  // Р5.4: голова — 16 мешей на человека, а людей в здании два десятка.
+  // Склеиваем неподвижное; веки и рот помечены keep — они анимируются.
+  for (const l of lids) l.userData.keep = true;
+  mouth.userData.keep = true;
+  mergeStatic(head);
+
   /** моргание и речь: веки прикрываются, рот раскрывается */
   const face = {
     lids,
@@ -882,6 +930,7 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
     speak(k) { mouth.scale.set(1, 1 + k * 0.6, 0.7 + k * 1.4); },
   };
 
+  g.userData.dynamic = true;      // склейке не подлежит: всё это двигается
   return { group: g, hips, head, torso, armL, armR, legL, legR, face, phase: Math.random() * Math.PI * 2, standing };
 }
 
@@ -898,8 +947,11 @@ export function mergeStatic(group) {
   const inv = new THREE.Matrix4().copy(group.matrixWorld).invert();
   const byMat = new Map();
   const remove = [];
+  /** ветка, помеченная dynamic, не склеивается: она двигается в кадре */
+  const isDynamic = (o) => { let p = o; while (p && p !== group) { if (p.userData && p.userData.dynamic) return true; p = p.parent; } return false; };
   group.traverse((m) => {
     if (!m.isMesh || m.isInstancedMesh || m.userData.keep || (m.material && m.material.map) || Array.isArray(m.material)) return;
+    if (isDynamic(m)) return;
     // ключ — по свойствам материала, а не по uuid: каждый предмет создаёт свой
     // экземпляр, и по uuid ничего бы не склеилось
     const mt = m.material;

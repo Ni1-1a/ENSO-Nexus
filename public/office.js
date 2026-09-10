@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=5';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=5';
+import { OfficeScene } from './office-scene.js?v=7';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=7';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -748,7 +748,7 @@ async function pickupAuth() {
  */
 async function runIntroFlight(withGreeting = true) {
   const hint = $('intro-hint');
-  state.scene.goTo('lobby', 0);
+  state.scene.goTo('lobby');
   setView('lobby');
   if (withGreeting) {
     state.scene.wave(3);
@@ -770,19 +770,16 @@ function setView(view) {
 
 /* ---------------- прогулка ---------------- */
 
-function setWalk(on) {
-  state.walk = on;
-  state.scene.setWalk(on);
-  $('ob-walk').setAttribute('aria-pressed', String(on));
-  $('ob-walk').querySelector('use').setAttribute('href', on ? '#i-orbit' : '#i-walk');
-  $('walk-hint').hidden = !on;
-  $('crosshair').hidden = !on;
+/*
+ * Р6 ТЗ №2: зал показывается ТОЛЬКО от первого лица, переключателя больше нет.
+ * Ходьба включена с загрузки; Pointer Lock берётся по первому нажатию на сцену,
+ * поэтому подсказка WASD висит, пока замок не взят.
+ */
+function startWalk() {
+  state.walk = true;
+  state.scene.setWalk(true);
+  $('walk-hint').hidden = false;
   $('hover-tag').hidden = true;
-  if (on) {
-    closeDock();
-    if (!matchMedia('(pointer: coarse)').matches) state.scene.walk.lock();
-    setTimeout(() => { $('walk-hint').hidden = true; }, 7000);
-  }
 }
 
 function hoverLabel(info) {
@@ -871,12 +868,9 @@ async function main() {
     $('ob-sound').setAttribute('aria-pressed', String(state.sound));
     if (!state.sound && 'speechSynthesis' in window) speechSynthesis.cancel();
   };
-  // прогулка от первого лица
-  $('ob-walk').onclick = () => setWalk(!state.walk);
-  document.addEventListener('keydown', (e) => {
-    const tag = (e.target && e.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if (e.code === 'KeyF') setWalk(!state.walk);
+  // прогулка от первого лица: замок берётся по нажатию на сцену
+  $('scene').addEventListener('pointerdown', () => {
+    if (!matchMedia('(pointer: coarse)').matches && !state.scene.walk.locked) state.scene.walk.lock();
   });
   state.scene.walk.onStep = () => Sound.step();
   state.scene.walk.onLockChange = (locked) => { $('crosshair').hidden = !locked; if (!locked && state.walk) $('walk-hint').hidden = false; };
@@ -929,10 +923,11 @@ async function main() {
   await refresh(true);
   api('/api/office/visit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: state.projectId }) }).catch(() => {});
 
+  // Р6: ходьба включается сразу — режима «Обзор» больше нет
+  startWalk();
   if (state.tv) {
-    state.scene.goTo('hall', 0);
-    state.scene.controls.autoRotate = true;
-    state.scene.controls.autoRotateSpeed = 0.4;
+    // режим телевизора: медленный проход по маршруту вместо автовращения камеры
+    state.scene.flythrough();
   } else {
     await runIntroFlight(true);
     if (!state.projectId && state.token) showProjectPick();
@@ -1022,6 +1017,21 @@ function handlePick(info) {
 // ручка для отладки в консоли; данными страницы не является
 window.__office = state;
 state.pick = handlePick;
+/**
+ * Аудит сцены из консоли: `__office.audit()` — что висит в воздухе,
+ * `__office.audit('overlap')` — что сидит внутри другого предмета (Р3 ТЗ №2).
+ * Модуль подгружается по требованию, в обычном показе он не нужен.
+ */
+state.audit = async (kind = 'floating') => {
+  const a = await import('./office-audit.mjs?v=7');
+  const sc = state.scene;
+  if (kind === 'overlap') {
+    const items = [];
+    sc.scene.traverse((o) => { if (o.userData && o.userData.pick) items.push(o); });
+    return a.report(a.auditOverlaps(sc.THREE, items), 'предмет в предмете');
+  }
+  return a.report(a.auditFloating(sc.THREE, sc.scene, (x, z, y) => sc.heightAt(x, z, y)), 'висит в воздухе');
+};
 
 main().catch((err) => {
   toast(`Зал не открылся: ${err.message}`, 8000);

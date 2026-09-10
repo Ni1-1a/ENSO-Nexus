@@ -80,3 +80,40 @@ export function slotFree(placed, openings, along, width, gap = 0.5) {
 export function slotRect(along, width) {
   return [along - width / 2, along + width / 2];
 }
+
+/* ================= лестница: один источник для геометрии и ходьбы ================= */
+
+/**
+ * Отметка марша в точке. Правило 11: геометрия ступеней и поверхность ходьбы
+ * обязаны считаться ОДНОЙ формулой. Пока их было две, они разошлись знаком —
+ * в зале реактора человек шёл вниз, а ступени под ним поднимались.
+ *
+ * Марш идёт от края `a1` (там отметка `yFrom`) к краю `a0` (там `yTo`): ступень
+ * ставится в `a1 − run·i` при отметке `yFrom + rise·i`.
+ */
+export function stairSurface(spec, x, z) {
+  const a = spec.axis === 'z' ? z : x;
+  const a1 = spec.axis === 'z' ? spec.z1 : spec.x1;
+  const a0 = spec.axis === 'z' ? spec.z0 : spec.x0;
+  const t = Math.max(0, Math.min(1, (a1 - a) / (a1 - a0)));
+  return spec.yFrom + t * (spec.yTo - spec.yFrom);
+}
+
+/** Положение i-й ступени того же марша — им строится геометрия. */
+export function stairStep(spec, i) {
+  const len = spec.axis === 'z' ? spec.z1 - spec.z0 : spec.x1 - spec.x0;
+  const run = len / spec.steps;
+  const rise = (spec.yTo - spec.yFrom) / spec.steps;
+  const along = (spec.axis === 'z' ? spec.z1 : spec.x1) - run * (i + 0.5);
+  const y = spec.yFrom + rise * (i + 0.5);
+  return spec.axis === 'z'
+    ? { x: (spec.x0 + spec.x1) / 2, y, z: along, run, rise }
+    : { x: along, y, z: (spec.z0 + spec.z1) / 2, run, rise };
+}
+
+/** Точка внутри прямоугольника марша. */
+export function inStair(spec, x, z) {
+  const [ax, bx] = spec.x0 < spec.x1 ? [spec.x0, spec.x1] : [spec.x1, spec.x0];
+  const [az, bz] = spec.z0 < spec.z1 ? [spec.z0, spec.z1] : [spec.z1, spec.z0];
+  return x > ax && x < bx && z > az && z < bz;
+}

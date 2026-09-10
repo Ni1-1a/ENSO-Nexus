@@ -248,3 +248,87 @@ test('офис: постеры не садятся на проём и друг �
   }
   assert.ok(taken.length >= 5, 'развеска отбросила слишком много мест');
 });
+
+/**
+ * ТЗ №2, Р8. Геометрия марша и поверхность ходьбы обязаны считаться ОДНОЙ
+ * формулой (правило 11). Пока их было две, они разошлись знаком: в зале
+ * реактора человек шёл вниз, а ступени под ним поднимались.
+ */
+test('офис: ступени марша совпадают с поверхностью ходьбы', async () => {
+  const { stairSurface, stairStep, inStair } = await import(new URL('../public/office-geom.mjs', `file://${__filename}`));
+  const specs = {
+    main: { axis: 'z', x0: 2.6, x1: 5.6, z0: 12.6, z1: 19.8, yFrom: 1.02, yTo: 5.2, steps: 26 },
+    reactor: { axis: 'x', x0: -23.6, x1: -21.0, z0: -1.2, z1: 1.6, yFrom: 1.02, yTo: -1.9, steps: 18 },
+  };
+  for (const [name, spec] of Object.entries(specs)) {
+    const rise = Math.abs(spec.yTo - spec.yFrom) / spec.steps;
+    for (let i = 0; i < spec.steps; i++) {
+      const p = stairStep(spec, i);
+      assert.ok(inStair(spec, p.x, p.z), `${name}: ступень ${i} вне прямоугольника марша`);
+      const walk = stairSurface(spec, p.x, p.z);
+      assert.ok(Math.abs(walk - p.y) <= rise / 2 + 1e-9,
+        `${name}: ступень ${i} на ${p.y.toFixed(3)}, пол под ней ${walk.toFixed(3)}`);
+    }
+    // знак: идём в сторону x0/z0 — и ступени, и пол должны менять отметку одинаково
+    const first = stairStep(spec, 0), last = stairStep(spec, spec.steps - 1);
+    const dGeom = last.y - first.y;
+    const dWalk = stairSurface(spec, last.x, last.z) - stairSurface(spec, first.x, first.z);
+    assert.equal(Math.sign(dGeom), Math.sign(dWalk), `${name}: марш и пол под ним идут в разные стороны`);
+    assert.equal(Math.sign(dGeom), Math.sign(spec.yTo - spec.yFrom), `${name}: марш идёт не туда, куда объявлен`);
+  }
+  // зеркальная пара из прошлой сборки обязана этот тест ронять
+  const mirrored = { ...specs.reactor, yFrom: -1.9, yTo: 1.02 };
+  const walkAt = (x) => stairSurface(specs.reactor, x, 0.2);
+  const geomAt = (i) => stairStep(mirrored, i).y;
+  assert.notEqual(Math.sign(geomAt(specs.reactor.steps - 1) - geomAt(0)), Math.sign(walkAt(-23.5) - walkAt(-21.1)),
+    'тест не отличает зеркальный марш от верного');
+});
+
+/**
+ * ТЗ №2, Р2. План здания «Кольцо с атриумом» — единственный источник координат
+ * и для сборки сцены, и для ходьбы. Проверяем, что он собран по плану
+ * владельца: габариты, состав секторов, замкнутость кольца и четыре плоские
+ * отметки пола вместо ступенчатого ландшафта.
+ */
+test('офис: план кольца собран по согласованному варианту', async () => {
+  const P = await import(new URL('../public/office-plan.mjs', `file://${__filename}`));
+  const G = await import(new URL('../public/office-geom.mjs', `file://${__filename}`));
+  assert.equal(P.RING.rOut * 2, 48, 'наружный диаметр не 48 м');
+  assert.equal(P.RING.rIn * 2, 21, 'атриум не 21 м');
+  assert.equal(P.RING.rOut - P.RING.rIn, 13.5, 'глубина корпуса не 13,5 м');
+  assert.equal(P.RING.height, 4.2, 'высота этажа не 4,2 м');
+
+  for (const [name, list] of [['1 этаж', P.FLOOR1], ['2 этаж', P.FLOOR2]]) {
+    const span = list.reduce((s, x) => s + (x.to - x.from), 0);
+    assert.ok(Math.abs(span - Math.PI * 2) < 1e-9, `${name}: сектора не замыкают кольцо`);
+    for (const s of list) {
+      // площадь сектора обязана сойтись с планом владельца в пределах 5 %
+      const area = P.sectorArea(s);
+      assert.ok(Math.abs(area - s.area) / s.area < 0.05, `${name}, ${s.name}: ${area.toFixed(0)} м² против ${s.area} по плану`);
+    }
+  }
+  assert.equal(P.sectorAt(1, 0, 20).id, 'lobby', 'вход не в вестибюль');
+  assert.equal(P.sectorAt(1, 0, -20).id, 'studio', 'напротив входа не проектная');
+  assert.equal(P.sectorAt(2, 20, 0).id, 'library', 'над переговорными не библиотека');
+
+  // лестниц во входной зоне нет (Р1): оба ядра — вне сектора вестибюля
+  for (const c of Object.values(P.CORES)) {
+    const cx = (c.x0 + c.x1) / 2, cz = (c.z0 + c.z1) / 2;
+    assert.equal(P.sectorAt(1, cx, cz), null, 'лестничное ядро попало внутрь кольца');
+    assert.ok(Math.hypot(cx, cz) > P.RING.rOut, 'ядро не вынесено за наружную стену');
+  }
+
+  // пол рабочих секторов РОВНЫЙ: ярусов больше нет
+  const studio = P.FLOOR1.find((x) => x.id === 'studio');
+  for (let i = 0; i <= 10; i++) {
+    const a = studio.from + ((studio.to - studio.from) * i) / 10;
+    for (const r of [P.RING.rIn + 1, 17, P.RING.rOut - 1]) {
+      const p = P.pt(r, a);
+      assert.equal(P.floorHeight(p.x, p.z, 0, G.stairSurface), 0, 'пол проектной не на нуле');
+    }
+  }
+  // а в атриуме — пять ступеней амфитеатра
+  const heights = new Set();
+  for (let d = 1; d < 10; d += 0.3) heights.add(+P.atriumFloor(0, -P.RING.rIn + d).toFixed(2));
+  assert.ok(heights.size >= 5, `в атриуме ${heights.size} отметок вместо пяти рядов`);
+});

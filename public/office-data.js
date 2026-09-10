@@ -85,12 +85,12 @@ window.OfficeData = {
 
   /* ---------- персоны: внешний вид фигурок ---------- */
   personas: {
-    tz:    { hair: 0x5a4632, skin: 0xe8c39e, glasses: true,  deskRow: 1, deskCol: 1, item: 'chess' },
-    site:  { hair: 0x2e2a26, skin: 0xd9a878, glasses: false, deskRow: 0, deskCol: 2, item: 'cube' },
-    doc:   { hair: 0x8a3b2a, skin: 0xf0cdaa, glasses: false, deskRow: 1, deskCol: 4, item: 'go' },
-    normo: { hair: 0x1d1a17, skin: 0xc98e62, glasses: true,  deskRow: 2, deskCol: 1, item: 'drafting' },
-    gge:   { hair: 0xb99867, skin: 0xf2d4b3, glasses: false, deskRow: 2, deskCol: 5, item: 'level' },
-    akty:  { hair: 0x4a4a4a, skin: 0xe3b78f, glasses: false, deskRow: 3, deskCol: 3, item: 'model' },
+    tz:    { hair: 0x5a4632, skin: 0xe8c39e, glasses: true,  deskRow: 0, deskCol: 1, item: 'chess' },
+    site:  { hair: 0x2e2a26, skin: 0xd9a878, glasses: false, deskRow: 0, deskCol: 5, item: 'cube' },
+    doc:   { hair: 0x8a3b2a, skin: 0xf0cdaa, glasses: false, deskRow: 0, deskCol: 9, item: 'go' },
+    normo: { hair: 0x1d1a17, skin: 0xc98e62, glasses: true,  deskRow: 1, deskCol: 2, item: 'drafting' },
+    gge:   { hair: 0xb99867, skin: 0xf2d4b3, glasses: false, deskRow: 1, deskCol: 6, item: 'level' },
+    akty:  { hair: 0x4a4a4a, skin: 0xe3b78f, glasses: false, deskRow: 1, deskCol: 10, item: 'model' },
   },
 
   moduleNames: {

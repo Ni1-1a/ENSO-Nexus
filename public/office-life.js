@@ -32,17 +32,13 @@ function pickSeated(current, busy) {
 
 /* ---------- ходоки ---------- */
 
-/** Маршруты по проходам между рядами и к чайному столу / лобби / кульману */
-const ROUTES = [
-  // центральный проход: с фойе вниз к сцене, вдоль первого яруса и обратно
-  [[0.5, 9.6], [0.5, -6.6], [6.5, -6.9], [0.5, -6.6], [-0.5, 2.0], [-0.5, 9.6]],
-  // фойе: от прохода к чайному столу и к кульману
-  [[-0.6, 9.4], [-9.0, 9.2], [-11.2, 7.4], [-9.0, 9.2], [-0.6, 9.4], [8.0, 9.2], [10.6, 7.2], [8.0, 9.2]],
-  // лобби: вокруг диванов
-  [[0.6, 15.5], [-3.5, 16.8], [-6.0, 14.2], [-3.5, 12.4], [0.6, 12.0]],
-  // из лобби в фойе и обратно вдоль проёма
-  [[0.6, 12.4], [0.6, 9.6], [-0.6, 9.6], [-0.6, 12.4], [-3.5, 14.0]],
-];
+/**
+ * Маршруты задаёт СЦЕНА (`setRoutes`): после перепланировки в кольцо они
+ * считаются по радиусу и углу, а прямоугольные проходы прежнего зала исчезли
+ * вместе с ним. Здесь остаётся запасной набор на случай, если сцена ничего не
+ * передала — иначе ходоки просто не появятся.
+ */
+const FALLBACK_ROUTES = [[[0, 17], [0, 12]]];
 
 export class LifeDirector {
   constructor() {
@@ -61,8 +57,12 @@ export class LifeDirector {
     this.agents.set(module, { rig, state: 'look', until: rnd(1, 4), props, busy: false });
   }
 
+  /** маршруты-петли по кольцу; задаются сценой из плана здания */
+  setRoutes(routes) { this.routes = routes && routes.length ? routes : FALLBACK_ROUTES; }
+
   addWalker(rig, routeIndex, speed = 0.9) {
-    const route = ROUTES[routeIndex % ROUTES.length];
+    const list = this.routes && this.routes.length ? this.routes : FALLBACK_ROUTES;
+    const route = list[routeIndex % list.length];
     const w = { rig, route, i: 0, t: 0, pause: rnd(0, 3), speed, phase: Math.random() * 6 };
     const [x, z] = route[0];
     rig.group.position.set(x, this.heightAt(x, z), z);
