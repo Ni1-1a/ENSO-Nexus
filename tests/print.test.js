@@ -258,6 +258,25 @@ test('без входа — 401; парк отдаёт таблицы и лим�
   assert.strictEqual(typeof body.tools.qpdf, 'boolean');
 });
 
+test('qpdf: пакет пишется во временный файл в разрешённом месте и переносится, мусора не остаётся', async (t) => {
+  if (!popplerOk) { t.skip('poppler или qpdf не установлены'); return; }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'print-asm-'));
+  const src = path.join(dir, 'src.pdf');
+  fs.writeFileSync(src, makePdf([{ w: 210, h: 297 }, { w: 297, h: 420 }, { w: 420, h: 594 }]));
+  const scratch = poppler.scratchDir('');
+  const before = fs.readdirSync(scratch).filter((n) => n.startsWith('enso-print-')).length;
+  const out = path.join(dir, 'pkg', 'ПАКЕТ_А4.pdf');
+  fs.mkdirSync(path.dirname(out));
+  const { warnings } = await poppler.assemble([{ file: src, pages: [3, 1] }], out);
+  assert.deepStrictEqual(warnings, []);
+  assert.strictEqual((await poppler.inspect(out)).total, 2);
+  assert.strictEqual(fs.readdirSync(scratch).filter((n) => n.startsWith('enso-print-')).length, before, 'временный файл перенесён, не скопирован-и-забыт');
+  // сбой qpdf — временного файла тоже не остаётся
+  await assert.rejects(poppler.assemble([{ file: path.join(dir, 'нет.pdf'), pages: [1] }], path.join(dir, 'pkg', 'x.pdf')));
+  assert.strictEqual(fs.readdirSync(scratch).filter((n) => n.startsWith('enso-print-')).length, before);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('qpdf: список страниц сворачивается в диапазоны', () => {
   assert.strictEqual(poppler.rangeSpec([3, 1, 2, 7, 10, 9, 9]), '1-3,7,9-10');
   assert.strictEqual(poppler.rangeSpec([5]), '5');

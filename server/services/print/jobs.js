@@ -345,7 +345,7 @@ async function runPipeline(job) {
         const fileName = `ПАКЕТ_${sanitizeFilename(bucket)}.pdf`;
         const out = path.join(pkgDir, fileName);
         try {
-          const { warnings } = await poppler.assemble(parts, out);
+          const { warnings } = await poppler.assemble(parts, out, { tmpDir: config.printTmpDir });
           rows.forEach((r, k) => { r.package = fileName; r.packagePage = k + 1; });
           packages.push({ bucket, file: fileName, pages: rows.length, bytes: fs.statSync(out).size });
           // qpdf пишет имена временных файлов src/<id>.pdf и по десятку строк на

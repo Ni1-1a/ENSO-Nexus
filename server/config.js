@@ -135,6 +135,14 @@ const config = {
   printTicketMinutes: int('PRINT_TICKET_MINUTES', 30),
   // ниже этого запаса на диске с DATA_DIR файлы в разбор не принимаются (пакеты ≈ размер исходников)
   printMinFreeBytes: int('PRINT_MIN_FREE_MB', 512) * 1024 * 1024,
+  /*
+   * Куда qpdf пишет пакет до переноса в папку разбора. Профиль AppArmor qpdf в
+   * Ubuntu 26.04 разрешает запись только в домашнюю папку, /tmp, /var/tmp, /mnt
+   * и /media — в /opt/enso/data он получает «Permission denied». /tmp на VPS —
+   * tmpfs на 479 МБ, пакет А1 весит 155 МБ, поэтому /var/tmp. Пусто — /var/tmp,
+   * если он есть и доступен на запись, иначе системный temp.
+   */
+  printTmpDir: process.env.PRINT_TMP_DIR || '',
 
   // Dialogue / cost limits
   maxMessageLength: int('MAX_MESSAGE_LENGTH', 4000),

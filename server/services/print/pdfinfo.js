@@ -15,6 +15,9 @@
  * за 1,4 с. Вектор, шрифты, слои и /Rotate переносятся как есть, без рендера.
  */
 const { execFile } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const PDFINFO = process.env.PDFINFO_BIN || 'pdfinfo';
@@ -98,19 +101,60 @@ function rangeSpec(pages) {
 }
 
 /**
+ * Куда qpdf может писать. Профиль AppArmor qpdf (Ubuntu 26.04, /etc/apparmor.d/qpdf)
+ * разрешает запись только в домашнюю папку, /tmp, /var/tmp, /mnt и /media — в
+ * DATA_DIR под /opt он получает «Permission denied» (проверено на VPS 14.09.2026).
+ * /tmp там tmpfs на 479 МБ, а пакет А1 весит 155 МБ, поэтому /var/tmp.
+ */
+function scratchDir(preferred) {
+  const candidates = [preferred, process.platform === 'linux' ? '/var/tmp' : '', os.tmpdir()].filter(Boolean);
+  for (const dir of candidates) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch { /* следующий */ }
+  }
+  return os.tmpdir();
+}
+
+/** Перенос готового файла: rename в пределах тома, иначе копия и удаление. */
+function moveFile(from, to) {
+  try {
+    fs.renameSync(from, to);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(from, to);
+    fs.rmSync(from, { force: true });
+  }
+}
+
+/**
  * Пакет корзины: parts = [{ file, pages: [номера] }] в нужном порядке → out.
  * Страницы идут в порядке частей, внутри части — по возрастанию номера.
- * Возвращает предупреждения qpdf (повреждённый, но восстановленный файл —
- * оператору полезно знать), без дублей и без путей.
+ * qpdf пишет во временный файл в разрешённом месте (см. scratchDir), node
+ * переносит его в папку разбора. Возвращает предупреждения qpdf (повреждённый,
+ * но восстановленный файл — оператору полезно знать), без дублей и без путей.
  */
-async function assemble(parts, out) {
+async function assemble(parts, out, { tmpDir = '' } = {}) {
   const live = parts.filter((p) => p.pages && p.pages.length);
   if (!live.length) throw new Error('пакет без страниц');
+  // имя обязано кончаться на .pdf: профиль qpdf разрешает только такие файлы
+  const scratch = path.join(scratchDir(tmpDir), `enso-print-${process.pid}-${crypto.randomBytes(6).toString('hex')}.pdf`);
   const args = ['--empty', '--warning-exit-0', '--remove-unreferenced-resources=yes', '--pages'];
   for (const p of live) args.push(p.file, rangeSpec(p.pages));
-  args.push('--', out);
+  args.push('--', scratch);
   const res = await run(QPDF, args);
-  if (res.code !== 0) throw new Error(reasonOf(res));
+  if (res.code !== 0) {
+    fs.rmSync(scratch, { force: true });
+    throw new Error(reasonOf(res));
+  }
+  try {
+    moveFile(scratch, out);
+  } catch (err) {
+    fs.rmSync(scratch, { force: true });
+    throw new Error(`не удалось положить пакет в папку разбора: ${err.message}`);
+  }
   const warnings = new Set();
   for (const line of res.stderr.split('\n')) {
     const m = /^WARNING:\s*(.+?):\s*(.+)$/.exec(line.trim());
@@ -126,4 +170,4 @@ async function available() {
   return { pdfinfo: ok(pi), qpdf: ok(qp) };
 }
 
-module.exports = { inspect, assemble, rangeSpec, available, reasonOf, PDFINFO, QPDF };
+module.exports = { inspect, assemble, rangeSpec, scratchDir, available, reasonOf, PDFINFO, QPDF };
