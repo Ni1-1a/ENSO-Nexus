@@ -75,3 +75,6 @@ body[data-page="print"] { background: var(--bg); color: var(--text); font-family
 .h2-note { font-size: 12.5px; color: var(--text-2); margin: -6px 0 12px; }
 .mod-error { color: var(--red); font-size: 13.5px; margin: 4px 0 0; }
 .mod-unverified { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 4px; }
+
+/* кнопка-ссылка пакета: без подчёркивания, как обычная кнопка */
+.pr-open, .pr-open:hover { text-decoration: none; }
