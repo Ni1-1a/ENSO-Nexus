@@ -121,6 +121,21 @@ const config = {
   uploadTotalBytes: int('UPLOAD_TOTAL_MB', 200) * 1024 * 1024,
   zipEntryBytes: int('ZIP_ENTRY_MB', 50) * 1024 * 1024,
 
+  /*
+   * «Разбор PDF по форматам»: файлы льются кусками (Cloudflare режет тело
+   * запроса на 100 МБ, кусок по умолчанию 32 МБ), потолки — на файл, на разбор
+   * и на число файлов; разбор живёт PRINT_TTL_HOURS, билет на вкладку с пакетом —
+   * PRINT_TICKET_MINUTES. PRINT_CHUNK_BYTES — точный размер куска для тестов.
+   */
+  printChunkBytes: process.env.PRINT_CHUNK_BYTES ? int('PRINT_CHUNK_BYTES', 32 * 1024 * 1024) : int('PRINT_CHUNK_MB', 32) * 1024 * 1024,
+  printMaxFileBytes: int('PRINT_MAX_FILE_MB', 1024) * 1024 * 1024,
+  printMaxTotalBytes: int('PRINT_MAX_TOTAL_MB', 4096) * 1024 * 1024,
+  printMaxFiles: int('PRINT_MAX_FILES', 200),
+  printTtlHours: int('PRINT_TTL_HOURS', 24),
+  printTicketMinutes: int('PRINT_TICKET_MINUTES', 30),
+  // ниже этого запаса на диске с DATA_DIR файлы в разбор не принимаются (пакеты ≈ размер исходников)
+  printMinFreeBytes: int('PRINT_MIN_FREE_MB', 512) * 1024 * 1024,
+
   // Dialogue / cost limits
   maxMessageLength: int('MAX_MESSAGE_LENGTH', 4000),
   maxAiRequestsPerSession: int('MAX_AI_REQUESTS_PER_SESSION', 25),

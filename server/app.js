@@ -67,6 +67,8 @@ function createApp() {
   // «Акты (АОСР)» и «Входной контроль ГГЭ» — детерминированные конвейеры без хранения
   app.use('/api/akty', logErrorResponses, require('./routes/akty').router);
   app.use('/api/gge', logErrorResponses, require('./routes/gge').router);
+  // «Разбор PDF по форматам» — отдельная вкладка вне проектов: комплект кусками, пакеты во вкладку по билету
+  app.use('/api/print', logErrorResponses, require('./routes/print').router);
   // проекты платформы: единица работы, внутри которой живут модули (2026-09-02)
   app.use('/api/projects', logErrorResponses, require('./routes/projects').router);
   // «Виртуальный офис» — демо-витрина: читает боевые данные, пишет только в office.db
@@ -76,6 +78,8 @@ function createApp() {
   app.use('/api', logErrorResponses, apiRouter);
   // всё, что заведено до проектов, переезжает в «Ранние работы» — таблицы модулей уже созданы
   require('./services/projects').migrateLegacy();
+  // разборы PDF старше PRINT_TTL_HOURS — в уборку; «running» после перезапуска — прерванные
+  require('./services/print/jobs').startSweep();
   // Cache-Control: no-cache — браузер ОБЯЗАН ревалидировать по ETag (304); без
   // заголовка вступает в силу эвристическое кэширование и правки фронта доходят с опозданием
   app.use(express.static(path.join(__dirname, '..', 'public'), {

@@ -95,7 +95,7 @@ docker run -d -p 3000:3000 \
   enso-platform
 ```
 
-Образ — `node:22-bookworm-slim` с `poppler-utils` и `libredwg-tools`; `BIND_HOST=0.0.0.0`
+Образ — `node:22-bookworm-slim` с `poppler-utils`, `qpdf` и `libredwg-tools`; `BIND_HOST=0.0.0.0`
 и `USERS_FILE=/app/data/users.json` выставлены в самом `Dockerfile`, так что список людей
 живёт на томе вместе с базой. В образ входят `server/`, `prompts/`, `public/`, `scripts/`,
 `нормоконтроль/` (правила, шаблон заключения, реестр НТД) и `библиотека-промптов/`.

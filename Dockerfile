@@ -7,10 +7,11 @@ ENV NODE_ENV=production
 ENV BIND_HOST=0.0.0.0
 # Список людей — рядом с данными, чтобы пережить пересоздание контейнера (том /app/data).
 ENV USERS_FILE=/app/data/users.json
-# poppler — текстовый слой и рендер страниц PDF (doc-vision, нормоконтроль, ГГЭ);
+# poppler — текстовый слой и рендер страниц PDF (doc-vision, нормоконтроль, ГГЭ, разбор по форматам);
+# qpdf — пакеты на печать в «Разборе PDF по форматам» (страницы без растеризации);
 # LibreDWG — DWG → DXF в разборе чертежей и запасной путь DXF → DWG без AutoCAD.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends poppler-utils libredwg-tools \
+  && apt-get install -y --no-install-recommends poppler-utils qpdf libredwg-tools \
   && rm -rf /var/lib/apt/lists/*
 # Имена явно, не package*.json: маска захватывает iCloud-дубликаты вида «package 2.json».
 COPY package.json package-lock.json ./

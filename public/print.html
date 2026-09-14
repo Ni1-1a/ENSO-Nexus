@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Разбор PDF по форматам — Enso-nexus</title>
+  <meta name="description" content="Комплект PDF раскладывается по листам принтера и рулонам плоттера: формат каждого листа по ГОСТ 2.301-68, пакет на каждую корзину открывается во вкладке и печатается">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="styles.css?v=59">
+  <link rel="stylesheet" href="mod.css?v=7">
+  <link rel="stylesheet" href="print.css?v=1">
+  <script src="boot.js?v=4"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><rect x='22' y='40' width='56' height='30' rx='6' fill='none' stroke='%23B95740' stroke-width='6'/><path d='M34 40V22h32v18M34 58h32v20H34z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/></svg>">
+</head>
+<body data-page="print">
+  <header id="print-bar" class="glass-bar">
+    <a class="pb-brand" href="/" title="На платформу">ENSO</a>
+    <span class="pb-title">Разбор PDF по форматам</span>
+    <span class="pb-user" id="pb-user"></span>
+    <a class="pb-exit" href="/" title="Вернуться на платформу">На платформу</a>
+  </header>
+
+  <main class="pr-main" id="content">
+    <header class="toolbar">
+      <h1>Разбор PDF по форматам</h1>
+      <p class="toolbar-note">Каждый лист комплекта меряется по геометрии страницы, определяется как формат ГОСТ 2.301-68, кратный, плюсовой или нестандарт и уходит в корзину носителя по короткой стороне: лист принтера или рулон плоттера. На каждую корзину собирается один PDF — открыть во вкладке и отправить на печать. Нейросеть не участвует.</p>
+    </header>
+
+    <section class="card">
+      <h2>1. Исходные PDF</h2>
+      <div id="pr-dz" class="mod-dz-mini" tabindex="0" role="button" aria-label="Добавить PDF или перетащите файлы и папки сюда">
+        <strong>Добавить PDF</strong> — или перетащите файлы и папки сюда. Загрузка начинается сразу, кусками: большие файлы проходят.
+      </div>
+      <input id="pr-input" type="file" accept=".pdf,application/pdf" multiple hidden>
+      <input id="pr-input-dir" type="file" webkitdirectory hidden>
+      <div class="pr-actions">
+        <button id="pr-add" class="btn btn-quiet btn-sm" type="button">Добавить файлы…</button>
+        <button id="pr-add-dir" class="btn btn-quiet btn-sm" type="button">Добавить папку…</button>
+        <button id="pr-clear" class="btn btn-quiet btn-sm" type="button">Очистить</button>
+        <span id="pr-files-note" class="hint" aria-live="polite"></span>
+      </div>
+      <ul id="pr-files" class="pr-files"></ul>
+    </section>
+
+    <section class="card">
+      <h2>2. Параметры</h2>
+      <div class="pr-params">
+        <label class="pr-field">
+          <span>Допуск, мм</span>
+          <input id="pr-tol" type="number" min="0" max="20" step="0.5" value="3">
+        </label>
+        <label class="pr-field">
+          <span>Мерить по</span>
+          <select id="pr-box">
+            <option value="crop">CropBox → MediaBox</option>
+            <option value="media">MediaBox</option>
+            <option value="trim">TrimBox → CropBox → MediaBox</option>
+            <option value="art">ArtBox → CropBox → MediaBox</option>
+          </select>
+        </label>
+      </div>
+      <div class="pr-checks">
+        <label><input id="pr-scan" type="checkbox"> Только анализ, без сборки пакетов</label>
+        <label><input id="pr-mult" type="checkbox"> Кратные форматы ГОСТ — отдельными пакетами (иначе в корзину рулона)</label>
+        <label><input id="pr-plus" type="checkbox" checked> Плюсовые форматы (А0+…А4+) — отдельными пакетами</label>
+        <label><input id="pr-plus-rolls" type="checkbox"> В плоттере есть рулоны плюсовых ширин (329 / 440 / 620 / 914)</label>
+      </div>
+      <p class="hint" id="pr-park-note"></p>
+    </section>
+
+    <div class="mod-bar pr-run-bar">
+      <button id="pr-run" class="btn btn-primary" type="button">Разобрать</button>
+      <div class="pr-progress" id="pr-progress" hidden>
+        <div class="pr-progress-bar"><div class="pr-progress-fill" id="pr-progress-fill"></div></div>
+        <span class="pr-progress-text" id="pr-progress-text"></span>
+      </div>
+      <span id="pr-note" class="hint" aria-live="polite"></span>
+    </div>
+
+    <section id="pr-result" hidden>
+      <div class="card">
+        <h2>Корзины</h2>
+        <p class="h2-note" id="pr-summary"></p>
+        <div class="pr-buckets" id="pr-buckets"></div>
+      </div>
+
+      <div class="card" id="pr-rolls-card">
+        <h2>Расход рулонов</h2>
+        <p class="h2-note">Погонные метры по ширине рулона без полей и отходов — для оценки печати до её запуска.</p>
+        <div class="mod-table-wrap">
+          <table class="stat-table">
+            <thead><tr><th>Рулон, мм</th><th>Погонных метров</th></tr></thead>
+            <tbody id="pr-rolls"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="pr-problems-card" hidden>
+        <h2>Проблемы</h2>
+        <ul id="pr-problems" class="mod-unverified"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Отчёт</h2>
+        <div class="pr-actions">
+          <button id="pr-csv" class="btn btn-quiet btn-sm" type="button">Скачать CSV</button>
+          <button id="pr-json" class="btn btn-quiet btn-sm" type="button">Скачать JSON</button>
+          <button id="pr-sheets" class="btn btn-quiet btn-sm" type="button">Показать все листы</button>
+        </div>
+        <div class="mod-table-wrap" id="pr-sheets-wrap" hidden>
+          <table class="stat-table pr-sheets-table">
+            <thead><tr><th>Файл</th><th>Стр.</th><th>Ш×В, мм</th><th>Rotate</th><th>Класс</th><th>Формат</th><th>Корзина</th><th>Носитель</th><th>Отрез, мм</th><th>В пакете</th><th>Примечание</th></tr></thead>
+            <tbody id="pr-sheets-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    <p id="pr-error" class="mod-error" role="alert" hidden></p>
+  </main>
+
+  <!-- ══════════ Вход — тот же, что на главной ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Вкладка «Разбор PDF по форматам»</p>
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">Войти на платформу</button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=5"></script>
+  <script src="print.js?v=1"></script>
+</body>
+</html>

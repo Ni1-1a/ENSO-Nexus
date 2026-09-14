@@ -18,6 +18,8 @@
   const S = window.EnsoShell;
   if (!S) return;
   const { esc, svg, ICONS, MODULES } = S;
+  // дверь во вкладку печати: значок свой, чтобы не трогать shell.js (версия — в шести html)
+  const PRINTER_ICON = '<path d="M6 9V4h12v5"/><rect x="4" y="9" width="16" height="8" rx="2"/><path d="M7 14h10v6H7z" stroke-linejoin="round"/>';
   const params = new URLSearchParams(location.search);
   const PLATFORM_SCREENS = ['settings', 'stats', 'dataset'];
   const STAGES = ['предпроект', 'П', 'Р', 'П+Р', 'стройка'];
@@ -110,6 +112,11 @@
         <span class="pn-plus">${svg(ICONS.screen)}</span>
         <span class="pn-title">Виртуальный офис</span>
         <span class="pn-sub">Зал агентов, центральный экран и стол проекта в 3D</span>
+      </a>
+      <a class="proj-new" id="print-door" href="print.html">
+        <span class="pn-plus">${svg(PRINTER_ICON)}</span>
+        <span class="pn-title">Разбор PDF по форматам</span>
+        <span class="pn-sub">Листы комплекта по лоткам и рулонам — пакеты на печать</span>
       </a>`;
     refocus(list, keep);
     const note = $('projects-goto');

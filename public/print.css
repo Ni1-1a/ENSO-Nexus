@@ -1,0 +1,77 @@
+/* ════════════════════════════════════════════════════════════════════
+   «Разбор PDF по форматам» — отдельная вкладка вне каркаса проектов.
+   Токены — из styles.css, формы и карточки — из mod.css.
+   ════════════════════════════════════════════════════════════════════ */
+
+body[data-page="print"] { background: var(--bg); color: var(--text); font-family: var(--font-text); margin: 0; }
+
+#print-bar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 12px;
+  margin: 12px auto 0; padding: 8px 14px; border-radius: 999px;
+  max-width: min(94vw, 980px);
+  box-shadow: var(--glass-shadow);
+}
+.pb-brand { font-family: var(--font-display); font-weight: 700; letter-spacing: .12em; font-size: 13px; color: var(--accent); text-decoration: none; padding: 0 2px; }
+.pb-title { font-weight: 600; font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pb-user { margin-left: auto; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+.pb-exit { font-size: 12.5px; color: var(--text-2); text-decoration: none; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--stroke); white-space: nowrap; }
+.pb-exit:hover { color: var(--text); border-color: var(--accent); }
+
+.pr-main { max-width: 1040px; margin: 0 auto; padding: 18px clamp(16px, 3vw, 28px) 60px; display: flex; flex-direction: column; gap: 14px; }
+.pr-main .card { margin: 0; }
+
+.pr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+
+/* файлы: имя, размер, состояние, полоса загрузки */
+.pr-files { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pr-file { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--stroke); border-radius: var(--radius-sm); background: var(--fill); }
+.pr-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.pr-file-meta { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.pr-file[data-st="error"] .pr-file-meta { color: var(--red); }
+.pr-file[data-st="done"] .pr-file-meta { color: var(--green); }
+.pr-file-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--stroke-soft); overflow: hidden; }
+.pr-file-bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.pr-file[data-st="done"] .pr-file-bar, .pr-file[data-st="wait"] .pr-file-bar { display: none; }
+
+/* параметры */
+.pr-params { display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: end; }
+.pr-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+.pr-field input, .pr-field select { min-width: 120px; }
+.pr-checks { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; font-size: 13.5px; }
+.pr-checks label { display: flex; align-items: center; gap: 8px; }
+
+/* запуск и прогресс */
+.pr-run-bar { flex-wrap: wrap; }
+.pr-progress { display: flex; align-items: center; gap: 10px; flex: 1 1 260px; min-width: 200px; }
+.pr-progress-bar { flex: 1; height: 8px; border-radius: 4px; background: var(--stroke-soft); overflow: hidden; }
+.pr-progress-fill { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+.pr-progress-text { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+
+/* корзины */
+.pr-buckets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 10px; }
+.pr-bucket { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--stroke); border-radius: var(--radius); background: var(--fill); }
+.pr-bucket[data-kind="review"] { border-color: var(--red); }
+.pr-bucket-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pr-bucket-name { font-family: var(--font-display); font-weight: 700; font-size: 17px; }
+.pr-bucket-count { font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.pr-bucket-carrier { font-size: 12.5px; color: var(--text-2); }
+.pr-bucket-formats { font-size: 12px; color: var(--text-3); }
+.pr-bucket-meters { font-size: 12.5px; color: var(--text-2); }
+.pr-bucket .btn { align-self: flex-start; margin-top: 4px; }
+.pr-bucket-size { font-size: 11.5px; color: var(--text-3); }
+
+.pr-sheets-table td, .pr-sheets-table th { white-space: nowrap; }
+.pr-sheets-table td:first-child { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 640px) {
+  #print-bar { margin-top: 8px; gap: 8px; padding: 6px 10px; }
+  .pb-title { display: none; }
+  .pr-file { grid-template-columns: minmax(0, 1fr) auto; }
+}
+
+/* классы модулей, которые на страницах каркаса даёт shell.css — здесь каркаса нет */
+.toolbar-note { margin-top: 8px; font-size: 13px; color: var(--text-2); max-width: 72ch; }
+.h2-note { font-size: 12.5px; color: var(--text-2); margin: -6px 0 12px; }
+.mod-error { color: var(--red); font-size: 13.5px; margin: 4px 0 0; }
+.mod-unverified { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 4px; }
