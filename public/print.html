@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Разбор PDF по форматам — Enso-nexus</title>
-  <meta name="description" content="Комплект PDF раскладывается по листам принтера и рулонам плоттера: формат каждого листа по ГОСТ 2.301-68, пакет на каждую корзину открывается во вкладке и печатается">
+  <meta name="description" content="Комплект PDF раскладывается по листам принтера и рулонам плоттера: формат каждого листа по ГОСТ 2.301-68, пакет на каждую корзину или том, время печати на парке принтеров, переплёт и нормоконтроль тома">
   <meta name="theme-color" content="#f3efe6">
   <link rel="stylesheet" href="styles.css?v=59">
   <link rel="stylesheet" href="mod.css?v=7">
-  <link rel="stylesheet" href="print.css?v=2">
+  <link rel="stylesheet" href="print.css?v=3">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><rect x='22' y='40' width='56' height='30' rx='6' fill='none' stroke='%23B95740' stroke-width='6'/><path d='M34 40V22h32v18M34 58h32v20H34z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/></svg>">
 </head>
@@ -23,7 +23,7 @@
   <main class="pr-main" id="content">
     <header class="toolbar">
       <h1>Разбор PDF по форматам</h1>
-      <p class="toolbar-note">Каждый лист комплекта меряется по геометрии страницы, определяется как формат ГОСТ 2.301-68, кратный, плюсовой или нестандарт и уходит в корзину носителя по короткой стороне: лист принтера или рулон плоттера. На каждую корзину собирается один PDF — открыть во вкладке и отправить на печать. Нейросеть не участвует.</p>
+      <p class="toolbar-note">Каждый лист комплекта меряется по геометрии страницы, определяется как формат ГОСТ 2.301-68, кратный, плюсовой или нестандарт и уходит в корзину носителя по короткой стороне: лист принтера или рулон плоттера. На каждую корзину (или на корзину тома) собирается один PDF — открыть во вкладке, напечатать или скачать. Ниже — время печати на парке принтеров, экземпляры и переплёт, нормоконтроль тома. Нейросеть не участвует.</p>
     </header>
 
     <section class="card">
@@ -58,6 +58,21 @@
             <option value="art">ArtBox → CropBox → MediaBox</option>
           </select>
         </label>
+        <label class="pr-field">
+          <span>Пакеты</span>
+          <select id="pr-grouping">
+            <option value="buckets">По корзинам — один пакет на корзину на весь комплект</option>
+            <option value="tomes">По томам — том = исходный файл, пакеты по корзинам внутри тома</option>
+          </select>
+        </label>
+        <label class="pr-field">
+          <span>Не больше, МБ на файл пакета</span>
+          <input id="pr-max-mb" type="number" min="0" max="100000" step="1" value="0" placeholder="0 — без предела">
+        </label>
+        <label class="pr-field">
+          <span>Не больше, страниц на файл</span>
+          <input id="pr-max-pages" type="number" min="0" max="100000" step="1" value="0" placeholder="0 — без предела">
+        </label>
       </div>
       <div class="pr-checks">
         <label><input id="pr-scan" type="checkbox"> Только анализ, без сборки пакетов</label>
@@ -66,6 +81,7 @@
         <label><input id="pr-plus-rolls" type="checkbox"> В плоттере есть рулоны плюсовых ширин (329 / 440 / 620 / 914)</label>
       </div>
       <p class="hint" id="pr-park-note"></p>
+      <p class="hint">Пределы пакета: если пакет не влезает, он делится на части «…__часть2из3.pdf» по границам страниц без перестановки листов; размер куска меряется сборкой qpdf (ресурсы у страниц общие, сумма размеров страниц неверна). Лист, который сам больше предела, выводится отдельным пакетом с предупреждением.</p>
     </section>
 
     <div class="mod-bar pr-run-bar">
@@ -81,7 +97,15 @@
       <div class="card">
         <h2>Корзины</h2>
         <p class="h2-note" id="pr-summary"></p>
+        <div class="pr-totals" id="pr-totals"></div>
         <div class="pr-buckets" id="pr-buckets"></div>
+      </div>
+
+      <div class="card" id="pr-tomes-card" hidden>
+        <h2>Пакеты по томам</h2>
+        <p class="h2-note">Том — исходный файл; марка и номер взяты из имени файла. Листы с разных принтеров собираются по карте сборки в исходном порядке тома.</p>
+        <div class="pr-actions" id="pr-map-links"></div>
+        <div id="pr-tomes"></div>
       </div>
 
       <div class="card" id="pr-rolls-card">
@@ -101,22 +125,114 @@
       </div>
 
       <div class="card">
-        <h2>Отчёт</h2>
+        <h2>Скачать и отчёт</h2>
+        <p class="h2-note">Пакеты и отчёты отдаются по короткоживущей ссылке; «Скачать всё» — ZIP без сжатия одним потоком.</p>
+        <div class="pr-actions" id="pr-downloads"></div>
         <div class="pr-actions">
-          <button id="pr-csv" class="btn btn-quiet btn-sm" type="button">Скачать CSV</button>
-          <button id="pr-json" class="btn btn-quiet btn-sm" type="button">Скачать JSON</button>
           <button id="pr-sheets" class="btn btn-quiet btn-sm" type="button">Показать все листы</button>
+          <span class="hint">щелчок по заголовку столбца сортирует таблицу</span>
         </div>
         <div class="mod-table-wrap" id="pr-sheets-wrap" hidden>
-          <table class="stat-table pr-sheets-table">
-            <thead><tr><th>Файл</th><th>Стр.</th><th>Ш×В, мм</th><th>Rotate</th><th>Класс</th><th>Формат</th><th>Корзина</th><th>Носитель</th><th>Отрез, мм</th><th>В пакете</th><th>Примечание</th></tr></thead>
+          <table class="stat-table pr-sheets-table" id="pr-sheets-table">
+            <thead><tr>
+              <th data-sort="source">Файл</th><th data-sort="page">Стр.</th><th data-sort="short">Ш×В, мм</th><th data-sort="rotate">Rotate</th>
+              <th data-sort="kind">Класс</th><th data-sort="format">Формат</th><th data-sort="bucket">Корзина</th><th data-sort="carrier">Носитель</th>
+              <th data-sort="cut">Отрез, мм</th><th data-sort="package">В пакете</th><th>Примечание</th>
+            </tr></thead>
             <tbody id="pr-sheets-body"></tbody>
           </table>
         </div>
       </div>
+
+      <div class="card" id="pr-binding-card">
+        <h2>Экземпляры и переплёт</h2>
+        <p class="h2-note">Листов в томе → слоёв с учётом сложенных листов (модель ГОСТ 2.501-2013, табл. Г.2) → толщина блока → диаметр пружины по таблице поставщика. Это слои по толщине, а не приведённые листы по площади из сводки выше. Пружина выбирается по наибольшей толщине блока; поле подшивки у сложенного листа — один слой, разница даёт клин, его компенсируют вкладыши.</p>
+        <div class="pr-params">
+          <label class="pr-field"><span>Экземпляров</span><input id="bd-copies" type="number" min="0" max="999" step="1" value="1"></label>
+          <label class="pr-field"><span>Переплёт</span><select id="bd-binding"></select></label>
+          <label class="pr-field"><span>Бумага, г/м²</span><input id="bd-gsm" type="number" min="40" max="400" step="5" value="80"></label>
+          <label class="pr-field"><span>Обложка, мм</span><input id="bd-cover" type="number" min="0" max="2" step="0.01" value="0.18"></label>
+          <label class="pr-field"><span>Подложка, мм</span><input id="bd-backing" type="number" min="0" max="3" step="0.05" value="0.4"></label>
+          <label class="pr-field"><span>Запас, %</span><input id="bd-reserve" type="number" min="0" max="100" step="1" value="10"></label>
+          <label class="pr-field"><span>Слои сложенного листа</span>
+            <select id="bd-fold">
+              <option value="gost">ГОСТ 2.501-2013 — по схеме</option>
+              <option value="owner">Таблица владельца (3 / 7 / 11 / 23)</option>
+              <option value="estimate">Прикидка без загиба (3 / 6 / 10 / 21)</option>
+              <option value="custom">Своя таблица</option>
+            </select>
+          </label>
+          <label class="pr-field" id="bd-custom-wrap" hidden><span>Своя таблица: А3, А2, А1, А0</span>
+            <span class="pr-inline"><input id="bd-c-a3" type="number" min="1" max="200" value="3"><input id="bd-c-a2" type="number" min="1" max="200" value="6"><input id="bd-c-a1" type="number" min="1" max="200" value="10"><input id="bd-c-a0" type="number" min="1" max="200" value="21"></span>
+          </label>
+        </div>
+        <div class="pr-checks">
+          <label><input id="bd-inserts" type="checkbox"> Считать компенсационные вкладыши в корешок (клин между зоной подшивки и внешней кромкой)</label>
+        </div>
+        <div class="pr-actions">
+          <button id="bd-run" class="btn btn-primary btn-sm" type="button">Рассчитать переплёт</button>
+          <button id="bd-fold-show" class="btn btn-quiet btn-sm" type="button">Схемы складывания</button>
+          <span class="hint" id="bd-note"></span>
+        </div>
+        <div id="bd-fold" hidden></div>
+        <div id="bd-result"></div>
+      </div>
+
+      <div class="card" id="pr-schedule-card">
+        <h2>Время печати</h2>
+        <p class="h2-note">Каждый пакет уходит только на совместимый принтер (лист помещается или рулон нужной ширины заряжен либо есть на полке). Распределение — самые долгие задания первыми на наименее загруженный принтер; смена рулона стоит времени. Накладные (прогрев, RIP, отрез) оценочные, поэтому показана вилка. После печати введите фактическое время — коэффициент принтера подстроится.</p>
+        <div class="pr-params">
+          <label class="pr-field"><span>Режим плоттера</span>
+            <select id="sc-mode"><option value="draft">черновой</option><option value="normal" selected>обычный</option><option value="best">наилучший</option></select>
+          </label>
+          <label class="pr-field"><span>Экземпляров</span><input id="sc-copies" type="number" min="1" max="999" step="1" value="1"></label>
+        </div>
+        <div class="pr-checks">
+          <label><input id="sc-duplex" type="checkbox"> А4 двусторонней печатью (если принтер умеет)</label>
+        </div>
+        <div class="pr-actions">
+          <button id="sc-run" class="btn btn-primary btn-sm" type="button">Рассчитать время</button>
+          <button id="pk-toggle" class="btn btn-quiet btn-sm" type="button">Парк принтеров</button>
+          <span class="hint" id="sc-note"></span>
+        </div>
+        <div id="sc-result"></div>
+        <div id="pk-wrap" hidden>
+          <h3>Парк принтеров</h3>
+          <p class="hint" id="pk-note">Общий парк офиса правит владелец платформы; личные принтеры каждый добавляет себе сам. Цифры пресетов — из паспортов производителя, ссылка в карточке.</p>
+          <div class="pr-actions">
+            <select id="pk-preset"></select>
+            <button id="pk-add-preset" class="btn btn-quiet btn-sm" type="button">Добавить из пресета</button>
+            <button id="pk-add-blank" class="btn btn-quiet btn-sm" type="button">Новый принтер</button>
+          </div>
+          <div id="pk-list"></div>
+        </div>
+      </div>
+
+      <div class="card" id="pr-check-card">
+        <h2>Нормоконтроль тома</h2>
+        <p class="h2-note">Детерминированные проверки без нейросети: объём тома (ГОСТ Р 21.101-2020, п. 8.1.3), графа «Листов» против фактического числа листов, подпись «Формат» под рамкой против измеренного формата, нестандартные листы, переплёт. Текст читается из пакетов разбора; скан без текстового слоя честно помечается «не проверено». Замечания — в формате модуля «Нормоконтроль».</p>
+        <div class="pr-actions">
+          <button id="tc-run" class="btn btn-primary btn-sm" type="button">Проверить тома</button>
+          <button id="tc-export" class="btn btn-quiet btn-sm" type="button" hidden>Скачать замечания (JSON для Нормоконтроля)</button>
+          <span class="hint" id="tc-note"></span>
+        </div>
+        <div id="tc-result"></div>
+      </div>
     </section>
     <p id="pr-error" class="mod-error" role="alert" hidden></p>
   </main>
+
+  <div id="pk-modal" class="pr-modal" hidden>
+    <div class="pr-modal-sheet glass-bar">
+      <h3 id="pk-modal-title">Принтер</h3>
+      <form id="pk-form" class="pk-form" novalidate></form>
+      <div class="pr-actions">
+        <button id="pk-save" class="btn btn-primary btn-sm" type="button">Сохранить</button>
+        <button id="pk-cancel" class="btn btn-quiet btn-sm" type="button">Отмена</button>
+        <span class="hint" id="pk-form-note"></span>
+      </div>
+    </div>
+  </div>
 
   <!-- ══════════ Вход — тот же, что на главной ══════════ -->
   <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
@@ -165,6 +281,6 @@
   <div id="toast" class="toast" role="alert" hidden></div>
 
   <script src="auth.js?v=5"></script>
-  <script src="print.js?v=1"></script>
+  <script src="print.js?v=2"></script>
 </body>
 </html>

@@ -1,0 +1,87 @@
+{
+  "_comment": "Пресеты принтеров типового парка проектного бюро (А3). Цифры — из паспортов производителя, у каждого пресета ссылка и дословная строка источника (source.note). Пресет копируется в парк и правится; без паспортной цифры поле пустое (null), а не придуманное. Скорость рулонного: паспорт даёт «А1 в час» или «с на А1» на рулоне 36″ с подачей А1 поперёк (594 мм протяжки на лист) — пересчёт в протяжку: v = 594 мм / (с на А1); время отреза = длина отреза / v. Накладные (прогрев, RIP на МБ, отрез, смена рулона) в паспортах не даются — это оценки, их правит оператор и уточняет калибровка.",
+  "presets": [
+    {
+      "id": "hp-laserjet-pro-4003dn",
+      "name": "HP LaserJet Pro 4003dn (офисный, А4)",
+      "type": "sheet",
+      "sheet": { "maxSheet": "А4", "duplex": true, "color": false, "ppmA4": { "mono": 40, "color": null }, "ppmA3": { "mono": null, "color": null }, "ipmDuplexA4": 34 },
+      "overhead": { "warmupSec": 0, "firstPageSec": 6.3, "ripSecPerMb": 0.3, "ripSecPerSheet": 0, "cutSec": 0, "rollChangeSec": 0 },
+      "uncertaintyPct": 15,
+      "source": {
+        "url": "https://h20195.www2.hp.com/v2/GetDocument.aspx?docname=c08818382",
+        "note": "Data sheet HP LaserJet Pro 4003dn: «Print speed: Black (A4, normal): Up to 40 ppm; Black (A4, duplex): Up to 34 ipm»; «First page out: Black (A4, ready): As fast as 6.3 sec»; «With no warm up time your printer is always ready»",
+        "fetchedAt": "2026-10-06"
+      }
+    },
+    {
+      "id": "kyocera-taskalfa-3554ci",
+      "name": "Kyocera TASKalfa 3554ci (МФУ А3, цвет)",
+      "type": "sheet",
+      "sheet": { "maxSheet": "SRA3", "duplex": true, "color": true, "ppmA4": { "mono": 35, "color": 35 }, "ppmA3": { "mono": 17, "color": 17 }, "ipmDuplexA4": 35 },
+      "overhead": { "warmupSec": 18, "firstPageSec": 5.9, "ripSecPerMb": 0.3, "ripSecPerSheet": 0, "cutSec": 0, "rollChangeSec": 0 },
+      "uncertaintyPct": 15,
+      "source": {
+        "url": "https://kyoceradocumentsolutions.com.au/hubfs/Printer%20Product%20Pages/Data%20Sheets%20-%20TASKalfa/Datasheet_TASKalfa_3554ci_KDAU.pdf",
+        "note": "Datasheet TASKalfa 3554ci: «Engine speed: Up to 35/17 pages A4/A3 per minute, Duplex print/copy speed: 35 pages A4 per minute»; «Warm-up time: 18 seconds or less»; «Time to first print: 5.9/7.7 seconds or less in Mono/Colour»; «Input capacity: … A6R - SRA3 (320 x 450 mm)»",
+        "fetchedAt": "2026-10-06"
+      }
+    },
+    {
+      "id": "hp-designjet-t650-36",
+      "name": "HP DesignJet T650 36″ (плоттер, 1 рулон)",
+      "type": "roll",
+      "roll": { "holders": 1, "maxWidthMm": 914, "loaded": [841], "stock": [297, 420, 594, 841, 914],
+        "modes": { "draft": { "secPerA1": 25, "a1PerHour": 82 }, "normal": null, "best": null }, "defaultMode": "draft" },
+      "overhead": { "warmupSec": 60, "firstPageSec": 10, "ripSecPerMb": 1.5, "ripSecPerSheet": 2, "cutSec": 3, "rollChangeSec": 180 },
+      "uncertaintyPct": 30,
+      "source": {
+        "url": "https://hp.com/bd-en/products/large-format-printers/product-details/product-specifications/33508855",
+        "note": "HP DesignJet T650 36-in Printer (5HB10A) specifications: «Print speed: 25 sec/page on A1, 82 A1 prints per hour»; «Roll maximum input: 1»; «Media width maximum: 914 mm». Режим не назван — цифра принята за черновой режим на обычной бумаге.",
+        "fetchedAt": "2026-10-06"
+      }
+    },
+    {
+      "id": "canon-imageprograf-tm-355",
+      "name": "Canon imagePROGRAF TM-355 36″ (плоттер, 1 рулон)",
+      "type": "roll",
+      "roll": { "holders": 1, "maxWidthMm": 917, "loaded": [841], "stock": [297, 420, 594, 841, 914],
+        "modes": { "draft": { "secPerA1": 17 }, "normal": { "secPerA1": 21 }, "best": { "secPerA1": 34 } }, "defaultMode": "normal" },
+      "overhead": { "warmupSec": 60, "firstPageSec": 10, "ripSecPerMb": 1.5, "ripSecPerSheet": 2, "cutSec": 3, "rollChangeSec": 180 },
+      "uncertaintyPct": 30,
+      "source": {
+        "url": "https://canon.a.bigcontent.io/v1/static/imageprograf-tm-350-mfp-lm36_imageprograf-tm-355-mfp-lm36_datasheet_em_final_forweb_10c00b58f47d4e4ab737d1f95c64ba54",
+        "note": "Canon datasheet TM-350/TM-355 MFP Lm36: «Plain paper (A1): 0:17 (Fast Economy Mode) 3.2ppm»; «Plain paper (A0): 0:32 (Fast Economy Mode), 0:42 (Fast), 1:08 (Standard)»; «Media Width: Roll paper: 203.2 - 917mm»; «Roll Paper: One Roll». Для А1 паспорт даёт только экономичный режим (17 с); normal и best получены из соотношения режимов на А0 (42/32 и 68/32), это пересчёт, а не паспорт.",
+        "fetchedAt": "2026-10-06"
+      }
+    },
+    {
+      "id": "hp-designjet-t1700dr-44",
+      "name": "HP DesignJet T1700dr 44″ (плоттер, 2 рулона)",
+      "type": "roll",
+      "roll": { "holders": 2, "maxWidthMm": 1118, "loaded": [841, 594], "stock": [297, 420, 594, 841, 914, 1067],
+        "modes": { "draft": { "secPerA1": 26, "a1PerHour": 116 }, "normal": null, "best": null }, "defaultMode": "draft" },
+      "overhead": { "warmupSec": 60, "firstPageSec": 10, "ripSecPerMb": 0.8, "ripSecPerSheet": 2, "cutSec": 3, "rollChangeSec": 180 },
+      "uncertaintyPct": 30,
+      "source": {
+        "url": "https://hp.com/sa-en/products/large-format-printers/product-details/product-specifications/30836699",
+        "note": "HP DesignJet T1700dr 44-in PostScript Printer (1VD88F) specifications: «Print speed: 116 A1/hr, 26 sec/A1»; два автоматических рулона с автопереключением. Режим не назван — цифра принята за черновой на обычной бумаге.",
+        "fetchedAt": "2026-10-06"
+      }
+    },
+    {
+      "id": "canon-imageprograf-tz-30000",
+      "name": "Canon imagePROGRAF TZ-30000 36″ (плоттер, 2 рулона)",
+      "type": "roll",
+      "roll": { "holders": 2, "maxWidthMm": 917, "loaded": [841, 594], "stock": [297, 420, 594, 841, 914],
+        "modes": { "draft": { "secPerA1": 15, "a1PerHour": 240 }, "normal": null, "best": null }, "defaultMode": "draft" },
+      "overhead": { "warmupSec": 60, "firstPageSec": 19, "ripSecPerMb": 0.5, "ripSecPerSheet": 1, "cutSec": 2, "rollChangeSec": 120 },
+      "uncertaintyPct": 30,
+      "source": {
+        "url": "https://canon.a.bigcontent.io/v1/static/imageprograf-tz-30000-mfp-z36_data-sheet_em_final_digi_0cfc956615e749d1a84be8badaf960dc",
+        "note": "Canon datasheet TZ-30000 MFP Z36: «Print larger media volumes, at up to 4ppm» (А1 CAD, т.е. 15 с на лист); «Media Feed Capacity: Roll Paper: Two rolls. Automatic switching is possible»; «Media Width: Roll paper: 203.2mm - 917mm»; «stacker up to 100 pages of A0». Время до первого отпечатка 19 с — по странице Canon (usa.canon.com/newsroom/2021/20210316-product).",
+        "fetchedAt": "2026-10-06"
+      }
+    }
+  ]
+}

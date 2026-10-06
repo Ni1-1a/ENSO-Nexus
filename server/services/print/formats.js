@@ -63,7 +63,11 @@ const park = loadPark(PARK_FILE);
 /* ---------------- настройки прогона ---------------- */
 
 function defaults() {
-  return { tolerance: 3, box: 'crop', scanOnly: false, multiplesOwn: false, plusOwn: true, plusRolls: false };
+  return {
+    tolerance: 3, box: 'crop', scanOnly: false, multiplesOwn: false, plusOwn: true, plusRolls: false,
+    // А4: «по корзинам» — один пакет на корзину на весь комплект; «по томам» — том = исходный файл
+    grouping: 'buckets', maxPackageMb: 0, maxPackagePages: 0,
+  };
 }
 
 /**
@@ -84,6 +88,16 @@ function normalizeSettings(raw) {
   }
   for (const flag of ['scanOnly', 'multiplesOwn', 'plusOwn', 'plusRolls']) {
     if (src[flag] !== undefined) st[flag] = src[flag] === true || src[flag] === 'true' || src[flag] === 1 || src[flag] === '1';
+  }
+  if (src.grouping !== undefined && src.grouping !== null && src.grouping !== '') {
+    if (!['buckets', 'tomes'].includes(src.grouping)) throw new Error('Группировка пакетов: buckets (по корзинам) или tomes (по томам)');
+    st.grouping = src.grouping;
+  }
+  for (const [key, max, label] of [['maxPackageMb', 100000, 'Предел размера пакета, МБ'], ['maxPackagePages', 100000, 'Предел страниц в пакете']]) {
+    if (src[key] === undefined || src[key] === null || src[key] === '') continue;
+    const n = Number(src[key]);
+    if (!Number.isFinite(n) || n < 0 || n > max) throw new Error(`${label}: число от 0 (без предела) до ${max}`);
+    st[key] = key === 'maxPackagePages' ? Math.round(n) : n;
   }
   return st;
 }
@@ -136,11 +150,13 @@ function matchTable(short, long, table, tol) {
 function pickCarrier(short, long, tol, rolls) {
   for (const s of park.sheets) {
     if (short <= s.width + tol && long <= s.length + tol) {
-      return { bucket: s.bucket, desc: s.desc, rollWidth: 0, cut: 0 };
+      return { bucket: s.bucket, desc: s.desc, rollWidth: 0, cut: 0, carrierKind: 'sheet', carrierBucket: s.bucket, carrierWidth: s.width };
     }
   }
   for (const r of rolls) {
-    if (short <= r.width + tol) return { bucket: r.bucket, desc: r.desc, rollWidth: r.width, cut: round1(long) };
+    if (short <= r.width + tol) {
+      return { bucket: r.bucket, desc: r.desc, rollWidth: r.width, cut: round1(long), carrierKind: 'roll', carrierBucket: r.bucket, carrierWidth: r.width };
+    }
   }
   return null;
 }
@@ -163,11 +179,11 @@ function classify(short, long, settings) {
     const maxW = Math.max(...rolls.map((r) => r.width));
     return {
       kind: 'ОШИБКА', format: basic || mult || plus || '-', bucket: REVIEW_BUCKET,
-      carrier: 'Не помещается ни в один рулон', rollWidth: 0, cut: 0,
+      carrier: 'Не помещается ни в один рулон', rollWidth: 0, cut: 0, carrierKind: 'none', carrierBucket: '', carrierWidth: 0,
       note: `Короткая сторона больше ${maxW} мм — раскрой или масштабирование`,
     };
   }
-  const base = { carrier: carrier.desc, rollWidth: carrier.rollWidth, cut: carrier.cut };
+  const base = { carrier: carrier.desc, rollWidth: carrier.rollWidth, cut: carrier.cut, carrierKind: carrier.carrierKind, carrierBucket: carrier.carrierBucket, carrierWidth: carrier.carrierWidth };
   if (basic) return { kind: 'ГОСТ', format: basic, bucket: basic, ...base, note: '' };
   if (mult) {
     return {
@@ -186,7 +202,19 @@ function classify(short, long, settings) {
 
 /* ---------------- сводка и отчёты ---------------- */
 
-/** Порядок корзин на экране: от малого к большому, стандарт раньше нестандарта. */
+/**
+ * Носители по возрастанию ширины: листы принтера (А4 210, А3 297), затем рулоны
+ * вместе с плюсовыми (297 → 329 → 420 → 440 → 594 → 620 → 841 → 914 → 960).
+ * Один список и для порядка корзин, и для НС, и для планировщика печати (А1).
+ */
+function carrierOrder() {
+  const sheets = park.sheets.map((s) => ({ bucket: s.bucket, width: s.width, kind: 'sheet' }));
+  const rolls = park.rolls.concat(park.plusRolls).map((r) => ({ bucket: r.bucket, width: r.width, kind: 'roll' }))
+    .sort((a, b) => a.width - b.width);
+  return sheets.concat(rolls);
+}
+
+/** Порядок корзин на экране: стандарт от малого к большому, кратные, НС по ширине носителя, «требует решения». */
 function bucketOrder() {
   const base = Object.keys(park.basic).sort((a, b) => park.basic[a][0] - park.basic[b][0]);
   const withPlus = [];
@@ -194,14 +222,26 @@ function bucketOrder() {
     withPlus.push(b);
     if (park.plus[`${b}+`]) withPlus.push(`${b}+`);
   }
-  const rollBuckets = park.rolls.concat(park.plusRolls).slice().sort((a, b) => a.width - b.width).map((r) => r.bucket);
   const order = withPlus.slice();
-  for (const r of rollBuckets) if (!order.includes(r)) order.push(r);
+  for (const c of carrierOrder()) if (!order.includes(c.bucket)) order.push(c.bucket);
   const mult = Object.keys(park.multiple);
   const nc = [];
-  for (const s of park.sheets) nc.push(`НС ${s.bucket}`);
-  for (const r of rollBuckets) if (!nc.includes(`НС ${r}`)) nc.push(`НС ${r}`);
+  for (const c of carrierOrder()) if (!nc.includes(`НС ${c.bucket}`)) nc.push(`НС ${c.bucket}`);
   return order.concat(mult, nc, [REVIEW_BUCKET]);
+}
+
+const isNcBucket = (name) => String(name).startsWith('НС ');
+
+/**
+ * Порядок листов внутри корзины. Стандартные корзины и режим «по томам» —
+ * файл по имени (с учётом чисел), потом страница: так пакет листается как
+ * исходники. НС-корзина — по короткой стороне, потом по длине отреза, потом
+ * файл и страница: оператор режет рулон подряд одинаковыми кусками (А1).
+ */
+function compareRecords(a, b, { byTome = false } = {}) {
+  const bySource = a.source.localeCompare(b.source, 'ru', { numeric: true }) || a.page - b.page;
+  if (byTome || !isNcBucket(a.bucket)) return bySource;
+  return (a.short - b.short) || (a.long - b.long) || bySource;
 }
 
 function sortBuckets(names) {
@@ -210,25 +250,86 @@ function sortBuckets(names) {
   return names.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b, 'ru'));
 }
 
-/** Сводка по корзинам и расход рулонов в погонных метрах (без полей и отходов). */
-function summarize(records) {
+const A4_AREA = 210 * 297;
+const A3_AREA = 297 * 420;
+
+/** Площадь листа в А4 и А3 для ГОСТ-форматов — ровно (А3 = 2 А4, А0 = 16 А4), НС — по факту с округлением вверх. */
+const GOST_A4 = { 'А5': 0.5, 'А4': 1, 'А3': 2, 'А2': 4, 'А1': 8, 'А0': 16 };
+function reducedOf(r) {
+  const area = r.short * r.long;
+  // у ряда А каждый следующий формат вдвое больше — так считают в договорах, а не по площади 841×1189 (16,03)
+  if (r.kind === 'ГОСТ' && GOST_A4[r.format]) return { a4: GOST_A4[r.format], a3: GOST_A4[r.format] / 2 };
+  return { a4: Math.ceil(area / A4_AREA - 1e-9), a3: Math.ceil(area / A3_AREA - 1e-9) };
+}
+
+/**
+ * Разбивка листов по фактическим размерам: «297×630 — 5». Размеры округляются
+ * до мм и склеиваются в пределах допуска (297.0 и 297.3 — один размер), сортировка
+ * по короткой стороне, потом по длинной (А1).
+ */
+function sizeBreakdown(records, tolerance = 3) {
+  const tol = Math.max(0.5, tolerance);   // не меньше половины миллиметра: иначе 296,8 и 297,3 — «разные» размеры с одной подписью 297
+  const sorted = records.slice().sort((a, b) => (a.short - b.short) || (a.long - b.long));
+  const groups = [];
+  for (const r of sorted) {
+    const g = groups.find((x) => Math.abs(x.short - r.short) <= tol && Math.abs(x.long - r.long) <= tol);
+    if (g) { g.count += 1; continue; }
+    groups.push({ short: r.short, long: r.long, count: 1 });
+  }
+  return groups.map((g) => ({ short: Math.round(g.short), long: Math.round(g.long), count: g.count, label: `${Math.round(g.short)}×${Math.round(g.long)}` }))
+    .sort((a, b) => (a.short - b.short) || (a.long - b.long));
+}
+
+/**
+ * Сводка по корзинам, расход рулонов в погонных метрах (без полей и отходов),
+ * физические листы бумаги для листовых принтеров (А2.1) и приведённые листы
+ * по площади (А2.2). «Приведённые» — это объём документации в договорах на
+ * печать; слои сложенного листа в томе — ДРУГАЯ величина, она в модели
+ * складывания (binding.js), и путать их нельзя.
+ */
+function summarize(records, { tolerance = 3 } = {}) {
   const buckets = new Map();
   const rolls = {};
+  const physical = { sheetsA4: 0, sheetsA3: 0 };
+  const reduced = { a4: 0, a3: 0, a4Gost: 0, a4Nc: 0 };
   for (const r of records) {
-    const b = buckets.get(r.bucket) || { bucket: r.bucket, count: 0, carrier: r.carrier, rollWidth: r.rollWidth, cutMm: 0, formats: {} };
+    const b = buckets.get(r.bucket) || { bucket: r.bucket, count: 0, carrier: r.carrier, rollWidth: r.rollWidth, cutMm: 0, formats: {}, carriers: new Map(), rows: [] };
     b.count += 1;
     b.cutMm += r.rollWidth ? r.cut : 0;
     b.formats[r.format === '-' ? 'НС' : r.format] = (b.formats[r.format === '-' ? 'НС' : r.format] || 0) + 1;
+    const ck = `${r.carrierKind || ''}:${r.carrierBucket || ''}`;
+    const c = b.carriers.get(ck) || { carrier: r.carrier, carrierKind: r.carrierKind || '', carrierBucket: r.carrierBucket || '', rollWidth: r.rollWidth || 0, count: 0, cutMm: 0 };
+    c.count += 1; c.cutMm += r.rollWidth ? r.cut : 0;
+    b.carriers.set(ck, c);
+    b.rows.push(r);
     buckets.set(r.bucket, b);
     if (r.rollWidth) rolls[r.rollWidth] = (rolls[r.rollWidth] || 0) + r.cut;
+    if (r.carrierKind === 'sheet' && r.carrierBucket === 'А4') physical.sheetsA4 += 1;
+    if (r.carrierKind === 'sheet' && r.carrierBucket === 'А3') physical.sheetsA3 += 1;
+    if (r.kind !== 'ОШИБКА') {
+      const q = reducedOf(r);
+      reduced.a4 += q.a4; reduced.a3 += q.a3;
+      if (r.kind === 'ГОСТ') reduced.a4Gost += q.a4; else reduced.a4Nc += q.a4;
+    }
   }
   const list = sortBuckets([...buckets.keys()]).map((name) => {
     const b = buckets.get(name);
-    return { ...b, meters: Math.round(b.cutMm / 100) / 10 };
+    const { carriers, rows, ...rest } = b;
+    return {
+      ...rest,
+      meters: Math.round(b.cutMm / 100) / 10,
+      carriers: [...carriers.values()].map((c) => ({ ...c, meters: Math.round(c.cutMm / 100) / 10 })),
+      sizes: isNcBucket(name) || name === REVIEW_BUCKET ? sizeBreakdown(rows, tolerance) : [],
+    };
   });
   const rollMeters = Object.keys(rolls).map(Number).sort((a, b) => a - b)
     .map((w) => ({ width: w, meters: Math.round(rolls[w] / 100) / 10 }));
-  return { pages: records.length, buckets: list, rollMeters };
+  const r1 = (n) => Math.round(n * 10) / 10;
+  return {
+    pages: records.length, buckets: list, rollMeters,
+    physical,
+    reduced: { a4: r1(reduced.a4), a3: r1(reduced.a3), a4Gost: r1(reduced.a4Gost), a4Nc: r1(reduced.a4Nc) },
+  };
 }
 
 const CSV_HEAD = ['Исходный файл', 'Стр.', 'Ширина, мм', 'Высота, мм', 'Короткая', 'Длинная', 'Rotate', 'Box',
@@ -259,5 +360,5 @@ function sheetName(stem, page, format, width, height) {
 module.exports = {
   PT_TO_MM, REVIEW_BUCKET, park, PARK_FILE,
   defaults, normalizeSettings, rollsFor, pageSizeMm, classify, pickCarrier, matchTable,
-  bucketOrder, sortBuckets, summarize, toCsv, sheetName, loadPark,
+  carrierOrder, bucketOrder, sortBuckets, isNcBucket, compareRecords, sizeBreakdown, reducedOf, summarize, toCsv, sheetName, loadPark,
 };

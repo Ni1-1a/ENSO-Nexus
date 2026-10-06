@@ -136,7 +136,7 @@ function moveFile(from, to) {
  * переносит его в папку разбора. Возвращает предупреждения qpdf (повреждённый,
  * но восстановленный файл — оператору полезно знать), без дублей и без путей.
  */
-async function assemble(parts, out, { tmpDir = '' } = {}) {
+async function assembleTemp(parts, { tmpDir = '' } = {}) {
   const live = parts.filter((p) => p.pages && p.pages.length);
   if (!live.length) throw new Error('пакет без страниц');
   // имя обязано кончаться на .pdf: профиль qpdf разрешает только такие файлы
@@ -149,18 +149,43 @@ async function assemble(parts, out, { tmpDir = '' } = {}) {
     fs.rmSync(scratch, { force: true });
     throw new Error(reasonOf(res));
   }
+  const warnings = new Set();
+  for (const line of res.stderr.split('\n')) {
+    const m = /^WARNING:\s*(.+?):\s*(.+)$/.exec(line.trim());
+    if (m) warnings.add(`${path.basename(m[1].split(' (')[0])}: ${m[2]}`);
+  }
+  let bytes = 0;
+  try { bytes = fs.statSync(scratch).size; } catch { /* ниже */ }
+  return { scratch, bytes, warnings: [...warnings] };
+}
+
+/**
+ * Пакет корзины: parts = [{ file, pages: [номера] }] в нужном порядке → out.
+ * Страницы идут в порядке частей, внутри части — по возрастанию номера.
+ * qpdf пишет во временный файл в разрешённом месте (см. scratchDir), node
+ * переносит его в папку разбора. Возвращает предупреждения qpdf (повреждённый,
+ * но восстановленный файл — оператору полезно знать), без дублей и без путей.
+ */
+async function assemble(parts, out, { tmpDir = '' } = {}) {
+  const { scratch, warnings, bytes } = await assembleTemp(parts, { tmpDir });
   try {
     moveFile(scratch, out);
   } catch (err) {
     fs.rmSync(scratch, { force: true });
     throw new Error(`не удалось положить пакет в папку разбора: ${err.message}`);
   }
-  const warnings = new Set();
-  for (const line of res.stderr.split('\n')) {
-    const m = /^WARNING:\s*(.+?):\s*(.+)$/.exec(line.trim());
-    if (m) warnings.add(`${path.basename(m[1].split(' (')[0])}: ${m[2]}`);
-  }
-  return { warnings: [...warnings] };
+  return { warnings, bytes };
+}
+
+/**
+ * Размер пакета без сохранения (А4: деление по пределу размера). Кандидат
+ * собирается во временный файл и тут же удаляется: сумма «размеров страниц»
+ * неверна, ресурсы у страниц общие, мерить можно только собранный файл.
+ */
+async function measure(parts, { tmpDir = '' } = {}) {
+  const { scratch, bytes } = await assembleTemp(parts, { tmpDir });
+  fs.rmSync(scratch, { force: true });
+  return bytes;
 }
 
 /** Что есть на машине: pdfinfo нужен для анализа, qpdf — для пакетов. */
@@ -170,4 +195,4 @@ async function available() {
   return { pdfinfo: ok(pi), qpdf: ok(qp) };
 }
 
-module.exports = { inspect, assemble, rangeSpec, scratchDir, available, reasonOf, PDFINFO, QPDF };
+module.exports = { inspect, assemble, assembleTemp, measure, rangeSpec, scratchDir, available, reasonOf, PDFINFO, QPDF, run };

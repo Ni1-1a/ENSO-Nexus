@@ -4,18 +4,21 @@
  *
  * Разбор (job) — папка data/print/<человек>/<id>/: job.json (состояние),
  * src/ (загруженные PDF, собираются из кусков — через Cloudflare тело запроса
- * больше 100 МБ не проходит, а один файл РД весит 268 МБ), pages/ (страницы на
- * время сборки), packages/ (по одному PDF на корзину — их оператор открывает во
- * вкладке и печатает), records.json и report.csv (строка на каждый лист).
+ * больше 100 МБ не проходит, а один файл РД весит 268 МБ), packages/ (PDF на
+ * корзину или на корзину тома — их оператор открывает во вкладке, печатает или
+ * скачивает), records.json и report.csv (строка на каждый лист), в режиме «по
+ * томам» — карта сборки (карта_сборки.csv / .html).
  *
  * У человека живёт ОДИН разбор: новый стирает предыдущий (решение владельца
- * 14.09.2026), всё старше PRINT_TTL_HOURS чистит sweep(). Файлы оператору не
- * отдаются на скачивание — только пакеты во вкладку по короткоживущему билету
- * (ticket): вкладка открывается адресом, заголовок X-User-Token в неё не
- * передать.
+ * 14.09.2026), всё старше PRINT_TTL_HOURS чистит sweep(). Пакеты и отчёты
+ * отдаются во вкладку и на скачивание по короткоживущему билету (ticket):
+ * вкладка открывается адресом, заголовок X-User-Token в неё не передать.
  *
- * Конвейер детерминированный: pdfinfo → классификация → pdfseparate →
- * pdfunite. Сбой на одном файле не прерывает разбор — он уходит в problems.
+ * Конвейер детерминированный: pdfinfo → классификация → qpdf. Сбой на одном
+ * файле не прерывает разбор — он уходит в problems. Деление пакета по пределу
+ * (А4): размер куска заранее не известен (ресурсы у страниц общие), поэтому
+ * кандидат собирается qpdf и меряется, двоичным поиском по числу страниц;
+ * целый пакет, который пришлось делить, не сохраняется — место не удваивается.
  */
 const fs = require('fs');
 const path = require('path');
@@ -23,12 +26,20 @@ const crypto = require('crypto');
 const config = require('../../config');
 const formats = require('./formats');
 const poppler = require('./pdfinfo');
+const volumes = require('./volumes');
 const { sanitizeFilename } = require('../validation');
 
 const ID_RE = /^[a-f0-9]{24}$/;
 const FILE_ID_RE = /^f[a-f0-9]{8}$/;
 const live = new Map();      // id → job в работе (в памяти, чтобы отдавать прогресс без чтения диска)
 const tickets = new Map();   // ticket → { jobId, userId, exp }
+
+const REPORT_FILES = Object.freeze({
+  '_ОТЧЁТ.csv': { kind: 'csv' },
+  '_ОТЧЁТ.json': { kind: 'json' },
+  'карта_сборки.csv': { kind: 'mapcsv' },
+  'карта_сборки.html': { kind: 'maphtml' },
+});
 
 const now = () => new Date().toISOString();
 const rootDir = () => path.join(config.dataDir, 'print');
@@ -41,7 +52,8 @@ function save(job) {
   const dir = jobDir(job);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `job.json.${process.pid}.tmp`);
-  fs.writeFileSync(tmp, JSON.stringify(job, null, 2));
+  const { promise: _p, ...plain } = job;
+  fs.writeFileSync(tmp, JSON.stringify(plain, null, 2));
   fs.renameSync(tmp, path.join(dir, 'job.json'));
   return job;
 }
@@ -55,7 +67,7 @@ function readJob(dir) {
 
 /** Что уходит наружу: без служебных полей и без внутренних путей. */
 function publicView(job) {
-  const { userKey: _k, cancelRequested: _c, ...rest } = job;
+  const { userKey: _k, cancelRequested: _c, promise: _p, ...rest } = job;
   return {
     ...rest,
     files: (job.files || []).map((f) => ({
@@ -111,7 +123,10 @@ function createJob(user) {
     progress: { phase: '', done: 0, total: 0, label: '' },
     problems: [],
     packages: [],
+    tomes: [],
     summary: null,
+    binding: null,
+    schedule: null,
     error: '',
   };
   fs.mkdirSync(path.join(jobDir(job), 'src'), { recursive: true });
@@ -136,7 +151,7 @@ function addFile(job, { name, size }) {
     throw httpError(413, `Комплект ${mb(total)} МБ превышает предел ${mb(config.printMaxTotalBytes)} МБ на разбор`);
   }
   if (job.files.length >= config.printMaxFiles) throw httpError(413, `Не больше ${config.printMaxFiles} файлов в разборе`);
-  // диск VPS невелик (8,6 ГБ, из них свободно ~2): исходник + пакеты ≈ 2× размера файла
+  // исходник + пакеты ≈ 2× размера файла; на VPS 40 ГБ, но запас всё равно проверяется
   const free = freeBytes(rootDir());
   if (free !== null && free - bytes * 2 < config.printMinFreeBytes) {
     throw httpError(507, `На сервере мало места: свободно ${mb(free)} МБ, для «${clean}» нужно около ${mb(bytes * 2 + config.printMinFreeBytes)} МБ — удалите старый разбор или подождите уборки`);
@@ -199,13 +214,15 @@ function resetResult(job) {
   job.status = 'new';
   job.summary = null;
   job.packages = [];
+  job.tomes = [];
+  job.binding = null;
+  job.schedule = null;
   job.problems = [];
   job.error = '';
   job.progress = { phase: '', done: 0, total: 0, label: '' };
   fs.rmSync(path.join(jobDir(job), 'packages'), { recursive: true, force: true });
   fs.rmSync(path.join(jobDir(job), 'pages'), { recursive: true, force: true });
-  fs.rmSync(path.join(jobDir(job), 'records.json'), { force: true });
-  fs.rmSync(path.join(jobDir(job), 'report.csv'), { force: true });
+  for (const name of ['records.json', 'report.csv', 'карта_сборки.csv', 'карта_сборки.html']) fs.rmSync(path.join(jobDir(job), name), { force: true });
   for (const [t, v] of tickets) if (v.jobId === job.id) tickets.delete(t);
 }
 
@@ -259,6 +276,9 @@ function cancel(job) {
 class Cancelled extends Error {}
 const checkCancel = (job) => { if (job.cancelRequested) throw new Cancelled('остановлено'); };
 
+/** Ключ носителя внутри корзины: «НС А3» бывает и листом А3, и рулоном 297 — это разные устройства. */
+const carrierKey = (r) => `${r.carrierKind || ''}:${r.carrierBucket || ''}:${r.rollWidth || 0}`;
+
 async function runPipeline(job) {
   const dir = jobDir(job);
   const st = job.settings;
@@ -266,6 +286,7 @@ async function runPipeline(job) {
   const records = [];
   const problems = [];
   job.problems = problems;
+  const byTome = st.grouping === 'tomes';
 
   // 1. Анализ: pdfinfo → габариты → класс и корзина
   job.progress = { phase: 'analyze', done: 0, total: files.length, label: '' };
@@ -303,20 +324,44 @@ async function runPipeline(job) {
         fileId: file.id, source: file.name, page: p.index,
         width: size.width, height: size.height, short, long, rotate: size.rotate, box: size.box,
         kind: c.kind, format: c.format, bucket: c.bucket, carrier: c.carrier, rollWidth: c.rollWidth, cut: c.cut,
+        carrierKind: c.carrierKind, carrierBucket: c.carrierBucket, carrierWidth: c.carrierWidth,
         sheet: formats.sheetName(stem, p.index, c.format, size.width, size.height),
         package: '', packagePage: 0, note: c.note,
       });
     }
     job.progress.done = i + 1;
   }
+  job.tomes = files.filter((f) => !f.problem).map((f) => volumes.tomeOf(f));
 
-  // 2. Пакеты: по одному PDF на корзину. qpdf копирует страницы из исходников
-  // напрямую (без растеризации), порядок — файл по имени, потом страница.
-  const byBucket = new Map();
+  // 2. Группы пакетов: корзина (+ носитель, если в корзине их два) и, по режиму, том
+  const carriersByBucket = new Map();
   for (const r of records) {
-    if (!byBucket.has(r.bucket)) byBucket.set(r.bucket, []);
-    byBucket.get(r.bucket).push(r);
+    if (!carriersByBucket.has(r.bucket)) carriersByBucket.set(r.bucket, new Set());
+    carriersByBucket.get(r.bucket).add(carrierKey(r));
   }
+  const groups = new Map();
+  for (const r of records) {
+    const mixed = carriersByBucket.get(r.bucket).size > 1;
+    const key = `${byTome ? r.fileId : ''}|${r.bucket}|${mixed ? carrierKey(r) : ''}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        bucket: r.bucket, fileId: byTome ? r.fileId : '', rows: [],
+        carrierKind: r.carrierKind, carrierBucket: r.carrierBucket, rollWidth: r.rollWidth, carrier: r.carrier,
+        carrierSuffix: mixed ? (r.carrierKind === 'roll' ? `рулон${r.rollWidth}` : 'лист') : '',
+      });
+    }
+    groups.get(key).rows.push(r);
+  }
+  const bucketRank = new Map(formats.bucketOrder().map((b, i) => [b, i]));
+  const ordered = [...groups.values()].sort((a, b) => {
+    if (byTome) {
+      const fa = files.findIndex((f) => f.id === a.fileId), fb = files.findIndex((f) => f.id === b.fileId);
+      if (fa !== fb) return fa - fb;
+    }
+    return (bucketRank.get(a.bucket) ?? 999) - (bucketRank.get(b.bucket) ?? 999) || (a.rollWidth - b.rollWidth);
+  });
+
+  // 3. Пакеты: qpdf копирует страницы из исходников напрямую (без растеризации)
   const packages = [];
   if (!st.scanOnly && records.length) {
     const tools = await poppler.available();
@@ -325,49 +370,60 @@ async function runPipeline(job) {
     } else {
       const pkgDir = path.join(dir, 'packages');
       fs.mkdirSync(pkgDir, { recursive: true });
-      const buckets = formats.sortBuckets([...byBucket.keys()]);
-      job.progress = { phase: 'merge', done: 0, total: buckets.length, label: '' };
+      job.progress = { phase: 'merge', done: 0, total: ordered.length, label: '' };
       // файлы, уже помеченные при анализе, второй раз (от qpdf) не помечаем
       const seenWarnings = new Set(problems.map((x) => (/^предупреждение: (.+?) повреждён/.exec(x) || [])[1]).filter(Boolean));
-      for (const [i, bucket] of buckets.entries()) {
+      const limits = { maxBytes: st.maxPackageMb > 0 ? st.maxPackageMb * 1048576 : 0, maxPages: st.maxPackagePages > 0 ? st.maxPackagePages : 0 };
+      for (const [i, g] of ordered.entries()) {
         checkCancel(job);
-        job.progress.label = bucket;
+        const tome = byTome ? job.tomes.find((t) => t.fileId === g.fileId) : null;
+        const baseName = volumes.packageName(g.bucket, tome, { carrierSuffix: g.carrierSuffix });
+        job.progress.label = baseName.replace(/\.pdf$/i, '');
         save(job);
-        const rows = byBucket.get(bucket)
-          .sort((a, b) => a.source.localeCompare(b.source, 'ru', { numeric: true }) || a.page - b.page);
-        const parts = [];
-        for (const r of rows) {
-          const file = files.find((f) => f.id === r.fileId);
-          const last = parts[parts.length - 1];
-          if (last && last.fileId === r.fileId) last.pages.push(r.page);
-          else parts.push({ fileId: r.fileId, file: srcPath(job, file), pages: [r.page] });
-        }
-        const fileName = `ПАКЕТ_${sanitizeFilename(bucket)}.pdf`;
-        const out = path.join(pkgDir, fileName);
-        try {
-          const { warnings } = await poppler.assemble(parts, out, { tmpDir: config.printTmpDir });
-          rows.forEach((r, k) => { r.package = fileName; r.packagePage = k + 1; });
-          packages.push({ bucket, file: fileName, pages: rows.length, bytes: fs.statSync(out).size });
-          // qpdf пишет имена временных файлов src/<id>.pdf и по десятку строк на
-          // повреждённый файл — оператору нужна одна строка с именем исходника
-          const byFile = new Map();
-          for (const w of warnings) {
-            const m = /^([^:]+):\s*(.*)$/.exec(w);
-            const base = m ? m[1] : '';
-            const name = (files.find((f) => `${f.id}.pdf` === base) || { name: base || 'файл' }).name;
-            if (!byFile.has(name)) byFile.set(name, []);
-            byFile.get(name).push(m ? m[2] : w);
+        const rows = g.rows.sort((a, b) => formats.compareRecords(a, b, { byTome }));
+        const partsOf = (start, count) => {
+          const parts = [];
+          for (const r of rows.slice(start, start + count)) {
+            const file = files.find((f) => f.id === r.fileId);
+            const last = parts[parts.length - 1];
+            if (last && last.fileId === r.fileId) last.pages.push(r.page);
+            else parts.push({ fileId: r.fileId, file: srcPath(job, file), pages: [r.page] });
           }
-          for (const [name, msgs] of byFile) {
-            if (seenWarnings.has(name)) continue;
-            seenWarnings.add(name);
-            const damaged = msgs.some((x) => /damaged|reconstruct|startxref/i.test(x));
-            problems.push(damaged
-              ? `предупреждение: ${name} повреждён (${msgs[0]}) — qpdf восстановил его при сборке, проверьте пакет глазами`
-              : `предупреждение: ${name}: ${msgs.slice(0, 2).join('; ')}`);
+          return parts;
+        };
+        try {
+          let plan;
+          if (limits.maxBytes || limits.maxPages) {
+            plan = await volumes.splitPlan(rows.length, limits, async (start, count) => {
+              checkCancel(job);
+              return poppler.measure(partsOf(start, count), { tmpDir: config.printTmpDir });
+            });
+          } else plan = [{ start: 0, count: rows.length, oversize: false }];
+          const total = plan.length;
+          for (const [k, part] of plan.entries()) {
+            checkCancel(job);
+            const fileName = total > 1 ? volumes.partName(baseName, k + 1, total) : baseName;
+            const out = path.join(pkgDir, fileName);
+            const { warnings, bytes } = await poppler.assemble(partsOf(part.start, part.count), out, { tmpDir: config.printTmpDir });
+            const slice = rows.slice(part.start, part.start + part.count);
+            slice.forEach((r, idx) => { r.package = fileName; r.packagePage = idx + 1; });
+            packages.push({
+              bucket: g.bucket, file: fileName, pages: slice.length, bytes,
+              carrier: g.carrier, carrierKind: g.carrierKind, carrierBucket: g.carrierBucket, rollWidth: g.rollWidth,
+              cutMm: slice.reduce((s, r) => s + (r.rollWidth ? r.cut : 0), 0),
+              tome: tome ? { fileId: tome.fileId, title: tome.title, name: tome.name } : null,
+              part: total > 1 ? { index: k + 1, total } : null,
+              oversize: !!part.oversize,
+            });
+            if (part.oversize) {
+              const r0 = slice[0];
+              problems.push(`предупреждение: лист ${r0.source} стр.${r0.page} сам по себе больше предела пакета (${mb(bytes)} МБ) — выведен отдельным пакетом «${fileName}»`);
+            }
+            noteWarnings(warnings, files, seenWarnings, problems);
           }
         } catch (err) {
-          problems.push(`Пакет «${bucket}»: ${err.message}`);
+          if (err instanceof Cancelled) throw err;
+          problems.push(`Пакет «${baseName}»: ${err.message}`);
         }
         job.progress.done = i + 1;
       }
@@ -377,14 +433,42 @@ async function runPipeline(job) {
   // 4. Отчёты и сводка
   fs.writeFileSync(path.join(dir, 'records.json'), JSON.stringify(records));
   fs.writeFileSync(path.join(dir, 'report.csv'), formats.toCsv(records));
+  if (byTome) {
+    const map = volumes.assemblyMap(job.tomes, records);
+    fs.writeFileSync(path.join(dir, 'карта_сборки.csv'), volumes.assemblyCsv(map));
+    fs.writeFileSync(path.join(dir, 'карта_сборки.html'), volumes.assemblyHtml(map, { title: `Карта сборки томов · ${job.userName}` }));
+  }
   job.packages = packages;
-  job.summary = formats.summarize(records);
+  job.summary = formats.summarize(records, { tolerance: st.tolerance });
   job.summary.files = files.length;
   job.summary.filesWithProblems = files.filter((f) => f.problem).length;
   job.summary.sourceBytes = files.reduce((s, f) => s + f.size, 0);
   job.summary.packageBytes = packages.reduce((s, p) => s + p.bytes, 0);
+  job.summary.grouping = st.grouping;
+  job.summary.tomes = byTome ? job.tomes.length : 0;
+  job.summary.parts = packages.filter((p) => p.part).length;
   job.progress = { phase: 'done', done: job.progress.total, total: job.progress.total, label: '' };
   job.status = 'done';
+}
+
+/** qpdf пишет имена временных файлов src/<id>.pdf — оператору нужна одна строка с именем исходника. */
+function noteWarnings(warnings, files, seenWarnings, problems) {
+  const byFile = new Map();
+  for (const w of warnings) {
+    const m = /^([^:]+):\s*(.*)$/.exec(w);
+    const base = m ? m[1] : '';
+    const name = (files.find((f) => `${f.id}.pdf` === base) || { name: base || 'файл' }).name;
+    if (!byFile.has(name)) byFile.set(name, []);
+    byFile.get(name).push(m ? m[2] : w);
+  }
+  for (const [name, msgs] of byFile) {
+    if (seenWarnings.has(name)) continue;
+    seenWarnings.add(name);
+    const damaged = msgs.some((x) => /damaged|reconstruct|startxref/i.test(x));
+    problems.push(damaged
+      ? `предупреждение: ${name} повреждён (${msgs[0]}) — qpdf восстановил его при сборке, проверьте пакет глазами`
+      : `предупреждение: ${name}: ${msgs.slice(0, 2).join('; ')}`);
+  }
 }
 
 /* ---------------- результаты ---------------- */
@@ -395,12 +479,23 @@ function records(job) {
 
 function reportCsvPath(job) { return path.join(jobDir(job), 'report.csv'); }
 
+/** Путь файла отчёта по имени из REPORT_FILES; null — такого отчёта у разбора нет. */
+function reportPath(job, name) {
+  const spec = REPORT_FILES[name];
+  if (!spec || job.status !== 'done') return null;
+  const file = { csv: 'report.csv', mapcsv: 'карта_сборки.csv', maphtml: 'карта_сборки.html' }[spec.kind];
+  if (!file) return null;
+  const abs = path.join(jobDir(job), file);
+  return fs.existsSync(abs) ? { abs, kind: spec.kind, name } : null;
+}
+
 function reportJson(job) {
   return {
     generated: now(),
     app: 'Enso-nexus · Разбор PDF по форматам',
     job: job.id, user: job.userName, settings: job.settings,
-    summary: job.summary, packages: job.packages, problems: job.problems,
+    summary: job.summary, packages: job.packages, tomes: job.tomes, problems: job.problems,
+    binding: job.binding, schedule: job.schedule,
     pages: records(job),
   };
 }
@@ -411,6 +506,24 @@ function packagePath(job, fileName) {
   if (!pkg) return null;
   const abs = path.join(jobDir(job), 'packages', pkg.file);
   return fs.existsSync(abs) ? { abs, pkg } : null;
+}
+
+/** Записи ZIP «скачать всё»: пакеты и отчёты, которые есть на диске. */
+function zipEntries(job) {
+  const out = [];
+  for (const p of job.packages || []) {
+    const found = packagePath(job, p.file);
+    if (!found) continue;
+    const st = fs.statSync(found.abs);
+    out.push({ name: p.file, path: found.abs, size: st.size, mtime: st.mtime });
+  }
+  for (const name of Object.keys(REPORT_FILES)) {
+    const r = reportPath(job, name);
+    if (!r) continue;
+    const st = fs.statSync(r.abs);
+    out.push({ name, path: r.abs, size: st.size, mtime: st.mtime });
+  }
+  return out;
 }
 
 /* ---------------- билеты на вкладку ---------------- */
@@ -465,6 +578,7 @@ function sweep(ttlHours = config.printTtlHours) {
         interrupted += 1;
       }
     }
+    // в папке человека живут и его личные принтеры — пустой считается папка без разборов и без них
     if (!fs.readdirSync(udir).length) fs.rmSync(udir, { recursive: true, force: true });
   }
   return { removed, interrupted };
@@ -502,8 +616,8 @@ function httpError(status, message) {
 function mb(bytes) { return Math.round(bytes / 1048576); }
 
 module.exports = {
-  createJob, currentJob, getJob, listJobs, deleteJob, publicView,
+  createJob, currentJob, getJob, listJobs, deleteJob, publicView, save,
   addFile, writeChunk, removeFile, findFile, srcPath,
-  start, cancel, records, reportCsvPath, reportJson, packagePath,
-  issueTicket, jobByTicket, sweep, startSweep, Cancelled,
+  start, cancel, records, reportCsvPath, reportPath, reportJson, packagePath, zipEntries, REPORT_FILES,
+  issueTicket, jobByTicket, sweep, startSweep, Cancelled, jobDir,
 };

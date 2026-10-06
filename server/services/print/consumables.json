@@ -1,0 +1,72 @@
+{
+  "_comment": "Расходники переплёта и коэффициенты складывания модуля «Разбор PDF по форматам» (А6, Б2). Проверяется при загрузке (binding.loadConsumables). Таблицы пружин — у реального поставщика, ссылка и дата рядом; «сверить» означает, что у вашего поставщика цифры могут отличаться.",
+  "paper": {
+    "gsm": 80,
+    "mmPerGsm": 0.00125,
+    "note": "80 г/м² офисная бумага ≈ 0,10 мм; толщина листа = г/м² × 0,00125 мм"
+  },
+  "cover": { "thicknessMm": 0.18, "range": [0.15, 0.2], "note": "прозрачная пластиковая обложка (ПВХ)" },
+  "backing": { "thicknessMm": 0.4, "range": [0.3, 0.5], "note": "подложка — задний картон переплёта" },
+  "insert": { "thicknessMm": 0.4, "enabled": false, "note": "компенсационные вкладыши в корешок под сложенные листы; выключены флагом по умолчанию" },
+  "reservePct": 10,
+  "springs": {
+    "plastic": {
+      "title": "Пластиковая пружина (шаг 9/16″, 21 кольцо на А4)",
+      "source": "https://www.rdmkit.ru/suv/pruzhiny/pruzhiny-dlya-perepleta.html",
+      "fetchedAt": "2026-10-06",
+      "basis": "число листов 80 г/м²; толщина блока = листы × 0,1 мм",
+      "verify": "сверить с каталогом своего поставщика: у Poligrafika (poligrafika.com.ua) 10 мм — до 55 листов, 12 мм — до 80, 14 мм — до 100, 16 мм — до 120, 19 мм — до 150",
+      "table": [
+        { "diameterMm": 4.5, "sheets": 15 }, { "diameterMm": 6, "sheets": 30 }, { "diameterMm": 8, "sheets": 50 },
+        { "diameterMm": 10, "sheets": 70 }, { "diameterMm": 12, "sheets": 90 }, { "diameterMm": 14, "sheets": 110 },
+        { "diameterMm": 16, "sheets": 130 }, { "diameterMm": 19, "sheets": 170 }, { "diameterMm": 22, "sheets": 190 },
+        { "diameterMm": 25, "sheets": 220 }, { "diameterMm": 28, "sheets": 250 }, { "diameterMm": 32, "sheets": 280 },
+        { "diameterMm": 38, "sheets": 340 }, { "diameterMm": 45, "sheets": 410 }, { "diameterMm": 51, "sheets": 480 }
+      ]
+    },
+    "wire31": {
+      "title": "Металлическая пружина, шаг 3:1 (34 отверстия на А4)",
+      "source": "https://www.rdmkit.ru/suv/pruzhiny/pruzhiny-dlya-perepleta.html",
+      "fetchedAt": "2026-10-06",
+      "basis": "число листов 80 г/м² и наибольшая толщина блока, мм — по таблице поставщика",
+      "table": [
+        { "diameterMm": 6.4, "inch": "1/4", "sheets": 30, "blockMm": 4.5 }, { "diameterMm": 7.94, "inch": "5/16", "sheets": 50, "blockMm": 6 },
+        { "diameterMm": 9.52, "inch": "3/8", "sheets": 60, "blockMm": 7.5 }, { "diameterMm": 11.11, "inch": "7/16", "sheets": 80, "blockMm": 9 },
+        { "diameterMm": 12.7, "inch": "1/2", "sheets": 100, "blockMm": 10.5 }, { "diameterMm": 14.28, "inch": "9/16", "sheets": 120, "blockMm": 12 }
+      ]
+    },
+    "wire21": {
+      "title": "Металлическая пружина, шаг 2:1 (23 отверстия на А4)",
+      "source": "https://www.rdmkit.ru/suv/pruzhiny/pruzhiny-dlya-perepleta.html",
+      "fetchedAt": "2026-10-06",
+      "basis": "число листов 80 г/м² и наибольшая толщина блока, мм — по таблице поставщика",
+      "table": [
+        { "diameterMm": 12.7, "inch": "1/2", "sheets": 100, "blockMm": 10.5 }, { "diameterMm": 14.28, "inch": "9/16", "sheets": 120, "blockMm": 12 },
+        { "diameterMm": 16, "inch": "5/8", "sheets": 135, "blockMm": 13.5 }, { "diameterMm": 19, "inch": "3/4", "sheets": 160, "blockMm": 16 },
+        { "diameterMm": 22, "inch": "7/8", "sheets": 190, "blockMm": 19 }, { "diameterMm": 25.4, "inch": "1", "sheets": 220, "blockMm": 22 },
+        { "diameterMm": 28.5, "inch": "1 1/8", "sheets": 250, "blockMm": 25 }, { "diameterMm": 32, "inch": "1 1/4", "sheets": 280, "blockMm": 28 }
+      ]
+    },
+    "thermo": {
+      "title": "Термопереплёт (клеевой корешок)",
+      "source": "",
+      "fetchedAt": "",
+      "basis": "ориентировочно: папки термопереплёта выпускаются до 50 мм корешка — сверить с поставщиком",
+      "verify": "сверить",
+      "table": [
+        { "diameterMm": 1.5, "sheets": 15 }, { "diameterMm": 3, "sheets": 30 }, { "diameterMm": 6, "sheets": 60 },
+        { "diameterMm": 9, "sheets": 90 }, { "diameterMm": 12, "sheets": 120 }, { "diameterMm": 15, "sheets": 150 },
+        { "diameterMm": 20, "sheets": 200 }, { "diameterMm": 25, "sheets": 250 }, { "diameterMm": 30, "sheets": 300 },
+        { "diameterMm": 40, "sheets": 400 }, { "diameterMm": 50, "sheets": 500 }
+      ]
+    }
+  },
+  "fold": {
+    "default": "gost",
+    "presets": {
+      "gost": { "title": "ГОСТ 2.501-2013, табл. Г.2 (расчёт по схеме)", "table": {} },
+      "owner": { "title": "Таблица владельца", "table": { "А3": 3, "А2": 7, "А1": 11, "А0": 23 } },
+      "estimate": { "title": "Прикидка без загиба", "table": { "А3": 3, "А2": 6, "А1": 10, "А0": 21 } }
+    }
+  }
+}

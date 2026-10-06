@@ -149,7 +149,9 @@ test('допуск и порядок проверки: за пределом д�
 test('настройки прогона: дефолты, строки-флаги, отказ на кривых значениях', () => {
   assert.deepStrictEqual(formats.normalizeSettings({}), formats.defaults());
   const st = formats.normalizeSettings({ tolerance: '2.5', box: 'media', scanOnly: 'true', plusOwn: false, plusRolls: 1 });
-  assert.deepStrictEqual(st, { tolerance: 2.5, box: 'media', scanOnly: true, multiplesOwn: false, plusOwn: false, plusRolls: true });
+  assert.deepStrictEqual(st, { tolerance: 2.5, box: 'media', scanOnly: true, multiplesOwn: false, plusOwn: false, plusRolls: true, grouping: 'buckets', maxPackageMb: 0, maxPackagePages: 0 });
+  assert.throws(() => formats.normalizeSettings({ grouping: 'files' }), /buckets|tomes/);
+  assert.throws(() => formats.normalizeSettings({ maxPackageMb: -1 }), /0 \(без предела\)/);
   assert.throws(() => formats.normalizeSettings({ tolerance: 50 }), /0 до 20/);
   assert.throws(() => formats.normalizeSettings({ box: 'bleed' }), /crop, media, trim или art/);
 });
@@ -478,7 +480,8 @@ test('страница print.html — отдельная вкладка: вхо�
   assert.match(html, /print\.js\?v=\d+/);
   assert.match(html, /print\.css\?v=\d+/);
   assert.ok(!/shell\.js/.test(html), 'вкладка живёт вне каркаса проектов, как виртуальный офис');
-  for (const id of ['pr-dz', 'pr-input-dir', 'pr-tol', 'pr-box', 'pr-scan', 'pr-mult', 'pr-plus', 'pr-plus-rolls', 'pr-run', 'pr-buckets', 'pr-rolls', 'pr-csv', 'pr-json']) {
+  for (const id of ['pr-dz', 'pr-input-dir', 'pr-tol', 'pr-box', 'pr-scan', 'pr-mult', 'pr-plus', 'pr-plus-rolls', 'pr-grouping', 'pr-max-mb', 'pr-max-pages',
+    'pr-run', 'pr-buckets', 'pr-rolls', 'pr-downloads', 'pr-totals', 'pr-tomes-card', 'bd-run', 'sc-run', 'pk-toggle', 'tc-run']) {
     assert.ok(html.includes(`id="${id}"`), `нет элемента ${id}`);
   }
   const styles = /styles\.css\?v=(\d+)/.exec(fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8'))[1];
