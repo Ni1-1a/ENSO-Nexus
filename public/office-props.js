@@ -37,7 +37,8 @@ export const MAT = {
   leaf: () => std(0x3e7a4a, { roughness: 0.7, side: THREE.DoubleSide }),
   leafDark: () => std(0x2f5f3a, { roughness: 0.75, side: THREE.DoubleSide }),
   pot: () => std(0xefe9dd, { roughness: 0.6 }),
-  glass: () => new THREE.MeshPhysicalMaterial({ color: 0xdfe9ee, transmission: 0.55, roughness: 0.08, thickness: 0.02, transparent: true, opacity: 0.55 }),
+  // без transmission: один прозрачный материал в кадре заставляет three.js рисовать всю сцену второй раз (В3)
+  glass: () => new THREE.MeshPhysicalMaterial({ color: 0xdfe9ee, roughness: 0.08, transparent: true, opacity: 0.4, depthWrite: false }),
 };
 
 /**
@@ -113,6 +114,7 @@ export function tiled(texture, widthM, heightM, px = 512, size = 1024) {
  */
 export function makeDeskPod() {
   const g = new THREE.Group();
+  g.name = 'стол';
   const top = new THREE.Mesh(new RoundedBoxGeometry(1.7, 0.05, 0.9, 4, 0.03), MAT.whiteGloss());
   top.position.y = 0.745;
   top.castShadow = true; top.receiveShadow = true;
@@ -156,6 +158,7 @@ export function makeDeskPod() {
 
 export function makeMonitor({ texture = null, off = 0x0e1218 } = {}) {
   const g = new THREE.Group();
+  g.name = 'монитор';
   const R = 0.8;
   const arc = 1.08;
   // корпус
@@ -215,6 +218,7 @@ const KEY_ROWS = [
 
 export function makeKeyboard() {
   const g = new THREE.Group();
+  g.name = 'клавиатура';
   const w = 0.43, d = 0.135;
   const slab = new THREE.Mesh(new RoundedBoxGeometry(w, 0.012, d, 2, 0.004), MAT.graphite());
   slab.position.y = 0.006;
@@ -248,6 +252,7 @@ export function makeKeyboard() {
 
 export function makeMouse() {
   const g = new THREE.Group();
+  g.name = 'мышь';
   const body = new THREE.Mesh(new THREE.SphereGeometry(0.036, 18, 14), MAT.graphite());
   body.scale.set(0.9, 0.55, 1.5);
   body.position.y = 0.02;
@@ -267,6 +272,7 @@ export function makeMouse() {
 
 export function makeChair() {
   const g = new THREE.Group();
+  g.name = 'кресло';
   const shellMat = MAT.whiteGloss();
   const seat = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.07, 0.48, 3, 0.03), shellMat);
   seat.position.y = 0.46;
@@ -318,6 +324,7 @@ export function makeChair() {
 
 export function makeMug(ringColor = 0xb95740) {
   const g = new THREE.Group();
+  g.name = 'кружка';
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.034, 0.095, 18, 1, true), std(0xfaf7f0, { side: THREE.DoubleSide, roughness: 0.35 }));
   cup.position.y = 0.0475;
   g.add(cup);
@@ -339,6 +346,7 @@ export function makeMug(ringColor = 0xb95740) {
 
 export function makeNotebook(color = 0xb95740) {
   const g = new THREE.Group();
+  g.name = 'блокнот';
   const book = new THREE.Mesh(new RoundedBoxGeometry(0.15, 0.014, 0.21, 2, 0.004), std(color, { roughness: 0.7 }));
   book.position.y = 0.007;
   g.add(book);
@@ -361,6 +369,7 @@ export function makeNotebook(color = 0xb95740) {
 
 export function makePen() {
   const g = new THREE.Group();
+  g.name = 'ручка';
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.0045, 0.0045, 0.14, 8), MAT.blackGloss());
   body.rotation.z = Math.PI / 2;
   g.add(body);
@@ -376,6 +385,7 @@ export function makePen() {
 /** Perfect Pencil: карандаш с серебряным колпачком-удлинителем */
 export function makePerfectPencil() {
   const g = new THREE.Group();
+  g.name = 'карандаш';
   const wood = new THREE.Mesh(new THREE.CylinderGeometry(0.0038, 0.0038, 0.1, 6), std(0x8b5a2b));
   wood.rotation.z = Math.PI / 2;
   g.add(wood);
@@ -390,6 +400,7 @@ export function makePerfectPencil() {
 
 export function makePhone() {
   const g = new THREE.Group();
+  g.name = 'телефон';
   const body = new THREE.Mesh(new RoundedBoxGeometry(0.07, 0.008, 0.145, 2, 0.006), MAT.blackGloss());
   body.position.y = 0.004;
   g.add(body);
@@ -420,13 +431,15 @@ function leafShape(len, wid, holes = false) {
 /** монстера в белом горшке; листья — ShapeGeometry с прорезями */
 export function makeMonstera(scale = 1) {
   const g = new THREE.Group();
+  g.name = 'монстера';
   const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.17, 0.42, 24), MAT.pot());
   pot.position.y = 0.21;
-  pot.castShadow = true;
+  pot.castShadow = true; pot.userData.pot = true;
   g.add(pot);
   const soil = new THREE.Mesh(new THREE.CircleGeometry(0.2, 24), std(0x3a2b1f, { roughness: 1 }));
-  soil.rotation.x = -Math.PI / 2; soil.position.y = 0.41;
+  soil.rotation.x = -Math.PI / 2; soil.position.y = 0.41; soil.userData.pot = true;
   g.add(soil);
+  g.userData.potTop = 0.42;
   const leaves = new THREE.Group();
   const geo = new THREE.ShapeGeometry(leafShape(0.42, 0.17, true), 12);
   /*
@@ -457,19 +470,20 @@ export function makeMonstera(scale = 1) {
   g.add(leaves);
   g.userData.leaves = leaves;
   g.scale.setScalar(scale);
-  g.userData.dynamic = true;
-  finishPlant(g, 0.05);
+  finishPlant(g, 0.05);   // dynamic — только на кроне: горшок и грунт склеиваются глобально (В3)
   return g;
 }
 
 /** фикус: изогнутый ствол и крона из 60 инстансов-икосаэдров трёх оттенков */
 export function makeFicus(scale = 1) {
   const g = new THREE.Group();
+  g.name = 'фикус';
   const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.15, 0.36, 20), new THREE.MeshPhysicalMaterial({ color: 0xf3efe6, roughness: 0.5, clearcoat: 0.5 }));
-  pot.position.y = 0.18;
+  pot.position.y = 0.18; pot.userData.pot = true;
   g.add(pot);
   const band = new THREE.Mesh(new THREE.CylinderGeometry(0.192, 0.192, 0.03, 20), std(0xb95740));
-  band.position.y = 0.3; g.add(band);
+  band.position.y = 0.3; band.userData.pot = true; g.add(band);
+  g.userData.potTop = 0.36;
   const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0.34, 0), new THREE.Vector3(0.04, 0.7, 0.02), new THREE.Vector3(-0.03, 1.0, -0.03), new THREE.Vector3(0.02, 1.25, 0.02)]);
   const trunk = new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.025, 7, false), std(0x6b4a33, { roughness: 0.9 }));
   g.add(trunk);
@@ -489,14 +503,19 @@ export function makeFicus(scale = 1) {
   inst.userData.keep = true;
   g.add(inst);
   g.scale.setScalar(scale);
-  g.userData.sway = { phase: Math.random() * 6, amp: 0.02 };
-  g.userData.dynamic = true;
+  // качается крона над горшком, не горшок (см. finishPlant)
+  const crown = new THREE.Group(); crown.name = 'крона'; crown.position.y = g.userData.potTop;
+  for (const c of [...g.children]) { if (c.userData.pot) continue; g.remove(c); c.position.y -= g.userData.potTop; crown.add(c); }
+  g.add(crown);
+  crown.userData.sway = { phase: Math.random() * 6, amp: 0.02 };
+  crown.userData.dynamic = true;
   return g;
 }
 
 /** свисающий потос для перил галереи */
 export function makeTrailingPlant(length = 1.2) {
   const g = new THREE.Group();
+  g.name = 'ампельное растение';
   const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.16, 16), MAT.pot());
   g.add(pot);
   const geo = new THREE.ShapeGeometry(leafShape(0.09, 0.05), 6);
@@ -526,8 +545,22 @@ function finishPlant(g, amp) {
   g.traverse((m) => { delete m.userData.sway; });
   mergeStatic(g);
   g.traverse((m) => { if (m.isMesh) m.userData.keep = true; });
-  g.userData.sway = { phase: Math.random() * 6, amp };
-  g.userData.dynamic = true;
+  /*
+   * Качается КРОНА, а не горшок: наклон всей группы на 0,02 рад опускал кромку
+   * горшка на 5–12 мм под пол (аудит В1, круг 3). Всё, кроме горшка и грунта,
+   * переезжает в подгруппу с осью на верхе горшка; sway висит на ней.
+   */
+  const crown = new THREE.Group();
+  crown.name = 'крона';
+  const potTop = g.userData.potTop || 0;
+  crown.position.y = potTop;
+  for (const c of [...g.children]) {
+    if (c.userData.pot) continue;
+    g.remove(c); c.position.y -= potTop; crown.add(c);
+  }
+  g.add(crown);
+  crown.userData.sway = { phase: Math.random() * 6, amp };
+  crown.userData.dynamic = true;
   return g;
 }
 
@@ -544,9 +577,10 @@ export function makeContactShadow(w, d, opacity = 0.35) {
     }).texture;
   }
   const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ map: _shadowTex, transparent: true, opacity, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
+  m.name = 'контактная тень';
   m.rotation.x = -Math.PI / 2;
   m.position.y = 0.006;
-  m.userData.keep = true;
+  // keep не ставится: в склейке стола тень и так не участвует (у неё map), а глобальная склейка (В3) собирает все тени в один меш
   return m;
 }
 
@@ -723,7 +757,7 @@ export function makePoster({ width = 0.8, draw, frame = 'red', pickInfo = null }
   const back = new THREE.Mesh(new THREE.PlaneGeometry(width + t * 2, height + t * 2), std(0x111111));
   back.position.z = -0.016;   // 6 мм за тыльной гранью брусков: в одной плоскости они мерцали
   g.add(back);
-  if (pickInfo) g.traverse((m) => { m.userData.pick = pickInfo; });
+  if (pickInfo) { g.traverse((m) => { m.userData.pick = pickInfo; }); g.userData.pickProxy = true; }   // канва с картинкой остаётся отдельным мешем и ловит клик, рама склеивается (В3)
   air(g, 'постер');            // картина в раме висит на стене по замыслу
   return g;
 }
@@ -734,8 +768,10 @@ export function makePoster({ width = 0.8, draw, frame = 'red', pickInfo = null }
  * регулировкой по высоте. Заменяет прежний монитор 32:9 (правка владельца
  * 10.09.2026).
  */
+let _latticeTex = null;
 export function makeProDisplayXDR({ texture = null } = {}) {
   const g = new THREE.Group();
+  g.name = 'Pro Display XDR';
   const alu = std(0xd9dade, { roughness: 0.32, metalness: 0.85 });
   const W = 0.718, H = 0.410, T = 0.027;
   const SCREEN_Y = 0.395;                      // центр экрана над столешницей
@@ -745,8 +781,8 @@ export function makeProDisplayXDR({ texture = null } = {}) {
   body.position.set(0, SCREEN_Y, 0);
   body.castShadow = true;
   g.add(body);
-  // решётка охлаждения на тыльной стороне
-  const lattice = canvasTexture(256, 152, (c, w, h) => {
+  // решётка охлаждения на тыльной стороне — ОДНА текстура на все мониторы: тогда их тыльные плоскости склеиваются в один меш (В3)
+  if (!_latticeTex) _latticeTex = canvasTexture(256, 152, (c, w, h) => {
     c.fillStyle = '#c9cace'; c.fillRect(0, 0, w, h);
     c.fillStyle = '#8f9195';
     const step = 13;
@@ -756,6 +792,7 @@ export function makeProDisplayXDR({ texture = null } = {}) {
       }
     }
   }).texture;
+  const lattice = _latticeTex;
   const back = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.03, H - 0.03), new THREE.MeshStandardMaterial({ map: lattice, roughness: 0.5, metalness: 0.4 }));
   back.position.set(0, SCREEN_Y, T / 2 + 0.001);
   back.rotation.y = Math.PI;
@@ -803,6 +840,7 @@ export function makeProDisplayXDR({ texture = null } = {}) {
  */
 export function makeMacStudio() {
   const g = new THREE.Group();
+  g.name = 'Mac Studio';
   const alu = std(0xd2d4d8, { roughness: 0.34, metalness: 0.85 });
   const S = 0.197, Hh = 0.095;
   const body = new THREE.Mesh(new RoundedBoxGeometry(S, Hh, S, 4, 0.012), alu);
@@ -844,12 +882,15 @@ export function makeMacStudio() {
  */
 export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, polo = 0xb95740, trousers = 0x2b2622, female = false, standing = false, hairStyle = null } = {}) {
   const g = new THREE.Group();
+  g.name = 'человек';
   const skinMat = std(skin, { roughness: 0.65 });
   const poloMat = new THREE.MeshPhysicalMaterial({ color: polo, roughness: 0.85, sheen: 0.6, sheenColor: new THREE.Color(0xe8a58c), sheenRoughness: 0.8 });
   const pantMat = std(trousers, { roughness: 0.85 });
 
   const hips = new THREE.Group();
-  hips.position.y = standing ? 0.92 : 0.53;   // таз на кромке сиденья (0.52)
+  // стоящий: подошва ровно на полу (аудит ловил 20 мм воздуха под ходоками); сидящий: таз на кромке сиденья (0.52)
+  // сидящий 0.535: при 0.53 и голени под 0,05 рад подошва уходила в пол на 5–9 мм (аудит В1)
+  hips.position.y = standing ? 0.90 : 0.535;
   g.add(hips);
 
   // торс
@@ -1032,7 +1073,7 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
      * 100 мм выше стола — руки висели в воздухе.
      */
     legL.hip.rotation.x = Math.PI / 2 - 0.15; legR.hip.rotation.x = Math.PI / 2 - 0.15;
-    legL.knee.rotation.x = -Math.PI / 2 + 0.2; legR.knee.rotation.x = -Math.PI / 2 + 0.2;
+    legL.knee.rotation.x = -Math.PI / 2 + 0.15; legR.knee.rotation.x = -Math.PI / 2 + 0.15;   // голень вертикально: бедро на π/2−0.15, колено возвращает ровно столько же
     armL.shoulder.rotation.x = 0.52; armR.shoulder.rotation.x = 0.52;
     armL.elbow.rotation.x = 0.86; armR.elbow.rotation.x = 0.86;
   }
@@ -1052,7 +1093,20 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
   };
 
   g.userData.dynamic = true;      // склейке не подлежит: всё это двигается
-  return { group: g, hips, head, torso, armL, armR, legL, legR, face, phase: Math.random() * Math.PI * 2, standing };
+  /*
+   * В3. Дальше 14 м человек показывается СЛЕПКОМ позы: клон рига, склеенный
+   * по материалам (6–8 мешей вместо 37). Ближний уровень — живой риг.
+   * Слепок помечен auditSkip: аудит видит одного человека, а не двоих.
+   */
+  const far = bakeFar(g);
+  far.name = 'человек · вдали';
+  far.userData.auditSkip = true;
+  far.traverse((m) => { m.userData.keep = true; });
+  const lod = new THREE.LOD();
+  lod.addLevel(g, 0);
+  lod.addLevel(far, 14);
+  lod.userData.dynamic = true;
+  return { group: lod, hips, head, torso, armL, armR, legL, legR, face, phase: Math.random() * Math.PI * 2, standing };
 }
 
 
@@ -1063,15 +1117,17 @@ export function makePerson({ skin = 0xe8c39e, hair = 0x3a2a20, glasses = false, 
  * креслом и мелочами превращается из ~40 вызовов отрисовки в 6–8.
  * Пропускает InstancedMesh, канвы-экраны и всё с userData.keep.
  */
-export function mergeStatic(group) {
+export function mergeStatic(group, { force = false } = {}) {
+  // аудит сцены (В1) смотрит предметы по отдельности: со склейкой часть предмета теряет имя и опору
+  if (window.__officeNoMerge) return;
   group.updateMatrixWorld(true);
   const inv = new THREE.Matrix4().copy(group.matrixWorld).invert();
   const byMat = new Map();
   const remove = [];
-  /** ветка, помеченная dynamic, не склеивается: она двигается в кадре */
-  const isDynamic = (o) => { let p = o; while (p && p !== group) { if (p.userData && p.userData.dynamic) return true; p = p.parent; } return false; };
+  /** ветка, помеченная dynamic, не склеивается: она двигается в кадре (force — слепок для LOD, склеивается всё) */
+  const isDynamic = (o) => { if (force) return false; let p = o; while (p && p !== group) { if (p.userData && p.userData.dynamic) return true; p = p.parent; } return false; };
   group.traverse((m) => {
-    if (!m.isMesh || m.isInstancedMesh || m.userData.keep || (m.material && m.material.map) || Array.isArray(m.material)) return;
+    if (!m.isMesh || m.isInstancedMesh || m.userData.keep || m.userData.pickProxy || (m.material && m.material.map) || Array.isArray(m.material)) return;
     if (isDynamic(m)) return;
     // ключ — по свойствам материала, а не по uuid: каждый предмет создаёт свой
     // экземпляр, и по uuid ничего бы не склеилось
@@ -1103,4 +1159,145 @@ export function mergeStatic(group) {
     group.add(mesh);
   }
   return group;
+}
+
+
+/* ---------- глобальная склейка статики (В3) ---------- */
+
+const _imageIds = new WeakMap();
+let _imageSeq = 0;
+function imageId(img) {
+  if (!img) return 'none';
+  if (!_imageIds.has(img)) _imageIds.set(img, ++_imageSeq);
+  return `${_imageIds.get(img)}`;
+}
+
+/**
+ * Склейка ВСЕЙ неподвижной геометрии сцены по ключу материала (и корзине —
+ * этаж или комната), поверх склейки по группам. В вестибюле было 1834 вызова
+ * отрисовки без transmission: 24 стола давали по 21 мешу на одни и те же
+ * материалы, 104 контактные тени — по вызову каждая.
+ *
+ * Не склеивается: InstancedMesh, спрайты, прозрачное (кроме контактных
+ * теней), BackSide (небо), renderOrder ≠ 0, скрытое, всё под dynamic / keep /
+ * auditSkip / LOD, и предметы с userData.pick — кроме тех, у чьего корня стоит
+ * pickProxy (невидимый короб для луча клика). Текстуры с repeat/offset (P.tiled)
+ * сводятся к одной канонической на картинку, повтор запекается в UV.
+ */
+export function mergeWorldStatic(scene, { bucketOf = null } = {}) {
+  if (window.__officeNoMerge) return null;
+  scene.updateMatrixWorld(true);
+  const skipped = (o) => {
+    let p = o, proxied = false;
+    while (p && p !== scene) {
+      const u = p.userData || {};
+      if (u.dynamic || u.keep || u.auditSkip || p.isLOD) return true;
+      if (u.pickProxy) proxied = true;
+      p = p.parent;
+    }
+    return !!(o.userData.pick && !proxied);
+  };
+  const list = [];
+  scene.traverse((o) => {
+    if (!o.isMesh || o.isInstancedMesh || o.isSprite || o.isPoints || o.isLine) return;
+    if (!o.visible || o.renderOrder !== 0 || o.frustumCulled === false) return;
+    const m = o.material;
+    if (!m || Array.isArray(m) || m.side === THREE.BackSide) return;
+    if (m.transparent && o.name !== 'контактная тень') return;
+    if (skipped(o)) return;
+    list.push(o);
+  });
+  const canon = new Map();
+  const groups = new Map();
+  const box = new THREE.Box3();
+  for (const o of list) {
+    const m = o.material;
+    let mapKey = '-', bake = null, canonTex = null;
+    if (m.map) {
+      const t = m.map;
+      if (t.repeat.x !== 1 || t.repeat.y !== 1 || t.offset.x !== 0 || t.offset.y !== 0) {
+        const ik = ['img', imageId(t.image), t.wrapS, t.wrapT, t.anisotropy, t.colorSpace, t.flipY].join('|');
+        if (!canon.has(ik)) { const c = t.clone(); c.repeat.set(1, 1); c.offset.set(0, 0); c.needsUpdate = true; canon.set(ik, c); }
+        mapKey = ik; bake = t; canonTex = canon.get(ik);
+      } else mapKey = `tex|${t.uuid}`;
+    }
+    const key = [m.type, m.color && m.color.getHex(), m.roughness, m.metalness, m.side, m.transparent, m.opacity,
+      m.emissive && m.emissive.getHex(), m.emissiveIntensity, m.flatShading, m.depthWrite, m.polygonOffset, m.polygonOffsetFactor,
+      m.clearcoat, m.sheen, m.envMapIntensity, m.toneMapped, m.blending, m.alphaTest, m.vertexColors, mapKey].join('|');
+    box.setFromObject(o);
+    const cy = (box.min.y + box.max.y) / 2;
+    const bucket = bucketOf ? bucketOf(o, cy) : (cy >= 3.9 ? 'этаж 2' : 'этаж 1');
+    const gk = `${bucket}§${key}`;
+    if (!groups.has(gk)) {
+      let material = m;
+      if (canonTex) { material = m.clone(); material.map = canonTex; material.needsUpdate = true; }
+      groups.set(gk, { material, geos: [], meshes: [], bucket });
+    }
+    const grp = groups.get(gk);
+    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
+    if (!g.attributes.normal) g.computeVertexNormals();
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+    if (bake) {
+      const uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * bake.repeat.x + bake.offset.x, uv.getY(i) * bake.repeat.y + bake.offset.y);
+    }
+    g.applyMatrix4(o.matrixWorld);
+    grp.geos.push(g); grp.meshes.push(o);
+  }
+  let made = 0, removed = 0;
+  const buckets = new Set();
+  for (const { material, geos, meshes, bucket } of groups.values()) {
+    if (meshes.length < 2) continue;
+    let merged = null;
+    try { merged = mergeGeometries(geos, false); } catch (e) { merged = null; }
+    if (!merged) { console.warn('[office] глобальная склейка не удалась', bucket, material.type); continue; }
+    for (const m of meshes) { if (m.parent) m.parent.remove(m); removed += 1; }
+    const mesh = new THREE.Mesh(merged, material);
+    mesh.name = `склейка · ${bucket}`;
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.userData.merged = true; mesh.userData.auditSkip = true; mesh.userData.zone = 'furnishing';
+    scene.add(mesh); made += 1; buckets.add(bucket);
+  }
+  console.info(`[office] склейка статики: ${removed} мешей → ${made} в ${buckets.size} корзинах (кандидатов ${list.length})`);
+  return { removed, made, buckets: [...buckets] };
+}
+
+
+/**
+ * Слепок группы ОДНИМ мешем: цвет каждого материала запекается в цвета
+ * вершин, геометрии складываются в мировых координатах группы. Для людей
+ * вдали (В3): 37 мешей → 1, без потери силуэта и раскраски.
+ */
+export function bakeFar(group) {
+  group.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(group.matrixWorld).invert();
+  const geos = [];
+  const col = new THREE.Color();
+  group.traverse((m) => {
+    if (!m.isMesh || m.isInstancedMesh || !m.visible || Array.isArray(m.material)) return;
+    let p = m; while (p && p !== group) { if (!p.visible) return; p = p.parent; }
+    const mt = m.material;
+    if (mt.transparent && mt.opacity < 0.5) return;
+    let g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+    for (const k of Object.keys(g.attributes)) if (!['position', 'normal'].includes(k)) g.deleteAttribute(k);
+    if (!g.attributes.normal) g.computeVertexNormals();
+    g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld));
+    col.copy(mt.color || new THREE.Color(0x888888));
+    if (mt.emissive && mt.emissiveIntensity > 0.5) col.lerp(mt.emissive, 0.5);
+    const n = g.attributes.position.count;
+    const colors = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geos.push(g);
+  });
+  const out = new THREE.Group();
+  if (!geos.length) return out;
+  let merged = null;
+  try { merged = mergeGeometries(geos, false); } catch (e) { merged = null; }
+  if (!merged) { console.warn('[office] слепок не собрался'); return group.clone(true); }
+  const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.0 }));
+  mesh.castShadow = true;
+  out.add(mesh);
+  return out;
 }

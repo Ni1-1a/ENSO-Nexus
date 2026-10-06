@@ -452,3 +452,28 @@ test('офис: рабочие места смотрят в атриум, про
   const lobby = P.FLOOR1.find((s) => s.id === 'lobby');
   assert.ok(!/гардероб/i.test(lobby.sub), 'гардероб убран из подписи вестибюля');
 });
+
+/*
+ * Аудит сцены (В1): ноль парящих, пересечений и нарушений экстерьера во всех
+ * зонах, кроме перечисленного в office-audit-exceptions.mjs с причиной.
+ * Сцена собирается в безголовом Chromium (SwiftShader) около двух минут;
+ * без браузера Playwright тест пропускается, OFFICE_AUDIT=0 — выключает.
+ */
+test('офис: аудит сцены — ни одного дефекта вне списка исключений', { timeout: 420000 }, async (t) => {
+  if (process.env.OFFICE_AUDIT === '0') { t.skip('OFFICE_AUDIT=0'); return; }
+  let pw;
+  try { pw = require('playwright'); } catch { t.skip('playwright не установлен'); return; }
+  try { const b = await pw.chromium.launch({ headless: true }); await b.close(); } catch (err) { t.skip(`браузер Chromium недоступен: ${err.message.split('\n')[0]}`); return; }
+  const { runAudit, ZONES } = require('../scripts/office-audit.js');
+  const r = await runAudit(base, { timeoutMs: 360000 });
+  assert.deepStrictEqual(r.errors, [], 'страница офиса без ошибок');
+  for (const z of [...ZONES, 'unzoned']) {
+    const v = r.zones[z];
+    if (!v) continue;
+    const show = (list) => list.slice(0, 5).map((x) => JSON.stringify(x)).join('\n');
+    assert.strictEqual(v.floating.length, 0, `[${z}] парящих ${v.floating.length}:\n${show(v.floating)}`);
+    assert.strictEqual(v.overlaps.length, 0, `[${z}] пересечений ${v.overlaps.length}:\n${show(v.overlaps)}`);
+    assert.strictEqual(v.exterior.length, 0, `[${z}] экстерьер ${v.exterior.length}:\n${show(v.exterior)}`);
+  }
+  assert.strictEqual(r.total, 0);
+});

@@ -71,4 +71,30 @@ router.get('/doc-thumb/:fileId', optionalUser, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * В3: результаты бенчмарка кадров с клиента (`?bench=1`, Safari без
+ * автоматизации). Хранятся в data/office-perf.json, последние 50 прогонов;
+ * тело — только числа и короткие строки, ничего не исполняется.
+ */
+const fs = require('fs');
+const path = require('path');
+const config = require('../config');
+const PERF_FILE = () => path.join(config.dataDir, 'office-perf.json');
+function readPerf() { try { return JSON.parse(fs.readFileSync(PERF_FILE(), 'utf8')); } catch { return []; } }
+router.post('/perf', express.json({ limit: '256kb' }), (req, res) => {
+  const b = req.body || {};
+  if (!Array.isArray(b.points) || !b.points.length || b.points.length > 50) return res.status(400).json({ error: 'нужен список точек маршрута' });
+  const clean = {
+    at: new Date().toISOString(), ua: String(b.ua || '').slice(0, 200), screen: Array.isArray(b.screen) ? b.screen.slice(0, 3).map(Number) : [],
+    visible: b.visible === true, href: String(b.href || '').slice(0, 200), seconds: Number(b.seconds) || 0,
+    worstFpsP95: Number(b.worstFpsP95) || 0, maxDrawCalls: Number(b.maxDrawCalls) || 0,
+    points: b.points.map((p) => ({ id: String(p.id || '').slice(0, 40), fps: Number(p.fps) || 0, fpsP95: Number(p.fpsP95) || 0, msP50: Number(p.msP50) || 0, msP95: Number(p.msP95) || 0, drawCalls: Number(p.drawCalls) || 0, triangles: Number(p.triangles) || 0, textureMB: Number(p.textureMB) || 0 })),
+  };
+  const list = readPerf().concat([clean]).slice(-50);
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  fs.writeFileSync(PERF_FILE(), JSON.stringify(list, null, 1));
+  res.json({ ok: true, stored: list.length });
+});
+router.get('/perf', (req, res) => { res.json({ runs: readPerf() }); });
+
 module.exports = { router };

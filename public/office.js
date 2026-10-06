@@ -5,8 +5,8 @@
  * Сцена — office-scene.js, игры — office-games.js.
  */
 
-import { OfficeScene } from './office-scene.js?v=9';
-import { RubikApp, ChessApp, GoApp } from './office-games.js?v=9';
+import { OfficeScene } from './office-scene.js?v=11';
+import { RubikApp, ChessApp, GoApp } from './office-games.js?v=11';
 
 const $ = (id) => document.getElementById(id);
 const D = window.OfficeData;
@@ -19,6 +19,9 @@ function userFirstName() {
 }
 
 /* ---------------- состояние ---------------- */
+
+// ?nomerge=1 — сцена без склейки статики: так аудит видит каждый предмет (scripts/office-audit.js)
+window.__officeNoMerge = new URLSearchParams(location.search).get('nomerge') === '1';
 
 const state = {
   token: '', user: null,
@@ -894,6 +897,8 @@ async function main() {
   const tick = () => {
     const now = performance.now();
     const dt = Math.min(0.05, (now - last) / 1000);
+    // В3: время кадра и число вызовов отрисовки — кольцевой буфер на 600 кадров
+    perf.push(now - last);
     last = now;
     if (state.paused) { requestAnimationFrame(frame); return; }
     state.scene.update(dt);
@@ -1014,8 +1019,90 @@ function handlePick(info) {
   }
 }
 
+/* ---------------- В3: замер кадра ---------------- */
+const perf = {
+  buf: new Float32Array(600), i: 0, n: 0,
+  push(ms) { this.buf[this.i] = ms; this.i = (this.i + 1) % this.buf.length; if (this.n < this.buf.length) this.n += 1; },
+  reset() { this.i = 0; this.n = 0; },
+  stats() {
+    const a = Array.from(this.buf.subarray(0, this.n)).filter((x) => x > 0).sort((p, q) => p - q);
+    if (!a.length) return null;
+    const q = (k) => a[Math.min(a.length - 1, Math.floor(a.length * k))];
+    const mean = a.reduce((s, x) => s + x, 0) / a.length;
+    return { frames: a.length, msMean: +mean.toFixed(2), msP50: +q(0.5).toFixed(2), msP95: +q(0.95).toFixed(2), msMax: +a[a.length - 1].toFixed(1), fps: +(1000 / mean).toFixed(1), fpsP95: +(1000 / q(0.95)).toFixed(1) };
+  },
+};
+/**
+ * `__office.perf()` — кадры за последние ~600 кадров (p50/p95 времени кадра,
+ * fps), вызовы отрисовки, треугольники и память текстур по renderer.info.
+ * В скрытой вкладке и в безголовом режиме rAF стоит или душится — цифры там
+ * недействительны, мерить только в видимом окне.
+ */
+function perfSnapshot() {
+  const r = state.scene && state.scene.renderer;
+  const info = r ? r.info : null;
+  const stats = perf.stats() || {};
+  let texBytes = 0;
+  if (state.scene) state.scene.scene.traverse((o) => {
+    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of mats) for (const k of ['map', 'emissiveMap', 'normalMap', 'roughnessMap', 'alphaMap', 'bumpMap']) {
+      const t = m[k];
+      if (t && t.image && t.image.width && !t.userData.__counted) { t.userData.__counted = true; texBytes += t.image.width * t.image.height * 4; }
+    }
+  });
+  if (state.scene) state.scene.scene.traverse((o) => { const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; for (const m of mats) for (const k of ['map', 'emissiveMap', 'normalMap', 'roughnessMap', 'alphaMap', 'bumpMap']) { if (m[k] && m[k].userData) delete m[k].userData.__counted; } });
+  return {
+    ...stats,
+    drawCalls: info ? info.render.calls : null, triangles: info ? info.render.triangles : null,
+    geometries: info ? info.memory.geometries : null, textures: info ? info.memory.textures : null,
+    textureMB: +(texBytes / 1048576).toFixed(1),
+    pixelRatio: r ? r.getPixelRatio() : null, size: r ? [r.domElement.width, r.domElement.height] : null,
+    visible: !document.hidden, ua: navigator.userAgent.slice(0, 80),
+  };
+}
+
+/**
+ * Маршрут-бенчмарк (В3): десять фиксированных точек по обоим этажам и
+ * павильонам. В каждой — телепорт, секунда на прогрев, затем замер
+ * `seconds` секунд. Возвращает таблицу по точкам и худшее p95.
+ */
+const BENCH_ROUTE = [
+  { id: 'вестибюль', at: [0, 0, 21.0], look: [0, 1.4, 12] },
+  { id: 'кромка атриума', at: [0, 0, 8.0], look: [0, 1.4, -6] },
+  { id: 'амфитеатр', at: [0, 0, -2.0], look: [0, 1.6, -10.5] },
+  { id: 'стол-голограмма', at: [2.6, 0, 6.4], look: [0, 1.0, 4.4] },
+  { id: 'проектная', at: [-2, 0, -17], look: [-6, 1.4, -9] },
+  { id: 'переговорные', at: [16, 0, 4], look: [20, 1.4, 0] },
+  { id: 'второй этаж, лаундж', at: [-16, 4.2, 4], look: [0, 4.6, 0] },
+  { id: 'библиотека', at: [18, 4.2, -4], look: [21, 5.4, 2] },
+  { id: 'зал реактора', at: [-30, 0, 0], look: [-38, 0.4, 0.6] },
+  { id: 'мастерская', at: [-20, 0, 24], look: [-27, 1.2, 28] },
+];
+async function bench({ seconds = 3, route = BENCH_ROUTE } = {}) {
+  const sc = state.scene;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = [];
+  for (const p of route) {
+    sc.walk.teleport(p.at, p.look, null);
+    // 2,5 с на прогрев: первая отрисовка нового вида компилирует конвейеры Metal (затык до секунды),
+    // это не частота кадров; затык записывается отдельно как hitchMs
+    perf.reset();
+    await wait(2500);
+    const warm = perf.stats();
+    perf.reset();
+    await wait(seconds * 1000);
+    const snap = perfSnapshot();
+    out.push({ id: p.id, ...snap, hitchMs: warm ? warm.msMax : null });
+  }
+  const worst = Math.min(...out.map((p) => p.fpsP95 || 0));
+  const result = { at: new Date().toISOString(), seconds, points: out, worstFpsP95: worst, maxDrawCalls: Math.max(...out.map((p) => p.drawCalls || 0)), maxHitchMs: Math.max(...out.map((p) => p.hitchMs || 0)), ua: navigator.userAgent, screen: [screen.width, screen.height, window.devicePixelRatio], visible: !document.hidden, href: location.href };
+  return result;
+}
+
 // ручка для отладки в консоли; данными страницы не является
 window.__office = state;
+state.perf = perfSnapshot;
+state.bench = bench;
 state.pick = handlePick;
 /**
  * Аудит сцены из консоли: `__office.audit()` — что висит в воздухе,
@@ -1023,15 +1110,31 @@ state.pick = handlePick;
  * Модуль подгружается по требованию, в обычном показе он не нужен.
  */
 state.audit = async (kind = 'floating') => {
-  const a = await import('./office-audit.mjs?v=9');
+  const a = await import('./office-audit.mjs?v=11');
   const sc = state.scene;
-  if (kind === 'overlap') {
-    const items = [];
-    sc.scene.traverse((o) => { if (o.userData && o.userData.pick) items.push(o); });
-    return a.report(a.auditOverlaps(sc.THREE, items), 'предмет в предмете');
+  if (kind === 'overlap') return a.report(a.auditOverlaps(sc.THREE, sc.scene), 'предмет в предмете');
+  if (kind === 'all') {
+    const ex = await import('./office-audit-exceptions.mjs?v=11');
+    const plan = await import('./office-plan.mjs?v=11');
+    const r = a.auditAll(sc.THREE, sc.scene, (x, z, y) => sc.heightAt(x, z, y), plan, { exceptions: ex.OVERLAP_EXCEPTIONS, airborneOk: ex.AIRBORNE_OK, exteriorOk: ex.EXTERIOR_OK });
+    // eslint-disable-next-line no-console
+    console.log('аудит по зонам:', JSON.stringify(r.counts), 'всего', r.total, 'исключено', JSON.stringify(r.excepted));
+    return r;
   }
   return a.report(a.auditFloating(sc.THREE, sc.scene, (x, z, y) => sc.heightAt(x, z, y)), 'висит в воздухе');
 };
+
+/**
+ * `?bench=1` — страница сама проходит маршрут-бенчмарк и шлёт результат на
+ * сервер (`POST /api/office/perf`): так меряется Safari, где автоматизации
+ * нет — открыл адрес, подождал полминуты, забрал цифры с сервера.
+ */
+if (new URLSearchParams(location.search).get('bench') === '1') {
+  const waitScene = () => new Promise((r) => { const t = setInterval(() => { if (state.scene && state.scene.walk) { clearInterval(t); r(); } }, 200); });
+  waitScene().then(() => new Promise((r) => setTimeout(r, 4000))).then(() => bench()).then((res) => fetch('/api/office/perf', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(res),
+  })).then(() => { document.title = `бенчмарк отправлен — ${document.title}`; }).catch((err) => console.error('бенчмарк', err));
+}
 
 main().catch((err) => {
   toast(`Зал не открылся: ${err.message}`, 8000);

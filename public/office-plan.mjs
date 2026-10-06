@@ -75,7 +75,8 @@ export const PAVILIONS = {
     // оставляли шов нулевой ширины, в который проваливалась любая сеточная проверка
     link: { from: 270 * D, x0: -27.8, x1: -22.5, z0: -2.4, z1: 2.4 },
     // вход по мостику на отметке 0.00, дальше лестница ВДОЛЬ стены вниз к яме
-    balcony: { x0: -32.6, x1: -27.2, z0: -6.4, z1: 6.4, y: RING.floor1 },
+    // балкон заходит под пол перехода на 0,3 м (правило 17), а не на 0,6
+    balcony: { x0: -32.6, x1: -27.5, z0: -6.4, z1: 6.4, y: RING.floor1 },
     stair: { axis: 'x', x0: -41.0, x1: -32.3, z0: -5.2, z1: -2.0, yFrom: RING.floor1, yTo: RING.pit, steps: 20, railSide: 1 },
   },
   workshop: {
@@ -160,8 +161,14 @@ export function openingOnFloor(o, level) { return o.floor === 'all' || o.floor =
  * Промежутки глухой стены между проёмами на заданном этаже: пары [от, до] в
  * радианах, по возрастанию φ. Из них строятся дуги стены и препятствия.
  */
-export function wallGaps(level) {
-  const cuts = OPENINGS.filter((o) => openingOnFloor(o, level))
+export function wallGaps(level, fromY = -Infinity) {
+  /*
+   * fromY — низ полосы стены: проём режет полосу, только если его верх выше
+   * её низа. Без этого полосы камня и парапет НАД входом были прорезаны
+   * насквозь (с улицы были видны часы и второй этаж — кадр exterior-1).
+   */
+  const base = level === 2 ? RING.floor2 : RING.floor1;
+  const cuts = OPENINGS.filter((o) => openingOnFloor(o, level) && base + o.height > fromY + 0.01)
     .map((o) => ({ from: o.at - openingHalfAngle(o), to: o.at + openingHalfAngle(o) }))
     .sort((a, b) => a.from - b.from);
   if (!cuts.length) return [[0, Math.PI * 2]];

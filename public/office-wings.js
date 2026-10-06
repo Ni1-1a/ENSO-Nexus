@@ -11,9 +11,10 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
-import * as P from './office-props.js?v=9';
-import { railPose, stairSurface, stairStep, inStair } from './office-geom.mjs?v=9';
-import { RING, FLOOR1, FLOOR2 as SECT2, PAVILIONS, CORES, pt } from './office-plan.mjs?v=9';
+import * as P from './office-props.js?v=11';
+import { mergeGeometries } from './vendor/BufferGeometryUtils.js';
+import { railPose, stairSurface, stairStep, inStair } from './office-geom.mjs?v=11';
+import { RING, FLOOR1, FLOOR2 as SECT2, PAVILIONS, CORES, pt } from './office-plan.mjs?v=11';
 
 /*
  * Отметки берутся из плана здания (ТЗ №2): кольцо 0.00, кольцо +4.20, яма
@@ -141,12 +142,16 @@ function stairs(spec) {
   const len = axis === 'z' ? z1 - z0 : x1 - x0;
   const rise = (yTo - yFrom) / steps;
   const run = len / steps;
+  // ступень — короб от своей верхней грани до низа марша (сплошной марш, правило 6)
+  const base = Math.min(yFrom, yTo) + 0.004;   // на полу (плоскость пола лежит на +0.002), не на 20 мм ниже него
   for (let i = 0; i < steps; i++) {
     // положение ступени берётся из того же реестра, что и поверхность ходьбы
     const p = stairStep({ ...spec, steps }, i);
+    const top = p.y + Math.abs(rise) / 2 + 0.01;
+    const hStep = top - base;
     const st = axis === 'z'
-      ? box(w - 0.06, Math.abs(rise) + 0.02, Math.abs(run) + 0.02, stepMat, p.x, p.y, p.z)
-      : box(Math.abs(run) + 0.02, Math.abs(rise) + 0.02, w - 0.06, stepMat, p.x, p.y, p.z);
+      ? box(w - 0.06, hStep, Math.abs(run) + 0.02, stepMat, p.x, base + hStep / 2, p.z)
+      : box(Math.abs(run) + 0.02, hStep, w - 0.06, stepMat, p.x, base + hStep / 2, p.z);
     st.receiveShadow = true; st.castShadow = true;
     g.add(st);
     // Н1: теневой шов по кромке ступени — иначе белое на белом не читается
@@ -302,6 +307,7 @@ const CARS = {
 export function makeCar(id) {
   const c = CARS[id];
   const g = new THREE.Group();
+  g.name = c.name;
   const lift = c.lifted || 0;
   const body = carBody(c.profile, c.width, c.color, {
     ...(c.glass ? { glassFrom: c.glass.from, glassTo: c.glass.to, glassY: c.glass.y } : {}),
@@ -314,8 +320,9 @@ export function makeCar(id) {
    * ночью светятся. Были плоские цветные кубики.
    */
   const xFront = c.profile[c.profile.length - 3][0], xRear = c.profile[0][0];
-  const lampGlass = new THREE.MeshPhysicalMaterial({ color: 0xfff6e2, transmission: 0.75, roughness: 0.06, thickness: 0.04, transparent: true });
-  const lensRed = new THREE.MeshPhysicalMaterial({ color: 0xd8262e, transmission: 0.55, roughness: 0.1, thickness: 0.04, transparent: true, emissive: 0x5a0d10, emissiveIntensity: 0.6 });
+  // без transmission: гараж виден из кольца через переход, и один преломляющий материал удваивал вызовы всей сцены (В3)
+  const lampGlass = new THREE.MeshPhysicalMaterial({ color: 0xfff6e2, roughness: 0.06, transparent: true, opacity: 0.45, emissive: 0xfff0c0, emissiveIntensity: 0.25 });
+  const lensRed = new THREE.MeshPhysicalMaterial({ color: 0xd8262e, roughness: 0.1, transparent: true, opacity: 0.6, emissive: 0x5a0d10, emissiveIntensity: 0.6 });
   const reflector = new THREE.MeshStandardMaterial({ color: 0xf7f7f2, roughness: 0.1, metalness: 0.95 });
   for (const sd of [-1, 1]) {
     const zz = sd * (c.width / 2 - 0.28);
@@ -381,9 +388,13 @@ export function makeCar(id) {
     for (const s of [-1, 1]) {
       if (wheelsOff) {
         const w = wheel(c.wheelR);
-        w.rotation.z = Math.PI / 2; w.rotation.y = 0.3 * s;
-        w.position.set(wx + (i ? 0.6 : -0.6), c.wheelR * 0.12 + 0.12, s * (c.width / 2 + 0.9));
-        w.rotation.x = Math.PI / 2 * 0.9; // лежит
+        // лежит на полу с наклоном 0,12 рад; поворот вокруг мировой Y (порядок YXZ)
+        // наклон не меняет. Прежняя связка rotation x/y/z давала 19°, и рант
+        // колеса уходил в пол на 70–100 мм.
+        const tilt = 0.12;
+        w.rotation.order = 'YXZ';
+        w.rotation.set(Math.PI / 2 + tilt, 0.3 * s + i * 0.9, 0);
+        w.position.set(wx + (i ? 0.6 : -0.6), 0.12 * Math.cos(tilt) + c.wheelR * Math.sin(tilt) + 0.003, s * (c.width / 2 + 0.9));
         g.add(w);
       } else if (c.jack && i === 0 && s === -1) {
         const w = wheel(c.wheelR); w.position.set(wx - 0.5, c.wheelR, s * (c.width / 2 + 0.7)); w.rotation.y = 0.5; g.add(w);
@@ -437,6 +448,7 @@ const BIKES = {
 export function makeBike(id) {
   const b = BIKES[id];
   const g = new THREE.Group();
+  g.name = b.name;
   const paint = new THREE.MeshPhysicalMaterial({ color: b.color, roughness: 0.3, clearcoat: 0.8 });
   const tube = P.MAT.graphite();
   const alu = P.MAT.brushed();
@@ -582,7 +594,7 @@ export function makeBike(id) {
   const dashFace = new THREE.Mesh(new THREE.CircleGeometry(0.062, 18), new THREE.MeshBasicMaterial({ color: 0x1b2b3a }));
   dashFace.rotation.x = 1.2 - Math.PI / 2 + Math.PI / 2; dashFace.position.set(headX - 0.035, headY + 0.208, 0);
   dashFace.rotation.set(-0.37, 0, 0); P.air(dashFace); g.add(dashFace);
-  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshPhysicalMaterial({ color: 0xfff6e2, transmission: 0.7, roughness: 0.06, thickness: 0.05, transparent: true }));
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshPhysicalMaterial({ color: 0xfff6e2, roughness: 0.06, transparent: true, opacity: 0.45, emissive: 0xfff0c0, emissiveIntensity: 0.25 }));
   lamp.rotation.z = -Math.PI / 2; lamp.position.set(headX + 0.14, headY - 0.06, 0); g.add(lamp);
   const refl = new THREE.Mesh(new THREE.SphereGeometry(0.085, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xf6f6f2, roughness: 0.12, metalness: 0.9 }));
   refl.rotation.z = -Math.PI / 2; refl.position.set(headX + 0.11, headY - 0.06, 0); g.add(refl);
@@ -698,8 +710,10 @@ function placeRoom(g, r, deg, y = 0) {
  * стекло), z вдоль стены.
  */
 function buildAquarium(scene, ctx) {
-  const x0 = -1.2, x1 = 1.2, z0 = -6.0, z1 = 6.0, y0 = 0, y1 = 4.0;
+  // y1 3,72: крыша бассейна (0,25) ложится под плиту второго этажа (3,98…4,20), а не внутрь неё и библиотеки
+  const x0 = -1.2, x1 = 1.2, z0 = -6.0, z1 = 6.0, y0 = 0, y1 = 3.72;
   const g = new THREE.Group();
+  g.name = 'Аквариум'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   // задняя и боковые стенки — стекло: сквозь бассейн виден сад за окнами
   const sand = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ color: 0x9a9279, roughness: 1 }));
   sand.rotation.x = -Math.PI / 2; sand.position.set((x0 + x1) / 2, y0 + 0.01, (z0 + z1) / 2);
@@ -722,14 +736,17 @@ function buildAquarium(scene, ctx) {
       pa.setXYZ(v, vx * n, vy * n, vz * n);
     }
     geo.computeVertexNormals();
+    // низ валуна после шума — ровно в нуле геометрии: тогда scale.y его не сдвигает
+    geo.computeBoundingBox(); geo.translate(0, -geo.boundingBox.min.y, 0);
     const rock = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x4b5a66, roughness: 0.52, metalness: 0.06 }));
-    rock.position.set(x0 + 1 + Math.random() * (x1 - x0 - 2), y0 + r * 0.5, z0 + 1 + Math.random() * (z1 - z0 - 2));
+    rock.name = 'камень';
+    rock.position.set(x0 + 1 + Math.random() * (x1 - x0 - 2), y0 + 0.004, z0 + 1 + Math.random() * (z1 - z0 - 2));
     rock.scale.y = 0.6; rock.rotation.y = Math.random() * 3; g.add(rock);
   }
   const kelp = [];
   const KELP_COLORS = [0x2f7a4a, 0x46925a, 0x1f5c3e];
   for (let i = 0; i < 26; i++) {
-    const h = 1.5 + Math.random() * 3;
+    const h = 1.2 + Math.random() * 1.9;   // верх ≤ 3,26: ниже поверхности воды (3,6) и плиты второго этажа (3,98)
     // лента по кривой, а не прямая палка: изгиб задан контрольными точками
     const bend = (Math.random() - 0.5) * 0.9;
     const curve = new THREE.CatmullRomCurve3([
@@ -741,7 +758,8 @@ function buildAquarium(scene, ctx) {
     const k = new THREE.Mesh(new THREE.TubeGeometry(curve, 10, 0.055, 4, false),
       new THREE.MeshStandardMaterial({ color: KELP_COLORS[i % 3], roughness: 0.78, side: THREE.DoubleSide, transparent: true, opacity: 0.92 }));
     k.scale.set(2.2, 1, 0.5);                      // сплющена в лист
-    k.position.set(x0 + 0.8 + Math.random() * (x1 - x0 - 1.6), y0 + 0.02, z0 + 0.6 + Math.random() * (z1 - z0 - 1.2));
+    k.name = 'водоросль';
+    k.position.set(x0 + 0.8 + Math.random() * (x1 - x0 - 1.6), y0 + 0.16, z0 + 0.6 + Math.random() * (z1 - z0 - 1.2));   // лента кривой уходит на 0,12 ниже своего начала
     k.rotation.y = Math.random() * Math.PI;
     k.userData.phase = Math.random() * 6;
     g.add(k); kelp.push(k);
@@ -789,11 +807,14 @@ function buildAquarium(scene, ctx) {
   // поверхность воды и крыша над бассейном — сквозь него не должен быть виден сад
   const surface = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshPhysicalMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.1, side: THREE.DoubleSide }));
   surface.rotation.x = -Math.PI / 2; surface.position.set((x0 + x1) / 2, y1 - 0.12, (z0 + z1) / 2); surface.renderOrder = 8; g.add(P.air(surface));
-  g.add(box(x1 - x0 + 0.4, 0.25, z1 - z0 + 0.4, stoneMaterial(3), (x0 + x1) / 2, y1 + 0.3, (z0 + z1) / 2));
+  const aqRoof = box(x1 - x0 + 0.4, 0.25, z1 - z0 + 0.4, stoneMaterial(3), (x0 + x1) / 2, y1 + 0.125, (z0 + z1) / 2);
+  aqRoof.name = 'крыша аквариума'; P.air(aqRoof); g.add(aqRoof);
   // фартук над стенкой до потолка сектора
+  if (RING.height - y1 - 0.55 > 0.1) {
   const band = new THREE.Mesh(new THREE.PlaneGeometry(z1 - z0 + 0.4, RING.height - y1 - 0.55), stoneMaterial(4));
-  band.position.set(x1 + 0.1, (y1 + 0.55 + RING.height) / 2, (z0 + z1) / 2); band.rotation.y = Math.PI / 2;
-  P.air(band); g.add(P.air(band));
+    band.position.set(x1 + 0.1, (y1 + 0.55 + RING.height) / 2, (z0 + z1) / 2); band.rotation.y = Math.PI / 2;
+    P.air(band); g.add(P.air(band));
+  }
   // лучи света сверху
   for (let i = 0; i < 8; i++) {
     const ray = new THREE.Mesh(new THREE.PlaneGeometry(0.8, y1 - y0 - 0.4), new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
@@ -833,7 +854,9 @@ function buildAquarium(scene, ctx) {
   }
   scene.add(g);
   // стенка стоит у наружной стены сектора «Аквариум-галерея» (φ 20…65°)
-  const toWorld = placeRoom(g, RING.rOut - RING.wallT - 1.4, 42.5);
+  // осевая линия на r 21,3: у прямой стенки 12 м концы на r = √(21,3+1,4)²+6,2² = 23,5 — внутри
+  // наружной стены (23,7); на прежних 22,3 оба конца выходили сквозь стекло на улицу (аудит В1)
+  const toWorld = placeRoom(g, RING.rOut - RING.wallT - 2.4, 42.5);
   ctx.pickable(glass, { kind: 'aquarium' });
   const [wx, wz] = toWorld(x1 + 3.2, 0);
   const [tx, tz] = toWorld(x1 - 0.4, 0);
@@ -842,6 +865,9 @@ function buildAquarium(scene, ctx) {
   // закрывал её концы и при этом съедал проход посреди галереи
   const [bx, bz] = toWorld((x0 + x1) / 2, 0);
   ctx.block({ name: 'аквариум', floor: 1, cx: bx, cz: bz, w: x1 - x0 + 0.6, d: z1 - z0 + 0.4, rot: g.rotation.y });
+  // всё, что двигается в update(), — вне глобальной склейки (В3)
+  for (const k of kelp) k.userData.dynamic = true;
+  for (const f of fauna) if (f.obj) f.obj.userData.dynamic = true;
   return {
     update(dt, t) {
       // каустика: бегущие блики
@@ -910,7 +936,7 @@ function buildAquarium(scene, ctx) {
  */
 function buildMeeting(scene, ctx) {
   const g = new THREE.Group();
-  g.name = 'Переговорные';
+  g.name = 'Переговорные'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   const W = 4.6, L = 9.6;            // глубина сектора и длина вдоль стены
 
   // стеклянная перегородка со стороны атриума, с проходом посередине
@@ -923,8 +949,10 @@ function buildMeeting(scene, ctx) {
 
   // стол на 12 мест
   const table = new THREE.Mesh(new RoundedBoxGeometry(2.0, 0.06, 5.4, 3, 0.03), new THREE.MeshPhysicalMaterial({ color: 0xf1ece1, roughness: 0.3, clearcoat: 0.4 }));
-  table.position.set(0, 0.75, 0); table.castShadow = true; g.add(table);
-  for (const dz of [-2.2, 2.2]) g.add(box(1.2, 0.72, 0.1, P.MAT.graphite(), 0, 0.36, dz));
+  const tableG = new THREE.Group(); tableG.name = 'стол переговорной';
+  table.position.set(0, 0.75, 0); table.castShadow = true; tableG.add(table);
+  for (const dz of [-2.2, 2.2]) tableG.add(box(1.2, 0.72, 0.1, P.MAT.graphite(), 0, 0.36, dz));
+  g.add(tableG);
   const tableShadow = P.makeContactShadow(3, 7, 0.35); tableShadow.position.set(0, 0.006, 0); g.add(tableShadow);
 
   const looks = [
@@ -993,7 +1021,7 @@ function buildMeeting(scene, ctx) {
  */
 function buildLibrary(scene, ctx) {
   const g = new THREE.Group();
-  g.name = 'Библиотека нормативов';
+  g.name = 'Библиотека нормативов'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   const shelves = [];
   const spineGroup = new THREE.Group();
   g.add(spineGroup);
@@ -1008,8 +1036,18 @@ function buildLibrary(scene, ctx) {
     g.add(sh);
     shelves.push({ cx, cz, ry, w });
   };
-  // стеллажи вдоль наружной стены (локальное −x) с разрывами на окна
-  for (const cz of [-6.6, -2.2, 2.2, 6.6]) mkShelf(-W / 2 + 0.25, cz, Math.PI / 2, 3.6);
+  /*
+   * Стеллажи стоят ПО ДУГЕ наружной стены, а не в линию: комната 18 м в кольце
+   * r 23,7 — прямой ряд выходил концами сквозь стену и стекло на 1,3 м (аудит В1).
+   * Осевая линия стеллажа на RS: спинка (0,215 от оси) в 30 мм от стены.
+   * Локальные координаты из полярных: x = r0 − RS·cos δ, z = RS·sin δ, поворот π/2 + δ.
+   */
+  // прямой стеллаж 3,6 м у дуги r 23,7: концы дальше середины на √(d²+1,8²) − d ≈ 0,07 — запас 0,1
+  const RS = RING.rOut - RING.wallT - 0.215 - 0.1;
+  const R0 = RING.rOut - RING.wallT - W / 2 - 0.3;   // радиус начала комнаты (см. placeRoom ниже)
+  // дверь ядра 1 на 62° (−1,2 м по касательной от оси 65°) остаётся свободной: стеллажи не ближе 0,4 м к ней
+  const shelfSpots = [-8.2, -4.2, 2.4, 6.4].map((cz) => { const d = cz / RS; return { x: R0 - RS * Math.cos(d), z: RS * Math.sin(d), ry: Math.PI / 2 + d, d }; });
+  for (const s of shelfSpots) mkShelf(s.x, s.z, s.ry, 3.6);
 
   for (const tz of [-4.4, 4.4]) {
     const t = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.05, 28), new THREE.MeshPhysicalMaterial({ color: 0xd9c9a8, roughness: 0.35, clearcoat: 0.4 }));
@@ -1033,12 +1071,12 @@ function buildLibrary(scene, ctx) {
 
   P.mergeStatic(g);          // Р5.4: статика комнаты — в несколько мешей
   scene.add(g);
-  const toWorld = placeRoom(g, RING.rOut - RING.wallT - W / 2 - 0.3, 65, RING.floor2);
+  const toWorld = placeRoom(g, R0, 65, RING.floor2);
   const [ax, az] = toWorld(W / 2 + 2.2, 0);
   const [tx, tz] = toWorld(-W / 2 + 1, 0);
   ctx.itemAnchors.set('library', { group: g, camPos: [ax, RING.floor2 + 1.7, az], camTgt: [tx, RING.floor2 + 1.2, tz], walk: [ax, az], look: [tx, tz], floorY: RING.floor2 });
-  for (const cz of [-6.6, -2.2, 2.2, 6.6]) {
-    const [bx, bz] = toWorld(-W / 2 + 0.5, cz);
+  for (const s of shelfSpots) {
+    const [bx, bz] = toWorld(s.x + 0.25 * Math.cos(s.d), s.z - 0.25 * Math.sin(s.d));
     ctx.block({ name: 'стеллаж библиотеки', floor: 2, x: bx, z: bz, r: 1.1 });
   }
 
@@ -1110,6 +1148,7 @@ function buildGarage(scene, ctx) {
   const W = PAVILIONS.workshop;
   const [x0, x1, z0, z1] = [W.x0 + 0.2, W.x1 - 0.2, W.z0 + 0.2, W.z1 - 0.2];
   const g = new THREE.Group();
+  g.name = 'Гараж'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   const floorTex = P.canvasTexture(1024, 1024, (c) => {
     c.fillStyle = '#2b2b30'; c.fillRect(0, 0, 1024, 1024);
     c.strokeStyle = 'rgba(255,255,255,.07)'; c.lineWidth = 3;
@@ -1121,13 +1160,16 @@ function buildGarage(scene, ctx) {
   floor.rotation.x = -Math.PI / 2; floor.position.set((x0 + x1) / 2, LEVEL + 0.002, (z0 + z1) / 2); floor.receiveShadow = true; g.add(floor);
   // тёмная облицовка по стенам павильона — мастерская должна читаться цехом
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3f, roughness: 0.9 });
-  for (const [bw, bd, bx, bz] of [[x1 - x0, 0.12, (x0 + x1) / 2, z0], [x1 - x0, 0.12, (x0 + x1) / 2, z1], [0.12, z1 - z0, x0, (z0 + z1) / 2], [0.12, z1 - z0, x1, (z0 + z1) / 2]]) {
+  // облицовка стены z0 прорезана под переход (его x0…x1): иначе из перехода входишь в тёмную стену
+  const GL = PAVILIONS.workshop.link;
+  const z0pieces = [[x0, GL.x0], [GL.x1, x1]].filter(([a, b]) => b - a > 0.3).map(([a, b]) => [b - a, 0.12, (a + b) / 2, z0]);
+  for (const [bw, bd, bx, bz] of [...z0pieces, [x1 - x0, 0.12, (x0 + x1) / 2, z1], [0.12, z1 - z0, x0, (z0 + z1) / 2], [0.12, z1 - z0, x1, (z0 + z1) / 2]]) {
     g.add(P.air(box(bw, 5.4, bd, wallMat, bx, LEVEL + 2.7, bz)));
   }
   // световые линии на потолке и лампы
   for (let i = 0; i < 4; i++) {
     const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.2, z1 - z0 - 2), new THREE.MeshBasicMaterial({ color: 0xfff6e8 }));
-    strip.rotation.x = Math.PI / 2; strip.position.set(x0 + 3 + i * 4, LEVEL + 5.0, (z0 + z1) / 2); g.add(strip);
+    strip.rotation.x = Math.PI / 2; strip.position.set(x0 + 3 + i * 4, LEVEL + 5.0, (z0 + z1) / 2); P.air(strip, 'световая полоса'); g.add(strip);
     const l = new THREE.PointLight(0xfff0dd, 1.8, 14, 1.5); l.position.set(x0 + 3 + i * 4, LEVEL + 4.6, (z0 + z1) / 2); g.add(l);
   }
   // Акцентный свет на каждую машину: общего потолочного не хватало —
@@ -1138,7 +1180,7 @@ function buildGarage(scene, ctx) {
     spot.target.position.set(sx, LEVEL + 0.5, sz);
     g.add(P.air(spot)); g.add(spot.target);
     const can = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 0.2, 12), P.MAT.graphite());
-    can.position.set(sx + 1.2, LEVEL + 4.92, sz - 0.8); g.add(can);
+    can.position.set(sx + 1.2, LEVEL + 4.92, sz - 0.8); P.air(can, 'плафон'); g.add(can);
   }
   // холодная подсветка стен: отделяет кузов от фона
   for (const zz of [z0 + 3, (z0 + z1) / 2, z1 - 3]) {
@@ -1155,16 +1197,22 @@ function buildGarage(scene, ctx) {
   for (const [obj, id, lx, lz] of [[gto, 'gto', -30, 21.6], [sl, 'sl300', -30, 27.6], [p918, 'p918', -25.5, 21.6], [gs, 'r1300gs', -20, 27.2], [vrod, 'vrod', -17.6, 29.8]]) {
     ctx.pickable(obj, { kind: 'vehicle', id });
     const spec = obj.userData.spec;
-    const lb = label(spec.name, spec.year, 1.2, true); lb.position.set(lx, LEVEL + 0.9, lz); lb.rotation.y = 0; g.add(lb);
-    g.add(box(0.05, 0.9, 0.05, P.MAT.graphite(), lx, LEVEL + 0.45, lz));
+    const sign = new THREE.Group(); sign.name = `табличка ${spec.name}`;
+    const lb = label(spec.name, spec.year, 1.2, true); lb.position.set(lx, LEVEL + 0.9, lz); lb.rotation.y = 0; sign.add(lb);
+    sign.add(box(0.05, 0.9, 0.05, P.MAT.graphite(), lx, LEVEL + 0.45, lz));
+    g.add(sign);
   }
   // верстак, инструментальные шкафы, стеллаж с шинами
-  g.add(box(0.8, 0.06, 3.0, P.MAT.brushed(), x1 - 1.0, LEVEL + 0.9, 26.0));
-  for (const dz of [-1.3, 1.3]) g.add(box(0.7, 0.88, 0.08, P.MAT.graphite(), x1 - 1.0, LEVEL + 0.44, 26.0 + dz));
+  const bench_ = new THREE.Group(); bench_.name = 'верстак';
+  bench_.add(box(0.8, 0.06, 3.0, P.MAT.brushed(), x1 - 1.0, LEVEL + 0.9, 26.0));
+  for (const dz of [-1.3, 1.3]) bench_.add(box(0.7, 0.88, 0.08, P.MAT.graphite(), x1 - 1.0, LEVEL + 0.44, 26.0 + dz));
+  g.add(bench_);
   for (let i = 0; i < 3; i++) {
+    const cabG = new THREE.Group(); cabG.name = 'шкаф инструмента';
     const cab = rbox(0.9, 1.1, 0.5, new THREE.MeshPhysicalMaterial({ color: 0xa93e2c, roughness: 0.3, clearcoat: 0.6 }), 0.02);
-    cab.position.set(x1 - 0.9, LEVEL + 0.55, 30.0 + (i - 1) * 1.0); g.add(cab);
-    for (let d = 0; d < 4; d++) g.add(box(0.04, 0.02, 0.7, P.MAT.chrome(), x1 - 1.35, LEVEL + 0.2 + d * 0.25, 30.0 + (i - 1) * 1.0));
+    cab.position.set(x1 - 0.9, LEVEL + 0.55, 30.0 + (i - 1) * 1.0); cabG.add(cab);
+    for (let d = 0; d < 4; d++) cabG.add(P.air(box(0.04, 0.02, 0.7, P.MAT.chrome(), x1 - 1.35, LEVEL + 0.2 + d * 0.25, 30.0 + (i - 1) * 1.0), 'ручка шкафа'));
+    g.add(cabG);
   }
   const rack = new THREE.Group();
   for (let r = 0; r < 3; r++) {
@@ -1172,7 +1220,7 @@ function buildGarage(scene, ctx) {
     for (let i = 0; i < 3; i++) { const w = wheel(0.33, 0.24); w.position.set(-0.8 + i * 0.8, 0.77 + r * 0.9, 0); w.rotation.y = Math.PI / 2; rack.add(w); }
   }
   for (const dx of [-1.2, 1.2]) rack.add(box(0.06, 2.8, 0.06, P.MAT.graphite(), dx, 1.4, -0.25));
-  rack.position.set(x0 + 1.6, LEVEL, z1 - 0.9); rack.rotation.y = Math.PI / 2; g.add(rack);
+  rack.position.set(x0 + 1.6, LEVEL, z1 - 1.6); rack.rotation.y = Math.PI / 2; g.add(rack);   // на z1 − 0,9 полки стойки уходили в стену
   // стена инструментов и надпись
   /*
    * Стена инструмента: НАСТОЯЩИЕ силуэты — рожковые и накидные ключи, головки,
@@ -1227,7 +1275,7 @@ function buildGarage(scene, ctx) {
     c.fillStyle = '#b95740'; c.font = '600 84px Georgia, serif'; c.fillText('ENSO · МАСТЕРСКАЯ', 120, 930);
   });
   const toolWall = new THREE.Mesh(new THREE.PlaneGeometry(6, 3), new THREE.MeshBasicMaterial({ map: tools.texture, toneMapped: false }));
-  toolWall.position.set(x1 - 0.14, LEVEL + 2.4, 22.6); toolWall.rotation.y = -Math.PI / 2; g.add(toolWall);
+  toolWall.position.set(x1 - 0.14, LEVEL + 2.4, 23.5); toolWall.rotation.y = -Math.PI / 2; P.air(toolWall, 'стена инструмента'); g.add(toolWall);   // полотно 6 м: на 22,6 заходило в торцевую стену
   // стойка с двигателем на подставке
   const eng = engineBlock(); eng.position.set(x0 + 2.0, LEVEL + 1.0, 21.4); g.add(eng);
   g.add(box(0.8, 0.8, 0.8, P.MAT.graphite(), x0 + 2.0, LEVEL + 0.4, 21.4));
@@ -1294,8 +1342,9 @@ function drawNppPoster(c, w, h, kind) {
  */
 function buildReactor(scene, ctx) {
   const RP = PAVILIONS.reactor;
-  const [x0, x1, z0, z1] = [RP.x0 + 0.2, RP.x1 - 0.2, RP.z0 + 0.2, RP.z1 - 0.2];
+  const [x0, x1, z0, z1] = [RP.x0 + 0.23, RP.x1 - 0.23, RP.z0 + 0.23, RP.z1 - 0.23];   // облицовка 0,2 в 5 мм от стены оболочки (0,25), а не в её толще
   const g = new THREE.Group();
+  g.name = 'Зал реактора · интерьер'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   const cx = -37.5, cz = 0.6;
   const CEIL = RP.ceiling - 0.3;
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.95 });
@@ -1306,29 +1355,36 @@ function buildReactor(scene, ctx) {
   });
   floorTex.texture.wrapS = floorTex.texture.wrapT = THREE.RepeatWrapping; floorTex.texture.repeat.set(6, 6);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ map: floorTex.texture, roughness: 0.4, metalness: 0.3 }));
+  floor.name = 'пол зала реактора';
   floor.rotation.x = -Math.PI / 2; floor.position.set((x0 + x1) / 2, PIT + 0.002, (z0 + z1) / 2); g.add(floor);
   g.add(box(0.2, CEIL - PIT, z1 - z0, wallMat, x0, (PIT + CEIL) / 2, (z0 + z1) / 2));
   g.add(box(x1 - x0, CEIL - PIT, 0.2, wallMat, (x0 + x1) / 2, (PIT + CEIL) / 2, z0));
   g.add(box(x1 - x0, CEIL - PIT, 0.2, wallMat, (x0 + x1) / 2, (PIT + CEIL) / 2, z1));
   const roof = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), wallMat);
-  roof.rotation.x = Math.PI / 2; roof.position.set((x0 + x1) / 2, CEIL, (z0 + z1) / 2); g.add(roof);
+  roof.rotation.x = Math.PI / 2; roof.position.set((x0 + x1) / 2, CEIL, (z0 + z1) / 2); P.air(roof, 'подшивка потолка'); g.add(roof);
   const lawn = P.canvasTexture(512, 512, (c) => {
     c.fillStyle = '#5f9b62'; c.fillRect(0, 0, 512, 512);
     for (let i = 0; i < 2600; i++) { c.fillStyle = `hsl(${100 + Math.random() * 25}, ${30 + Math.random() * 20}%, ${28 + Math.random() * 22}%)`; c.fillRect(Math.random() * 512, Math.random() * 512, 3, 6); }
   });
   lawn.texture.wrapS = lawn.texture.wrapT = THREE.RepeatWrapping; lawn.texture.repeat.set(8, 8);
   const roofTop = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ map: lawn.texture, roughness: 1 }));
-  roofTop.rotation.x = -Math.PI / 2; roofTop.position.set((x0 + x1) / 2, CEIL + 0.06, (z0 + z1) / 2); g.add(roofTop);
+  roofTop.name = 'газон кровли';
+  // кровля оболочки павильона — плита 0,25 над потолком (ceiling + 0.245 сверху): газон и кусты лежат на ней, а не под ней
+  const ROOF_TOP = RP.ceiling + 0.245;
+  roofTop.rotation.x = -Math.PI / 2; roofTop.position.set((x0 + x1) / 2, ROOF_TOP + 0.004, (z0 + z1) / 2); g.add(roofTop);
   for (let i = 0; i < 16; i++) {
     const r = 0.5 + Math.random() * 0.9;
     const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), new THREE.MeshStandardMaterial({ color: [0x3f6b47, 0x4f8a52, 0x6aa35c][i % 3], roughness: 0.9 }));
-    bush.position.set(x0 + 2 + Math.random() * (x1 - x0 - 4), CEIL + 0.12 + r * 0.7, z0 + 2 + Math.random() * (z1 - z0 - 4));
+    bush.name = 'куст на кровле';
+    bush.position.set(x0 + 2 + Math.random() * (x1 - x0 - 4), ROOF_TOP + 0.004 + r * 0.7, z0 + 2 + Math.random() * (z1 - z0 - 4));
     bush.scale.y = 0.7; g.add(bush);
   }
 
   const B = [RP.balcony.x0, RP.balcony.x1, RP.balcony.z0, RP.balcony.z1];
-  const balcony = rbox(B[1] - B[0], 0.22, B[3] - B[2], stoneMaterial(3), 0.02);
-  balcony.position.set((B[0] + B[1]) / 2, LEVEL - 0.11, (B[2] + B[3]) / 2); balcony.castShadow = true; g.add(balcony);
+  // плита 0,15: при 0,22 низ (−0,22) резал газон (−0,16) полосой у стены павильона
+  const balcony = rbox(B[1] - B[0], 0.15, B[3] - B[2], stoneMaterial(3), 0.02);
+  balcony.name = 'балкон'; balcony.position.set((B[0] + B[1]) / 2, LEVEL - 0.075, (B[2] + B[3]) / 2); balcony.castShadow = true;
+  P.air(balcony); g.add(balcony);   // навесной по замыслу: консоль, заделанная в восточную стену павильона над ямой
   const balGlass = new THREE.Mesh(new THREE.PlaneGeometry(B[3] - B[2], 1.05), appleGlass(0.16));
   balGlass.position.set(B[0], LEVEL + 0.52, (B[2] + B[3]) / 2); balGlass.rotation.y = Math.PI / 2; g.add(balGlass);
   const balRail = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, B[3] - B[2], 10), P.MAT.chrome());
@@ -1336,24 +1392,39 @@ function buildReactor(scene, ctx) {
   g.add(stairs(RP.stair));
 
   const ring0 = new THREE.Mesh(new THREE.TorusGeometry(4.35, 0.035, 8, 64), P.MAT.chrome());
-  ring0.rotation.x = Math.PI / 2; ring0.position.set(cx, PIT + 1.05, cz); g.add(ring0);
-  for (let i = 0; i < 24; i++) { const a = (i / 24) * Math.PI * 2; g.add(box(0.04, 1.05, 0.04, P.MAT.graphite(), cx + Math.cos(a) * 4.35, PIT + 0.52, cz + Math.sin(a) * 4.35)); }
+  ring0.name = 'ограждение ядра';
+  ring0.rotation.x = Math.PI / 2; ring0.position.set(cx, PIT + 1.05, cz); P.air(ring0); g.add(ring0);
+  for (let i = 0; i < 24; i++) { const a = (i / 24) * Math.PI * 2; const post = box(0.04, 1.05, 0.04, P.MAT.graphite(), cx + Math.cos(a) * 4.35, PIT + 0.528, cz + Math.sin(a) * 4.35); post.name = 'стойка ограждения'; g.add(post); }
   const coreMat = new THREE.MeshStandardMaterial({ color: 0x6fc4f5, emissive: 0x2f9fe8, emissiveIntensity: 1.5, roughness: 0.2 });
-  const core = new THREE.Mesh(new THREE.SphereGeometry(1.6, 32, 24), coreMat); core.position.set(cx, PIT + 2.4, cz); g.add(core);
-  const cage = new THREE.Mesh(new THREE.IcosahedronGeometry(2.0, 1), new THREE.MeshBasicMaterial({ color: 0xbfe6ff, wireframe: true, transparent: true, opacity: 0.35 })); cage.position.copy(core.position); g.add(cage);
+  const core = new THREE.Mesh(new THREE.SphereGeometry(1.6, 32, 24), coreMat); core.name = 'ядро'; core.position.set(cx, PIT + 2.4, cz); P.air(core, 'ядро'); g.add(core);
+  // ядро висит в магнитном подвесе по замыслу; опора под ним — пьедестал
+  const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.7, PIT + 2.4 - 1.6 - PIT, 24), P.MAT.graphite());
+  pedestal.name = 'пьедестал ядра'; pedestal.position.set(cx, PIT + (2.4 - 1.6) / 2, cz); g.add(pedestal);
+  const cage = new THREE.Mesh(new THREE.IcosahedronGeometry(2.0, 1), new THREE.MeshBasicMaterial({ color: 0xbfe6ff, wireframe: true, transparent: true, opacity: 0.35 })); cage.position.copy(core.position); P.air(cage, 'клетка ядра'); g.add(cage);
   const rings = [];
-  [[2.6, 0.4, 0], [3.2, -0.5, 0.6], [3.8, 0.2, -0.8]].forEach(([r, rx, rz]) => {
+  // наклон rx выбран так, чтобы кольцо не доставало до пола ямы: полуразмах по
+  // вертикали r·cos(rx) + 0.07 < 2.33 (центр ядра PIT + 2.4). С прежними 0.4/−0.5/0.2
+  // кольца уходили в пол на 0,13 / 1,7 / 3,0 м — аудит пересечений их не видел,
+  // пока пометка airborne снимала и эту проверку.
+  [[2.6, 0.5, 0], [3.2, 0.8, 0.6], [3.8, 0.95, -0.8]].forEach(([r, rx, rz]) => {
     const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.07, 10, 90), new THREE.MeshStandardMaterial({ color: 0x8ad0ff, emissive: 0x3fa8ff, emissiveIntensity: 1.4, roughness: 0.3, metalness: 0.4 }));
-    ring.position.copy(core.position); ring.rotation.set(rx, 0, rz); g.add(ring); rings.push(ring);
+    ring.position.copy(core.position); ring.rotation.set(rx, 0, rz); P.air(ring, 'кольцо ядра'); g.add(ring); rings.push(ring);
   });
   const rays = new THREE.Group();
+  // 28 лучей — ОДНИМ мешем с общим материалом (В3): прозрачные плоскости не склеиваются глобально, а по вызову на луч
+  const rayGeos = [];
   for (let i = 0; i < 28; i++) {
-    const ray = new THREE.Mesh(new THREE.PlaneGeometry(0.35, 9), new THREE.MeshBasicMaterial({ color: 0x6fc8ff, transparent: true, opacity: 0.08, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    // 6,4 м со сдвигом вверх на 1,0: низ луча −2,8 от центра ядра (пол ямы на −2,4), прежние 9 м уходили в пол на 2 м
+    const rg = new THREE.PlaneGeometry(0.35, 6.4);
     const a = (i / 28) * Math.PI * 2;
-    ray.position.set(Math.cos(a) * 0.4, 0, Math.sin(a) * 0.4); ray.rotation.y = -a; ray.rotation.z = (i % 2 ? 1 : -1) * 0.12;
-    rays.add(ray);
+    rg.rotateZ((i % 2 ? 1 : -1) * 0.12); rg.rotateY(-a); rg.translate(Math.cos(a) * 0.4, 1.0, Math.sin(a) * 0.4);
+    rayGeos.push(rg);
   }
-  rays.position.copy(core.position); g.add(rays);
+  const rayMesh = new THREE.Mesh(mergeGeometries(rayGeos, false), new THREE.MeshBasicMaterial({ color: 0x6fc8ff, transparent: true, opacity: 0.08, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  rays.add(rayMesh);
+  rays.position.copy(core.position); P.air(rays, 'лучи ядра'); g.add(rays);
+  for (const r of rings) r.userData.dynamic = true;
+  cage.userData.dynamic = true; rays.userData.dynamic = true; core.userData.dynamic = true;   // вращаются и пульсируют в update() — вне склейки (В3)
   // восходящие частицы над ядром
   const N = 260;
   const sparkGeo = new THREE.BufferGeometry();
@@ -1361,16 +1432,20 @@ function buildReactor(scene, ctx) {
   const seeds = [];
   for (let i = 0; i < N; i++) seeds.push({ a: Math.random() * 6.28, r: 0.6 + Math.random() * 3.4, y: Math.random(), sp: 0.25 + Math.random() * 0.5 });
   const sparks = new THREE.Points(sparkGeo, new THREE.PointsMaterial({ color: 0x9fe0ff, size: 0.07, transparent: true, opacity: 0.75, depthWrite: false, blending: THREE.AdditiveBlending }));
-  g.add(sparks);
+  P.air(sparks, 'искры'); g.add(sparks);
   const glowDisc = new THREE.Mesh(new THREE.CircleGeometry(4.2, 48), new THREE.MeshBasicMaterial({ color: 0x3fa8ff, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
-  glowDisc.rotation.x = -Math.PI / 2; glowDisc.position.set(cx, PIT + 0.02, cz); g.add(glowDisc);
+  glowDisc.rotation.x = -Math.PI / 2; glowDisc.position.set(cx, PIT + 0.02, cz); P.air(glowDisc, 'свечение'); g.add(glowDisc);
 
   // трубопроводы: от ядра к потолку и вдоль стен, с хомутами и вентилями
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
     const h = CEIL - (PIT + 3.6);
-    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, h, 12), P.MAT.brushed());
-    pipe.position.set(cx + Math.cos(a) * 1.3, PIT + 3.6 + h / 2, cz + Math.sin(a) * 1.3); g.add(pipe);
+    // низ трубы — на поверхности сферы ядра (r 1,6 на радиусе 1,3 → y = центр + 0,93), а не в воздухе над ним
+    const yBase = PIT + 2.4 + Math.sqrt(1.6 * 1.6 - 1.3 * 1.3) - 0.08;
+    const hPipe = h + (PIT + 3.6 - yBase);
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, hPipe, 12), P.MAT.brushed());
+    pipe.name = 'труба ядра';
+    pipe.position.set(cx + Math.cos(a) * 1.3, yBase + hPipe / 2, cz + Math.sin(a) * 1.3); g.add(pipe);
     const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.1, 12), P.MAT.graphite());
     flange.position.set(cx + Math.cos(a) * 1.3, PIT + 3.62, cz + Math.sin(a) * 1.3); g.add(P.air(flange));
   }
@@ -1435,7 +1510,7 @@ function buildReactor(scene, ctx) {
     const art = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: texture, toneMapped: false }));
     const zz = z0 + 4.5 + i * 4.6;
     art.position.set(x0 + 0.16, PIT + 2.4, zz); art.rotation.y = Math.PI / 2; g.add(P.air(art));
-    g.add(box(0.06, h + 0.12, w + 0.12, P.MAT.graphite(), x0 + 0.13, PIT + 2.4, zz));
+    g.add(P.air(box(0.06, h + 0.12, w + 0.12, P.MAT.graphite(), x0 + 0.13, PIT + 2.4, zz), 'рама картины'));
     const capt = label(a.title, a.sub, 0.9, true); capt.position.set(x0 + 0.17, PIT + 1.45, zz); capt.rotation.y = Math.PI / 2; g.add(P.air(capt));
     const arm = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.02, 8, 16, Math.PI / 2), P.MAT.brushed());
     arm.position.set(x0 + 0.2, PIT + 2.4 + h / 2 + 0.1, zz); arm.rotation.y = Math.PI / 2; arm.rotation.z = -Math.PI / 2; g.add(P.air(arm));
@@ -1446,8 +1521,9 @@ function buildReactor(scene, ctx) {
     spot.position.set(x0 + 0.52, PIT + 2.4 + h / 2 + 0.3, zz);
     spot.target.position.set(x0 + 0.16, PIT + 2.3, zz);
     g.add(spot, spot.target);
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.1, 16, 1, true), new THREE.MeshBasicMaterial({ color: 0xfff0d0, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }));
-    cone.position.set(x0 + 0.34, PIT + 2.95, zz); cone.rotation.z = Math.PI / 2 - 0.5; g.add(P.air(cone));
+    // конус света вертикально вниз от абажура: наклонный на 0,5 рад уходил вершиной в стену (аудит В1)
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.1, 16, 1, true), new THREE.MeshBasicMaterial({ color: 0xfff0d0, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }));
+    cone.position.set(x0 + 0.42, PIT + 2.4 + h / 2 + 0.32 - 0.57, zz); g.add(P.air(cone, 'конус света'));
     ctx.pickable(art, { kind: 'art', id: a.kind });
   });
 
@@ -1456,7 +1532,7 @@ function buildReactor(scene, ctx) {
   const scr = P.canvasTexture(1024, 384, () => {});
   const scrMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 1.05), new THREE.MeshBasicMaterial({ map: scr.texture, toneMapped: false }));
   scrMesh.position.set(0, PIT + 1.35, -0.2); scrMesh.rotation.x = -0.35; console_.add(scrMesh);
-  console_.position.set(cx, 0, cz + 6.2); g.add(console_);
+  console_.name = 'пульт'; console_.position.set(cx, 0, cz + 6.2); g.add(console_);
   const sign = label('Зал реактора · макет', 'балкон сверху, пульт и картины внизу', 1.4, true);
   sign.position.set(B[0] + 0.1, LEVEL + 2.2, 3.4); sign.rotation.y = Math.PI / 2; g.add(P.air(sign));
 
@@ -1474,7 +1550,7 @@ function buildReactor(scene, ctx) {
       rays.rotation.y += dt * 0.08;
       const pulse = 0.85 + Math.sin(t * 1.6) * 0.15;
       coreMat.emissiveIntensity = 1.5 * pulse; l1.intensity = 3.5 * pulse;
-      for (const r of rays.children) r.material.opacity = 0.06 + Math.sin(t * 2 + r.rotation.y * 3) * 0.03;
+      rays.children[0].material.opacity = 0.06 + Math.sin(t * 2) * 0.03;
       const arr = sparkGeo.attributes.position.array;
       for (let i = 0; i < N; i++) {
         const sd = seeds[i];
@@ -1515,7 +1591,7 @@ function buildReactor(scene, ctx) {
  */
 function buildRingLounge(scene, ctx) {
   const g = new THREE.Group();
-  g.name = 'второй этаж';
+  g.name = 'второй этаж'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   const Y = FLOOR2;
   const at = (r, deg, side = 0) => {
     const a = deg * Math.PI / 180;
@@ -1629,8 +1705,8 @@ function buildRingLounge(scene, ctx) {
   {
     const q = at(RING.rOut - 3.4, (wb.from + wb.to) / 2 * 180 / Math.PI + 8);
     const case_ = new THREE.Group();
-    case_.position.set(q.x, Y, q.z); case_.rotation.y = q.a;
-    case_.add(rbox(1.4, 0.95, 0.6, P.MAT.white(), 0.03)).position.y = 0;
+    case_.name = 'витрина антресоли'; case_.position.set(q.x, Y, q.z); case_.rotation.y = q.a;
+    // (прежняя строка `case_.add(rbox(...)).position.y = 0` роняла ВСЮ витрину на первый этаж: add() возвращает группу)
     const plinth = rbox(1.4, 0.95, 0.6, P.MAT.white(), 0.03); plinth.position.y = 0.475; case_.add(plinth);
     const glass = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 0.52), appleGlass(0.14));
     glass.position.y = 1.22; P.air(glass); case_.add(glass);
@@ -1642,7 +1718,7 @@ function buildRingLounge(scene, ctx) {
 
   /* --- растения по кромке парапета --- */
   for (let i = 0; i < 8; i++) {
-    const q = at(RING.rIn + 1.0, i * 45 + 22);
+    const q = at(RING.rIn + 1.0, i * 45 + 8);   // +22 совпадало с растениями кольца на 68° (аудит В1)
     const pl = i % 2 ? P.makeMonstera(1.0) : P.makeFicus(1.1);
     pl.position.set(q.x, Y, q.z); g.add(pl); ctx.life.plants.push(pl);
     ctx.block({ name: 'растение лаунджа', floor: 2, x: q.x, z: q.z, r: 0.5 });
@@ -1742,12 +1818,13 @@ function skyTexture(night) {
  */
 function buildOutside(scene) {
   const g = new THREE.Group();
+  g.name = 'окружение'; g.userData.container = true; g.userData.zone = 'exterior';
   scene.add(g);
 
   // --- небо
   const skyDay = skyTexture(false), skyNight = skyTexture(true);
   const sky = new THREE.Mesh(new THREE.SphereGeometry(240, 32, 20), new THREE.MeshBasicMaterial({ map: skyDay, side: THREE.BackSide, toneMapped: false, depthWrite: false, fog: false }));
-  sky.position.y = -20; g.add(sky);
+  sky.position.y = -20; sky.userData.auditSkip = true; g.add(sky);
 
   // --- земля до горизонта
   const grass = grassTexture();
@@ -1783,6 +1860,7 @@ function buildOutside(scene) {
   const gp = groundGeo.attributes.position, guv = groundGeo.attributes.uv;
   for (let i = 0; i < gp.count; i++) guv.setXY(i, gp.getX(i) / 460, gp.getY(i) / 460);
   const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.name = 'газон';
   ground.rotation.x = -Math.PI / 2; ground.position.y = -0.16; ground.receiveShadow = true; g.add(ground);
 
   // --- дальний план: одна цилиндрическая панорама, углов и стыков нет
@@ -1793,7 +1871,7 @@ function buildOutside(scene) {
     new THREE.CylinderGeometry(96, 96, 46, 96, 1, true),
     new THREE.MeshBasicMaterial({ map: day.texture, side: THREE.BackSide, toneMapped: false, transparent: true, depthWrite: false, fog: false }),
   );
-  pano.position.set(0, 15, 4); pano.renderOrder = -1; g.add(pano);
+  pano.position.set(0, 15, 4); pano.renderOrder = -1; pano.userData.auditSkip = true; g.add(pano);
 
   // --- ближний план: деревья инстансами (ствол + две кроны)
   const inFootprint = (x, z) => {
@@ -1817,7 +1895,8 @@ function buildOutside(scene) {
     const a = (i / N) * Math.PI * 2 + (i % 3) * 0.11;
     const r = 34 + ((i * 7) % 22);
     const x = Math.cos(a) * r * 1.2, z = Math.sin(a) * r;
-    if (inFootprint(x, z)) continue;
+    // пропущенный экземпляр прячется: с единичной матрицей ствол стоял в начале координат — посреди атриума
+    if (inFootprint(x, z)) { m4.compose(pos.set(0, -60, 0), q, sc.setScalar(0.001)); trunks.setMatrixAt(i, m4); continue; }
     spots.push([x, z]);
     const hgt = 0.85 + ((i * 13) % 7) / 10;
     pos.set(x, hgt * 2.1 - 0.16, z); sc.set(hgt, hgt, hgt);
@@ -1830,8 +1909,13 @@ function buildOutside(scene) {
   }
   for (; ci < N * 2; ci++) { m4.compose(pos.set(0, -50, 0), q, sc.setScalar(0.01)); crowns.setMatrixAt(ci, m4); }
   trunks.instanceMatrix.needsUpdate = true; crowns.instanceMatrix.needsUpdate = true;
-  g.add(trunks); g.add(crowns);
+  trunks.name = 'стволы'; crowns.name = 'кроны';
+  // лес — один предмет: кроны соседних деревьев смыкаются по замыслу, а стволы сидят в кронах
+  const forest = new THREE.Group(); forest.name = 'лес'; forest.userData.unit = 'лес';
+  forest.add(trunks); forest.add(crowns); g.add(forest);
 
+  // скамьи на дорожке: список нужен и кустам, и самим скамьям
+  const BENCH_SPOTS = [[-6.5, 30, Math.PI / 2], [6.5, 30, -Math.PI / 2], [-6.5, 42, Math.PI / 2], [6.5, 42, -Math.PI / 2], [36, 36, -2.4], [-36, 40, 2.4]];
   // кусты у фасада
   const bushG = new THREE.IcosahedronGeometry(0.9, 1);
   const bushes = new THREE.InstancedMesh(bushG, new THREE.MeshStandardMaterial({ color: 0x4d7c46, roughness: 0.95, flatShading: true }), 34);
@@ -1845,25 +1929,28 @@ function buildOutside(scene) {
     const a = (i / 34) * Math.PI * 2 + 0.12;
     const r = 27.5 + (i % 3) * 0.9;
     const x = Math.sin(a) * r, z = Math.cos(a) * r;
-    if (inFootprint(x, z)) { m4.compose(pos.set(0, -60, 0), q, sc.setScalar(0.01)); bushes.setMatrixAt(bi++, m4); continue; }
-    pos.set(x, 0.5, z); sc.setScalar(0.7 + ((i * 5) % 6) / 12);
+    // в следе здания и ближе 2,4 м к скамье куста нет (куст №32 сидел в скамье на 0,27 м)
+    // не в следе здания, не у скамьи и не на дорожке ко входу (полоса x ±2 при z > 22; куст №0 стоял на её кромке)
+    if (inFootprint(x, z) || BENCH_SPOTS.some(([bx, bz]) => Math.hypot(x - bx, z - bz) < 2.4) || (Math.abs(x) < 3.8 && z > 22)) { m4.compose(pos.set(0, -60, 0), q, sc.setScalar(0.01)); bushes.setMatrixAt(bi++, m4); continue; }
+    const bs = 0.7 + ((i * 5) % 6) / 12;
+    pos.set(x, -0.16 + 0.9 * bs * 0.92, z); sc.setScalar(bs);   // низ куста — на газоне (−0,16), а не на 0,34 ниже
     m4.compose(pos, q, sc); bushes.setMatrixAt(bi++, m4);
   }
-  bushes.instanceMatrix.needsUpdate = true; bushes.castShadow = true; g.add(bushes);
+  bushes.instanceMatrix.needsUpdate = true; bushes.castShadow = true; bushes.name = 'кусты'; g.add(bushes);
 
   // дорожка вокруг здания + скамьи
   const pathMat = new THREE.MeshStandardMaterial({ color: 0xcfc6b4, roughness: 0.9 });
   // дорожка-кольцо вокруг здания и подход с юга ко входу
   const ringPath = new THREE.Mesh(new THREE.RingGeometry(51, 53.6, 96), pathMat);
-  ringPath.rotation.x = -Math.PI / 2; ringPath.position.y = -0.14; ringPath.receiveShadow = true; g.add(ringPath);
+  ringPath.name = 'дорожка-кольцо'; ringPath.rotation.x = -Math.PI / 2; ringPath.position.y = -0.14; ringPath.receiveShadow = true; g.add(ringPath);
   const approach = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 30), pathMat);
-  approach.rotation.x = -Math.PI / 2; approach.position.set(0, -0.14, 38); approach.receiveShadow = true; g.add(approach);
-  for (const [bx, bz, ry] of [[-6.5, 30, Math.PI / 2], [6.5, 30, -Math.PI / 2], [-6.5, 42, Math.PI / 2], [6.5, 42, -Math.PI / 2], [36, 36, -2.4], [-36, 40, 2.4]]) {
+  approach.name = 'дорожка ко входу'; approach.rotation.x = -Math.PI / 2; approach.position.set(0, -0.14, 38); approach.receiveShadow = true; g.add(approach);
+  for (const [bx, bz, ry] of BENCH_SPOTS) {
     const bench = new THREE.Group();
     const seat = box(1.9, 0.08, 0.5, P.MAT.walnut(), 0, 0.44, 0); seat.castShadow = true; bench.add(seat);
     bench.add(box(1.9, 0.4, 0.06, P.MAT.walnut(), 0, 0.66, -0.22));
     for (const dx of [-0.75, 0.75]) bench.add(box(0.07, 0.44, 0.44, P.MAT.graphite(), dx, 0.22, 0));
-    bench.position.set(bx, -0.16, bz); bench.rotation.y = ry; g.add(bench);
+    bench.name = 'скамья'; bench.position.set(bx, -0.16, bz); bench.rotation.y = ry; g.add(bench);
   }
 
   // --- река с водопадом: настоящая вода на земле, а не синий клин на щите
@@ -1872,18 +1959,18 @@ function buildOutside(scene) {
   const rp = river.geometry.attributes.position;
   for (let i = 0; i < rp.count; i++) rp.setY(i, rp.getY(i) + Math.sin(rp.getX(i) * 0.035) * 5);  // русло изгибается
   river.geometry.computeVertexNormals();
-  river.rotation.x = -Math.PI / 2; river.position.set(0, -0.12, -62); g.add(river);
+  river.name = 'река'; river.rotation.x = -Math.PI / 2; river.position.set(0, -0.12, -62); g.add(river);
   // уступ и падающая вода
   const ledge = new THREE.Mesh(new THREE.BoxGeometry(26, 2.4, 7), new THREE.MeshStandardMaterial({ color: 0x8b8578, roughness: 0.95 }));
-  ledge.position.set(-46, 1.3, -68); ledge.rotation.y = 0.12; g.add(ledge);
+  ledge.name = 'уступ водопада'; ledge.position.set(-46, 1.3, -68); ledge.rotation.y = 0.12; g.add(ledge);
   const fallMat = new THREE.MeshBasicMaterial({ color: 0xeef7fb, transparent: true, opacity: 0.85, side: THREE.DoubleSide, fog: false });
   const fall = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.8), fallMat);
-  fall.position.set(-46, 1.26, -64.55); fall.rotation.y = 0.12; g.add(fall);
+  fall.name = 'водопад'; fall.position.set(-46, 1.26, -64.55); fall.rotation.y = 0.12; g.add(fall);
   const foam = new THREE.Mesh(new THREE.CircleGeometry(5.5, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, fog: false }));
-  foam.rotation.x = -Math.PI / 2; foam.position.set(-46, -0.08, -63.2); g.add(foam);
+  foam.name = 'пена водопада'; foam.rotation.x = -Math.PI / 2; foam.position.set(-46, -0.08, -63.2); g.add(foam);
   // верхнее русло за уступом
   const upper = new THREE.Mesh(new THREE.PlaneGeometry(60, 14), waterMat);
-  upper.rotation.x = -Math.PI / 2; upper.position.set(-62, 2.62, -72); g.add(upper);
+  upper.name = 'верхнее русло'; upper.rotation.x = -Math.PI / 2; upper.position.set(-62, 2.62, -72); g.add(upper);
 
   // --- кольцо штаб-квартиры: объём, а не рисунок в лесу
   const ring = new THREE.Group();
@@ -1902,7 +1989,8 @@ function buildOutside(scene) {
     const fl = new THREE.Mesh(new THREE.TorusGeometry(R, 0.09, 6, 72), new THREE.MeshStandardMaterial({ color: 0xf1eee6, roughness: 0.6 }));
     fl.rotation.x = Math.PI / 2; fl.position.y = y; ring.add(fl);
   }
-  ring.position.set(-32, -0.15, -88); ring.rotation.y = 0.35; g.add(ring);   // за рекой, но ближе дальнего плана
+  ring.name = 'кольцо штаб-квартиры'; ring.userData.unit = 'кольцо штаб-квартиры';
+  ring.position.set(-20, -0.15, -118); ring.rotation.y = 0.35; g.add(ring);   // за рекой и водопадом (на −88 кольцо резало уступ), но ближе дальнего плана (R 96 → по горизонту)
 
   let fog = null;
   return {

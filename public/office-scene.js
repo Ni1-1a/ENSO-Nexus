@@ -16,16 +16,23 @@ import * as THREE from './vendor/three.module.min.js';
 import { RoomEnvironment } from './vendor/RoomEnvironment.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
 import { RectAreaLightUniformsLib } from './vendor/RectAreaLightUniformsLib.js';
-import * as P from './office-props.js?v=9';
-import { LifeDirector, makeSteam } from './office-life.js?v=9';
-import { WalkRig } from './office-walk.js?v=9';
-import { buildWings } from './office-wings.js?v=9';
-import { slotFree, stairSurface } from './office-geom.mjs?v=9';
-import { buildShell, buildAtrium, buildPavilionShell, stoneMat, TONE } from './office-ring.js?v=9';
+import * as P from './office-props.js?v=11';
+
+/** В3: слоты местного света (см. _setupLightPool) и виды прогрева конвейеров */
+const LIGHT_SLOTS = { point: 4, spot: 2 };   // 8+4 давали в вестибюле 13,6 мс кадра на 1440p, 4+2 — 3,5 мс (замер 06.10.2026)
+const WARM_VIEWS = [
+  [[0, 1.6, 21], [0, 1.4, 12]], [[0, 1.6, 8], [0, 1.4, -6]], [[-2, 1.6, -17], [-6, 1.4, -9]], [[16, 1.6, 4], [20, 1.4, 0]],
+  [[-16, 5.8, 4], [0, 4.6, 0]], [[-30, 1.6, 0], [-38, 0.4, 0.6]], [[-20, 1.6, 24], [-27, 1.2, 28]], [[0, 1.7, 34], [0, 2, 20]],
+];
+import { LifeDirector, makeSteam } from './office-life.js?v=11';
+import { WalkRig } from './office-walk.js?v=11';
+import { buildWings } from './office-wings.js?v=11';
+import { slotFree, stairSurface } from './office-geom.mjs?v=11';
+import { buildShell, buildAtrium, buildPavilionShell, stoneMat, TONE } from './office-ring.js?v=11';
 import {
   RING, FLOOR1, FLOOR2 as SECT2, PAVILIONS, CORES, ATRIUM,
   insideWalkable, floorHeight as planFloor, pt, sectorAt,
-} from './office-plan.mjs?v=9';
+} from './office-plan.mjs?v=11';
 
 /* палитра платформы + бренд (BRAND задаётся в office-data.js) */
 const PAL = {
@@ -216,6 +223,24 @@ export class OfficeScene {
   }
 
   /**
+   * В3. Невидимый короб по мировым габаритам группы: после глобальной склейки
+   * статики её меши уходят из группы, и луч клика/наведения ловит короб.
+   * Материал с visible=false не рисуется, но Raycaster его видит.
+   */
+  _pickProxy(group, info) {
+    group.updateMatrixWorld(true);
+    const b = new THREE.Box3().setFromObject(group);
+    if (!Number.isFinite(b.min.x)) return null;
+    const size = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
+    const m = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.1, size.x), Math.max(0.1, size.y), Math.max(0.1, size.z)), new THREE.MeshBasicMaterial({ visible: false }));
+    m.position.copy(c); m.name = 'зона клика';
+    m.userData.pick = info; m.userData.pickProxy = true; m.userData.auditSkip = true; m.userData.keep = true;
+    this.scene.add(m); this.pickables.push(m);
+    group.userData.pickProxy = true;
+    return m;
+  }
+
+  /**
    * ЕДИНСТВЕННЫЙ вход для препятствий (П1 ТЗ №3). Этаж — ОБЯЗАТЕЛЬНОЕ поле:
    * прежде препятствие без указания этажа работало на всех отметках сразу, и
    * двадцать четыре невидимых круга рабочих мест первого этажа стояли оградой
@@ -294,12 +319,106 @@ export class OfficeScene {
       block: (b) => this.addBlocker(b),
     });
     this.wings.setDark(this.dark);
+    this._tagZones();
+    // В3: склейка всей статики по материалам — корзины: комната-крыло или этаж кольца
+    const ROOM_TOP = /^(Зал реактора|Мастерская|Гараж|окружение|Аквариум|Переговорные|Библиотека нормативов|второй этаж)/;
+    this.mergeStats = P.mergeWorldStatic(this.scene, {
+      bucketOf: (o, cy) => { let top = o; while (top.parent && !top.parent.isScene) top = top.parent; if (top.name && ROOM_TOP.test(top.name)) return top.name; return cy >= RING.floor2 - 0.3 ? 'кольцо · этаж 2' : 'кольцо · этаж 1'; },
+    });
     this.refreshShadows();
+    this._setupLightPool();
+    this._warmUp();
+  }
+
+  /**
+   * В1. Зоны аудита: каждый предмет несёт `userData.zone`. Рабочие места и
+   * люди — «workplace», оболочка/павильоны/окружение помечены при сборке
+   * как «exterior», всё остальное в интерьере — «furnishing». Предмет без
+   * зоны в аудите виден отдельной строкой «unzoned» — так ничего не теряется.
+   */
+  _tagZones() {
+    for (const d of this._desks) { d.group.userData.zone = 'workplace'; d.group.userData.unit = `рабочее место ${this._desks.indexOf(d) + 1}`; }
+    for (const [i, w] of (this.life.walkers || []).entries()) { if (w.rig && w.rig.group) { w.rig.group.userData.zone = 'workplace'; w.rig.group.userData.unit = `ходок ${i + 1}`; } }
+    for (const o of this.scene.children) {
+      if (o.userData.zone) continue;
+      if (o.isLight || o.isCamera || (o.type === 'Object3D' && !o.children.length)) continue;
+      o.userData.zone = 'furnishing';
+    }
   }
 
   /** Р5.1: единственное место, где карта теней пересчитывается. */
   refreshShadows() {
     this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  /*
+   * В3. ВИРТУАЛИЗАЦИЯ МЕСТНЫХ ИСТОЧНИКОВ. three.js — прямой рендер: каждый
+   * фрагмент каждого освещённого материала перебирает ВСЕ видимые источники.
+   * В сцене 34 точечных и 14 прожекторных: в вестибюле на 2560×1440 кадр шёл
+   * 242 мс, без них — 5 мс (замер 06.10.2026). Теперь источники-образцы не
+   * светят сами: их параметры раз в 0,2 с получают 8 точечных и 4 прожекторных
+   * слота — ближайшие к камере по вкладу intensity/d². Число видимых источников
+   * постоянно, поэтому шейдеры не перекомпилируются при ходьбе. Теневой —
+   * только солнце, оно в пул не входит, как и RectAreaLight экранов.
+   */
+  _setupLightPool() {
+    const sources = [];
+    this.scene.traverse((o) => { if ((o.isPointLight || o.isSpotLight) && !o.userData.poolSlot && !o.castShadow) sources.push(o); });
+    const pos = new THREE.Vector3(), tgt = new THREE.Vector3();
+    this._lightSources = sources.map((l) => {
+      l.updateMatrixWorld(true);
+      const s = { light: l, type: l.isSpotLight ? 'spot' : 'point', pos: l.getWorldPosition(pos).clone() };
+      if (l.isSpotLight) { l.target.updateMatrixWorld(true); s.target = l.target.getWorldPosition(tgt).clone(); }
+      l.visible = false;
+      return s;
+    });
+    const mk = (n, make) => Array.from({ length: n }, (_, i) => { const s = make(); s.name = `слот света ${i + 1}`; s.userData.poolSlot = true; this.scene.add(s); return s; });
+    this._pointSlots = mk(LIGHT_SLOTS.point, () => new THREE.PointLight(0xffffff, 0, 1, 2));
+    this._spotSlots = mk(LIGHT_SLOTS.spot, () => { const s = new THREE.SpotLight(0xffffff, 0, 1, 0.5, 0.5, 2); this.scene.add(s.target); return s; });
+    this._poolAt = -1;
+    this._updateLightPool(true);
+  }
+
+  _updateLightPool(force = false) {
+    if (!this._lightSources) return;
+    if (!force && this._time - this._poolAt < 0.2) return;
+    this._poolAt = this._time;
+    const cam = this.camera.getWorldPosition(new THREE.Vector3());
+    const score = (s) => {
+      const l = s.light; if (!l.intensity) return 0;
+      const d = Math.max(1, s.pos.distanceTo(cam));
+      if (l.distance && d > l.distance + 1.5) return 0;
+      return l.intensity / (d * d);
+    };
+    for (const [type, slots] of [['point', this._pointSlots], ['spot', this._spotSlots]]) {
+      const best = this._lightSources.filter((s) => s.type === type).map((s) => [score(s), s]).filter((x) => x[0] > 0).sort((a, b) => b[0] - a[0]).slice(0, slots.length);
+      slots.forEach((slot, i) => {
+        const s = best[i] && best[i][1];
+        if (!s) { slot.intensity = 0; return; }
+        const l = s.light;
+        slot.position.copy(s.pos); slot.color.copy(l.color); slot.intensity = l.intensity; slot.distance = l.distance; slot.decay = l.decay;
+        if (type === 'spot') { slot.angle = l.angle; slot.penumbra = l.penumbra; slot.target.position.copy(s.target); }
+      });
+    }
+  }
+
+  /**
+   * В3. Прогрев: первая отрисовка каждого вида компилирует конвейеры Metal
+   * (0,4…1 с затыка в кадре). Несколько кадров с типовых точек маршрута
+   * снимаются ещё под экраном загрузки, вместе с картой теней.
+   */
+  _warmUp() {
+    const cam = this.camera;
+    const p0 = cam.position.clone(), q0 = cam.quaternion.clone();
+    const t0 = performance.now();
+    for (const [at, look] of WARM_VIEWS) {
+      cam.position.set(at[0], at[1], at[2]); cam.lookAt(look[0], look[1], look[2]); cam.updateMatrixWorld(true);
+      this._updateLightPool(true);
+      this.renderer.render(this.scene, cam);
+    }
+    cam.position.copy(p0); cam.quaternion.copy(q0);
+    this._poolAt = -1;
+    console.info(`[office] прогрев ${WARM_VIEWS.length} видов: ${Math.round(performance.now() - t0)} мс`);
   }
 
   /**
@@ -328,10 +447,12 @@ export class OfficeScene {
 
     // подсветка кольца: линия по кромке атриума на обоих этажах
     for (const y of [RING.floor1 + RING.height - 0.35, RING.floor2 + RING.height - 0.35]) {
-      const led = new THREE.Mesh(new THREE.TorusGeometry(RING.rIn + 0.5, 0.03, 6, 128), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.75 }));
+      // r = rIn + 0,1: на rIn + 0,5 лента проходила сквозь простенки секторов (они начинаются с rIn + 0,2)
+      const led = new THREE.Mesh(new THREE.TorusGeometry(RING.rIn + 0.1, 0.03, 6, 128), new THREE.MeshBasicMaterial({ color: p.strip, transparent: true, opacity: 0.75 }));
+      led.name = 'лента подсветки';
       led.rotation.x = -Math.PI / 2;
       led.position.y = y;
-      P.air(led);
+      P.air(led); led.userData.keep = true;   // пульс кромки меняет opacity своего материала — вне склейки (В3)
       this.scene.add(led);
       this._strips.push(led);
       this.life.strips.push(led);
@@ -414,17 +535,25 @@ export class OfficeScene {
     // опоры экрана — он не висит: две стойки в пол атриума
     for (const sx of [-ATRIUM.screen.width / 2 + 0.6, ATRIUM.screen.width / 2 - 0.6]) {
       const zz = -Math.sqrt(Math.max(0.01, R * R - sx * sx));
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, yc - H / 2, 10), P.MAT.graphite());
-      post.position.set(sx, (yc - H / 2) / 2, zz + 0.12);
+      // стойка стоит на РЯДУ амфитеатра, а не уходит в него на 300 мм: низ — отметка пола в точке
+      const base = this.heightAt(sx, zz + 0.12, 0);
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, yc - H / 2 - base, 10), P.MAT.graphite());
+      post.name = 'стойка экрана';
+      post.position.set(sx, base + (yc - H / 2 - base) / 2, zz + 0.12);
       post.castShadow = true;
       this.scene.add(post);
     }
     this.addBlocker({ name: 'главный экран', floor: 1, x0: -7, x1: 7, z0: -RING.rIn - 0.2, z1: -RING.rIn + 2.0 });
+    /*
+     * В3: три RectAreaLight экрана заменены точечными. Площадной свет считается
+     * по LTC в КАЖДОМ фрагменте всей сцены: в мастерской, где экран не виден,
+     * кадр с ними шёл 41 мс, без них — 2 мс (замер 06.10.2026). Точечные
+     * уходят в пул местного света и действуют только рядом с экраном.
+     */
     this._screenLights = [];
-    for (const [x, ry] of [[-4.4, 0.32], [0, 0], [4.4, -0.32]]) {
-      const l = new THREE.RectAreaLight(0xcfe0ff, 2.6, 5.0, H);
-      l.position.set(x, yc, -RING.rIn + 1.0);
-      l.rotation.set(-0.18, ry, 0);
+    for (const x of [-4.4, 0, 4.4]) {
+      const l = new THREE.PointLight(0xcfe0ff, 18, 16, 2);
+      l.position.set(x, yc, -RING.rIn + 1.6);
       this.scene.add(l);
       this._screenLights.push(l);
     }
@@ -716,7 +845,7 @@ export class OfficeScene {
     g.add(this.tableHolo);
     this.scene.add(g);
     this._tableGroup = g;
-    this._pickable(g, { kind: 'table' });
+    this._pickable(g, { kind: 'table' }); this._pickProxy(g, { kind: 'table' });
     this.addBlocker({ name: 'стол-голограмма', floor: 1, x0: -2.1, x1: 2.1, z0: 3.7, z1: 6.7 });
     this.itemAnchors.set('table', { group: g, camPos: [2.6, 2.5, 7.2], camTgt: [0, 1.15, 5.2], walk: [2.6, 7.4], look: [0, 5.2] });
     this._drawTablePlaceholder();
@@ -770,7 +899,7 @@ export class OfficeScene {
       for (const poly of this._polysOf(z.geometry)) {
         if (poly.length < 3) continue;
         try {
-          const zone = new THREE.Mesh(new THREE.ExtrudeGeometry(shapeOf(poly), { depth: 0.18, bevelEnabled: false }), new THREE.MeshPhysicalMaterial({ color: new THREE.Color(st.color), transparent: true, opacity: 0.26, roughness: 0.2, transmission: 0.2, depthWrite: false }));
+          const zone = new THREE.Mesh(new THREE.ExtrudeGeometry(shapeOf(poly), { depth: 0.18, bevelEnabled: false }), new THREE.MeshPhysicalMaterial({ color: new THREE.Color(st.color), transparent: true, opacity: 0.3, roughness: 0.2, depthWrite: false }));   // без transmission (В3)
           zone.rotation.x = -Math.PI / 2; zone.position.y = 0.03;
           zone.userData.pick = { kind: 'zone', id: z.id, label: z.label, zone: z };
           this.tableHolo.add(zone);
@@ -859,7 +988,7 @@ export class OfficeScene {
     }
     // общий «спящий» экран для незанятых мониторов
     this._idle = P.canvasTexture(768, 256, () => {});
-    this._idle.texture.wrapS = THREE.RepeatWrapping; this._idle.texture.repeat.x = -1;
+    // без repeat.x = −1: зеркалирование было нужно вогнутому экрану 32:9, на плоской панели XDR «ENSO» читалось задом наперёд (критик, кадр workplace-1)
     this._drawIdle();
     positions.forEach((pos, i) => {
       const mod = Object.keys(deskOf).find((m) => deskOf[m] === i) || null;
@@ -909,16 +1038,21 @@ export class OfficeScene {
      * человеком, мышь справа от неё, фишка (шахматы, кубик, го) — в ЛЕВОМ
      * углу. Прежде фишка стояла в правом углу поверх мыши.
      */
-    const kb = P.makeKeyboard(); kb.position.set(0, 0.775, 0.18); g.add(kb);
+    // В3: клавиатура, блокнот и кружка — то, что не склеивается (инстансы, канва, подмена в руке), — дальше 18 м не рисуются
+    const small = new THREE.LOD(); const smallG = new THREE.Group(); small.addLevel(smallG, 0); small.addLevel(new THREE.Group(), 15); g.add(small);
+    const kb = P.makeKeyboard(); kb.position.set(0, 0.775, 0.18); smallG.add(kb);
     const mouse = P.makeMouse(); mouse.position.set(0.36, 0.775, 0.20); g.add(mouse);
-    const nb = P.makeNotebook(); nb.position.set(-0.62, 0.775, -0.14); nb.rotation.y = 0.2; g.add(nb);
+    const nb = P.makeNotebook(); nb.position.set(-0.62, 0.775, -0.14); nb.rotation.y = 0.2; smallG.add(nb);
     const pen = P.makePen(); pen.position.set(-0.60, 0.78, 0.02); pen.rotation.y = 0.4; g.add(pen);
     const pencil = P.makePerfectPencil(); pencil.position.set(-0.65, 0.78, 0.06); pencil.rotation.y = -0.2; g.add(pencil);
-    const mug = P.makeMug(); mug.position.set(0.72, 0.775, -0.10); g.add(mug);
+    const mug = P.makeMug(); mug.position.set(0.72, 0.775, -0.10); smallG.add(mug);
+    P.mergeStatic(mug);                                   // 7 мешей → 3 (В3); keep ставится после, кружку подменяет рука агента
     mug.traverse((m) => { m.userData.keep = true; });
     if (index % 3 === 0) { const ph = P.makePhone(); ph.position.set(0.62, 0.775, 0.30); ph.rotation.y = -0.3; g.add(ph); }
     if (index % 4 === 1) { const pl = P.makeFicus(0.26); pl.position.set(-0.76, 0.775, -0.30); g.add(pl); pl.traverse((m) => { if (m.userData.sway) { this.life.plants.push(m); m.userData.keep = true; } }); }
-    const chair = P.makeChair(); chair.position.set(0, 0, 0.62); g.add(chair);
+    // кресло на 0,52: при 0,62 таз сидящего (z 0,46) был на передней кромке сиденья, а стойка кресла — в 16 см позади него,
+    // и в кадре человек сидел «в воздухе рядом с креслом» (критик, кадры workplace-1/2); спинка (дуга до z 0,64) в 8 см от спины
+    const chair = P.makeChair(); chair.position.set(0, 0, 0.52); g.add(chair);
     const cs = P.makeContactShadow(2.6, 1.7, 0.32); cs.position.set(0.05, 0.006, 0.2); g.add(cs);
     // ~40 мешей стола → несколько по материалам; человек добавляется после
     P.mergeStatic(g);
@@ -934,8 +1068,10 @@ export class OfficeScene {
       person.armR.elbow.add(handMug); handMug.position.set(0, -0.28, -0.02);
       this.life.addAgent(module, person, { mug, handMug });
       this._pickable(g, { kind: 'agent', module });
+      this._pickProxy(g, { kind: 'agent', module });
     } else {
       this._pickable(g, { kind: 'desk' });
+      this._pickProxy(g, { kind: 'desk' });
     }
     this.scene.add(g);
     g.updateMatrixWorld(true);
@@ -952,8 +1088,10 @@ export class OfficeScene {
 
   _placeItemAnchor(item, deskGroup) {
     const holder = new THREE.Group();
-    holder.position.set(-0.52, 0.775, 0.28);
-    deskGroup.add(holder);
+    // В3: фишки на столах (кубик, шахматы, го — сотни мелких мешей, собираются позже склейки) дальше 9 м не рисуются
+    const holderLod = new THREE.LOD(); holderLod.addLevel(holder, 0); holderLod.addLevel(new THREE.Group(), 7);
+    holderLod.position.set(-0.52, 0.775, 0.28);
+    deskGroup.add(holderLod);
     deskGroup.updateMatrixWorld(true);
     const world = new THREE.Vector3(); holder.getWorldPosition(world);
     const camPos = deskGroup.localToWorld(new THREE.Vector3(-1.15, 1.3, 0.8));
@@ -1050,24 +1188,43 @@ export class OfficeScene {
     /* --- входной портал в наружной стене --- */
     const doorW = 4.2;
     const dr = RING.rOut - RING.wallT / 2;
-    const portal = new THREE.Mesh(
-      new THREE.CylinderGeometry(dr + 0.2, dr + 0.2, 3.3, 32, 1, true, -doorW / dr / 2, doorW / dr),
-      P.MAT.graphite(),
-    );
-    portal.position.y = 1.65;
-    P.air(portal, 'входной портал');
+    /*
+     * Портал — РАМА вокруг проёма (две стойки и ригель графитом), а не
+     * сплошной сегмент цилиндра: сегмент закрывал вход серой панелью с улицы
+     * (кадр exterior-1 круга 5), внутри его не было видно из-за отсечения
+     * задних граней.
+     */
+    const portal = new THREE.Group();
+    portal.name = 'входной портал';
+    const pr = RING.rOut + 0.152;                       // снаружи от наружной грани стены (24,0) с зазором 2 мм
+    for (const side of [-1, 1]) {
+      const q = this._at(pr, side * ((doorW / 2 + 0.17) / RING.rOut) * 180 / Math.PI, {});
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3.6, 0.3), P.MAT.graphite());
+      post.position.set(q.x, 1.8, q.z); post.rotation.y = q.a; post.castShadow = true;
+      portal.add(post);
+    }
+    // ригель — прямой брус по касательной: внутренняя грань на 24,152 касается наружной грани стены (24,0) только серединой
+    const hq = this._at(pr + 0.15, 0, {});
+    const head = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.94, 0.3, 0.3), P.MAT.graphite());
+    head.position.set(hq.x, 3.45, hq.z); head.rotation.y = hq.a; head.castShadow = true;
+    portal.add(head);
+    P.air(portal);   // рама висит на стене по замыслу
     this.scene.add(portal);
     for (const sx of [-1, 1]) {
-      const leaf = new THREE.Mesh(new THREE.PlaneGeometry(doorW / 2 - 0.1, 2.9), new THREE.MeshPhysicalMaterial({
+      // косяк — четверть 0,28 ВДОЛЬ стены: заходит в проём на 0,14 с каждой стороны (внутренняя грань на 1,96);
+      // створка 1,8 от 0,08 до 1,88 — с зазором 80 мм до косяка
+      const leaf = new THREE.Mesh(new THREE.PlaneGeometry(doorW / 2 - 0.3, 2.9), new THREE.MeshPhysicalMaterial({
         color: 0xeaf2f6, transparent: true, opacity: 0.2, roughness: 0.04, metalness: 0.1, side: THREE.DoubleSide,
       }));
-      leaf.position.set(sx * doorW / 4, 1.45, dr - 0.1);
-      P.air(leaf);
+      leaf.position.set(sx * (doorW / 4 - 0.07), 1.45, dr - 0.1);
+      P.air(leaf, 'створка входа');
       this.scene.add(leaf);
     }
-    const mat = new THREE.Mesh(new THREE.PlaneGeometry(doorW + 1.2, 2.2), P.std(0x3a352c, { roughness: 0.95 }));
+    // коврик 5,0 × 2,2 на dr − 1,5: углы 5,4-метрового на dr − 1,4 уходили под дугу цоколя (r 23,7)
+    const mat = new THREE.Mesh(new THREE.PlaneGeometry(doorW + 0.8, 2.2), P.std(0x3a352c, { roughness: 0.95 }));
+    mat.name = 'коврик';
     mat.rotation.x = -Math.PI / 2;
-    mat.position.set(0, y0 + 0.012, dr - 1.4);
+    mat.position.set(0, y0 + 0.012, dr - 1.5);
     this.scene.add(mat);
 
     /*
@@ -1113,8 +1270,9 @@ export class OfficeScene {
     const smon = P.makeProDisplayXDR({ texture: this._idle.texture }); smon.scale.setScalar(0.62); smon.position.set(-0.9, 1.11, -0.5); g.add(smon);
     const smac = P.makeMacStudio(); smac.scale.setScalar(0.9); smac.position.set(-0.28, 1.11, -0.62); g.add(smac);
     const ph = P.makePhone(); ph.position.set(0.8, 1.15, -0.1); g.add(ph);
+    g.userData.zone = 'workplace'; g.userData.unit = 'стойка приёма';
     this.scene.add(g);
-    this._pickable(g, { kind: 'secretary' });
+    this._pickable(g, { kind: 'secretary' }); this._pickProxy(g, { kind: 'secretary' });
     // стойка 3,6 × 0,9 — прямоугольник, а не круг: круг r 2,1 съедал проход
     this.addBlocker({ name: 'стойка приёма', floor: 1, cx: seat.x, cz: seat.z, w: 3.9, d: 1.9, rot: 0 });
     const front = { x: seat.x, z: seat.z - 2.4 };
@@ -1150,10 +1308,17 @@ export class OfficeScene {
         const s2 = fit(a2, 88); c.fillText(a2, CW / 2, CH * 0.72);
         void s1; void s2;
       });
-      const fq = this._at(RING.rOut - RING.wallT - 0.1, 0, {});
-      const friezeMesh = new THREE.Mesh(new THREE.PlaneGeometry(10.0, 1.25), new THREE.MeshBasicMaterial({ map: frieze.texture, transparent: true, toneMapped: false }));
-      friezeMesh.position.set(fq.x, y0 + 3.4, fq.z);
-      friezeMesh.rotation.y = fq.a + Math.PI;
+      /*
+       * Фриз — ДУГА по стене, а не плоскость: у плоскости 10 м концы на r 24,1
+       * уходили сквозь стеклянную ленту (стена на 23,7). Верх на 3,96 — под
+       * плитой второго этажа (3,98). Вогнутая поверхность зеркалит канву —
+       * repeat.x = −1.
+       */
+      const FR = RING.rOut - RING.wallT - 0.1, FW = 10.0, FH = 1.25;
+      const friezeGeo = new THREE.CylinderGeometry(FR, FR, FH, 48, 1, true, -FW / FR / 2, FW / FR);
+      frieze.texture.wrapS = THREE.RepeatWrapping; frieze.texture.repeat.x = -1;
+      const friezeMesh = new THREE.Mesh(friezeGeo, new THREE.MeshBasicMaterial({ map: frieze.texture, transparent: true, toneMapped: false, side: THREE.BackSide }));
+      friezeMesh.position.set(0, y0 + 3.96 - FH / 2, 0);
       P.air(friezeMesh, 'фриз направлений');
       this.scene.add(friezeMesh);
     }
@@ -1202,32 +1367,41 @@ export class OfficeScene {
       P.air(m, `табличка ${i + 1}`);
       P.air(art); P.air(back);
       this.scene.add(m);
-      this._pickable(m, { kind: 'plaque', index: i });
+      this._pickable(m, { kind: 'plaque', index: i }); m.userData.pickProxy = true;   // канва остаётся, рама склеивается (В3)
     });
 
     /* --- диваны и растения --- */
     // диваны по бокам, ОСЬ ВХОДА свободна: прямой путь вход → атриум
-    for (const deg of [-15.5, 15.5]) {
-      const q = this._at(20.4, deg, {});
+    for (const deg of [-14.5, 14.5]) {
+      // r 17,6, а не 20,4: на 20,4 левый диван стоял внутри стойки приёма (аудит В1: 498 мм);
+      // ±14,5°, а не ±15,5: на 15,5 угол левого дивана входил в фирменную стену на −19,95°
+      const q = this._at(17.6, deg, {});
+      const sofaG = new THREE.Group();
+      sofaG.name = 'диван вестибюля';
+      sofaG.position.set(q.x, y0, q.z); sofaG.rotation.y = q.a;
       const sofa = new THREE.Mesh(new RoundedBoxGeometry(2.4, 0.5, 0.95, 3, 0.1), P.MAT.terracotta());
-      sofa.position.set(q.x, y0 + 0.25, q.z); sofa.rotation.y = q.a; sofa.castShadow = true; this.scene.add(sofa);
+      sofa.position.set(0, 0.25, 0); sofa.castShadow = true; sofaG.add(sofa);
       const back = new THREE.Mesh(new RoundedBoxGeometry(2.4, 0.55, 0.2, 3, 0.08), P.MAT.terracotta());
-      const bq = this._at(20.85, deg, {});
-      back.position.set(bq.x, y0 + 0.75, bq.z); back.rotation.y = q.a; this.scene.add(back);
+      // спинка стоит НА сиденье у задней кромки, а не висит рядом отдельным предметом
+      back.position.set(0, 0.5 + 0.275, -0.375); sofaG.add(back);
+      this.scene.add(sofaG);
       this.addBlocker({ name: 'диван вестибюля', floor: 1, x: q.x, z: q.z, r: 1.4 });
-      const tq = this._at(19.0, deg, {});
+      // столик перед диваном, к атриуму (на r 19 он стоял под ногами секретаря)
+      const tq = this._at(16.1, deg, {});
+      const tableG = new THREE.Group(); tableG.name = 'столик'; tableG.position.set(tq.x, y0, tq.z);
       const table = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.04, 24), P.MAT.walnut());
-      table.position.set(tq.x, y0 + 0.42, tq.z); this.scene.add(table);
+      table.position.set(0, 0.42, 0); tableG.add(table);
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 8), P.MAT.chrome());
-      leg.position.set(tq.x, y0 + 0.2, tq.z); this.scene.add(leg);
+      leg.position.set(0, 0.2, 0); tableG.add(leg);
+      this.scene.add(tableG);
     }
     /*
      * Растения смягчают «стрелу» — прямой прострел от входа вглубь: два по
      * бокам оси у кромки атриума и два в углах сектора у наружной стены.
      */
-    for (const [r, deg] of [[13.4, -9], [13.4, 9], [23.0, -18], [23.0, 18]]) {
+    for (const [r, deg] of [[13.4, -14], [13.4, 14], [23.0, -16], [23.0, 16]]) {   // ±9° упиралось в макет АВИВАК-2 на r 14, 8°; ±18 — крона в мосс-панели на −19,95°
       const q = this._at(r, deg, {});
-      const pl = P.makeMonstera(1.1); pl.position.set(q.x, y0, q.z); this.scene.add(pl);
+      const pl = P.makeMonstera(1.1); pl.position.set(q.x, this.heightAt(q.x, q.z, y0), q.z); this.scene.add(pl);
       pl.traverse((m) => { if (m.userData.sway) this.life.plants.push(m); });
       this.addBlocker({ name: 'растение вестибюля', floor: 1, x: q.x, z: q.z, r: 0.55 });
     }
@@ -1249,13 +1423,14 @@ export class OfficeScene {
     const face = a + Math.PI / 2;            // лицом внутрь сектора
 
     const lac = new THREE.Mesh(new THREE.BoxGeometry(7.2, 3.3, 0.18), new THREE.MeshStandardMaterial({ color: 0x0f0f10, roughness: 0.18, metalness: 0.25 }));
-    const c = on(17.0, 0.12);
+    // перегородка сектора ±0,16: лак (0,18) стоит перед её гранью, а не в толще (аудит В1: 76 мм)
+    const c = on(17.0, 0.16 + 0.09 + 0.005);
     lac.position.set(c.x, y0 + 1.65, c.z); lac.rotation.y = face;
     P.air(lac, 'фирменная стена');
     g.add(lac);
     const sign = P.canvasTexture(1600, 640, (cc) => this._drawBrandSign(cc, null));
     this._brandSign = sign;
-    const sc = on(17.0, 0.23);
+    const sc = on(17.0, 0.16 + 0.18 + 0.009);
     const signMesh = new THREE.Mesh(new THREE.PlaneGeometry(6.6, 2.64), new THREE.MeshBasicMaterial({ map: sign.texture, transparent: true, toneMapped: false }));
     signMesh.position.set(sc.x, y0 + 1.8, sc.z);
     signMesh.rotation.y = face;
@@ -1267,28 +1442,36 @@ export class OfficeScene {
       img.src = this.brand.logoUrl;
     }
     const MOSS_TONES = [0x3f7a48, 0x568a4e, 0x2f5a3a, 0x6d9a5a, 0x476b3f];
-    const cushionG = new THREE.SphereGeometry(1, 8, 6);
+    /*
+     * Подушка мха — ПОЛУСФЕРА плоской стороной на подложке: шар, утопленный
+     * наполовину, уходил сквозь подложку в перегородку на 0,26 м (582 пары
+     * в аудите В1), а нижний ряд — в пол. Купол смотрит по нормали подложки.
+     */
+    const cushionG = new THREE.SphereGeometry(1, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+    const normal = new THREE.Vector3(Math.cos(a), 0, -Math.sin(a));   // направление `side` в on()
+    const UP = new THREE.Vector3(0, 1, 0);
     for (const r0 of [12.6, 21.4]) {
-      const b0 = on(r0, 0.12);
+      const b0 = on(r0, 0.16 + 0.05 + 0.005);
       const backing = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.3, 0.1), new THREE.MeshStandardMaterial({ color: 0x24361f, roughness: 1 }));
       backing.position.set(b0.x, y0 + 1.65, b0.z); backing.rotation.y = face;
       P.air(backing, 'мосс-стена');
       g.add(backing);
+      const faceOff = 0.16 + 0.05 + 0.005 + 0.05 + 0.003;   // лицевая грань подложки + 3 мм
       MOSS_TONES.forEach((tone, ti) => {
         const per = 100;
         const inst = new THREE.InstancedMesh(cushionG, new THREE.MeshStandardMaterial({ color: tone, roughness: 1, flatShading: true }), per);
-        const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), scv = new THREE.Vector3(), pos = new THREE.Vector3();
+        const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), spin = new THREE.Quaternion(), scv = new THREE.Vector3(), pos = new THREE.Vector3();
         for (let i = 0; i < per; i++) {
           const rr = 0.09 + Math.random() * 0.15;
-          const pp = on(r0 + (Math.random() - 0.5) * 2.6, 0.2 + Math.random() * 0.05);
-          pos.set(pp.x, y0 + 0.2 + Math.random() * 2.9, pp.z);
-          qq.setFromEuler(new THREE.Euler(Math.random() * 3, Math.random() * 3, Math.random() * 3));
-          scv.set(rr, rr * (0.7 + Math.random() * 0.5), rr * (0.55 + Math.random() * 0.3));
+          const pp = on(r0 + (Math.random() - 0.5) * (2.8 - 2 * rr), faceOff);
+          pos.set(pp.x, y0 + rr + 0.01 + Math.random() * (3.28 - 2 * rr), pp.z);
+          qq.setFromUnitVectors(UP, normal).multiply(spin.setFromAxisAngle(UP, Math.random() * 6.28));
+          scv.set(rr, rr * (0.45 + Math.random() * 0.35), rr * (0.75 + Math.random() * 0.3));   // купол высотой 0,45…0,8 радиуса
           m4.compose(pos, qq, scv); inst.setMatrixAt(i, m4);
         }
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = ti < 2;
-        P.air(inst);
+        P.air(inst, 'мох');
         g.add(inst);
       });
     }
@@ -1306,28 +1489,31 @@ export class OfficeScene {
     g.rotation.y = q.a;
     const table = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.05, 32), P.MAT.walnut());
     table.position.y = 0.55; table.castShadow = true; g.add(table);
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, 0.55, 12), P.MAT.walnut()); leg.position.y = 0.27; g.add(leg);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, 0.55, 12), P.MAT.walnut()); leg.position.y = 0.276; g.add(leg);   // низ ножки на полу, не на −5 мм
     const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.02, 24), new THREE.MeshStandardMaterial({ color: 0x4a3625, roughness: 0.3 })); tray.position.y = 0.585; g.add(tray);
     const potBody = new THREE.Mesh(new THREE.SphereGeometry(0.11, 18, 14), new THREE.MeshStandardMaterial({ color: 0x7a4a33, roughness: 0.35 }));
     potBody.scale.y = 0.8; potBody.position.set(0, 0.68, 0); g.add(potBody);
     const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.03, 0.16, 8), new THREE.MeshStandardMaterial({ color: 0x7a4a33 })); spout.rotation.z = 1.0; spout.position.set(0.14, 0.7, 0); g.add(spout);
     const knob = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 8), P.MAT.walnut()); knob.position.set(0, 0.78, 0); g.add(knob);
-    this.teapot = potBody;
+    this.teapot = potBody; potBody.userData.dynamic = true;   // наклоняется при наливании — вне склейки (В3)
     for (let i = 0; i < 5; i++) {
       const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.028, 0.035, 12, 1, true), new THREE.MeshStandardMaterial({ color: 0xf1ebdf, side: THREE.DoubleSide, roughness: 0.3 }));
       cup.position.set(Math.cos(i * 1.26) * 0.28, 0.6, Math.sin(i * 1.26) * 0.28); g.add(cup);
     }
-    const steam = makeSteam(); steam.position.set(0.16, 0.78, 0); g.add(steam); this.life.steam = steam;
+    const steam = makeSteam(); steam.position.set(0.16, 0.78, 0); steam.userData.dynamic = true; g.add(steam); this.life.steam = steam;
     const tm = P.makePerson({ hair: 0x1d1a17, skin: 0xd9a878, polo: this.brand.poloHex || 0xb95740 });
     tm.group.position.set(0, 0, 1.05); g.add(tm.group); // лицом к столу (−z)
     this.teaMaster = tm;
     for (const a of [-0.9, 2.2, 4.0]) {
       const st = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, 0.45, 16), P.MAT.white());
-      st.position.set(Math.cos(a) * 1.15, 0.22, Math.sin(a) * 1.15); g.add(st);
+      st.position.set(Math.cos(a) * 1.15, 0.226, Math.sin(a) * 1.15); g.add(st);
     }
+    // табурет ПОД мастером: он сидел на z 1,05, а ближайший табурет стоял в 0,7 м (критик, кадр furnishing-2)
+    const seatTm = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, 0.5, 16), P.MAT.white());
+    seatTm.name = 'табурет мастера'; seatTm.position.set(0, 0.256, 1.05); g.add(seatTm);
     const pl = P.makeFicus(1.2); pl.position.set(1.9, 0, -0.6); g.add(pl); pl.traverse((m) => { if (m.userData.sway) this.life.plants.push(m); });
-    this.scene.add(g);
-    this._pickable(g, { kind: 'item', item: 'tea' });
+    g.name = 'чайный стол'; this.scene.add(g);
+    this._pickable(g, { kind: 'item', item: 'tea' }); this._pickProxy(g, { kind: 'item', item: 'tea' });
     this.addBlocker({ name: 'чайный стол', floor: 1, x: q.x, z: q.z, r: 1.3 });
     const w = this._at(17.8, 322, {});
     this.itemAnchors.set('tea', { group: g, camPos: [w.x, y0 + 1.7, w.z], camTgt: [q.x, y0 + 0.8, q.z], walk: [w.x, w.z], look: [q.x, q.z] });
@@ -1369,7 +1555,7 @@ export class OfficeScene {
     for (const sx of [-0.6, 0.6]) {
       for (const zBase of [0.3, -0.3]) {
         const top = new THREE.Vector3(sx, 1.72, -0.06);
-        const base = new THREE.Vector3(sx, 0, zBase);
+        const base = new THREE.Vector3(sx, 0.02, zBase);   // с верха подпятника: наклонный торец трубы иначе уходил в пол на 5 мм
         const dir = top.clone().sub(base);
         const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, dir.length(), 8), P.MAT.brushed());
         leg.position.copy(base).addScaledVector(dir, 0.5);
@@ -1383,8 +1569,8 @@ export class OfficeScene {
     g.add(crossRail);
     const lamp = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.16, 16, 1, true), P.MAT.graphite()); lamp.position.set(0.6, 2.2, -0.2); lamp.rotation.x = 0.6; g.add(lamp);
     const lampLight = new THREE.PointLight(0xffe2c0, 0.6, 3, 2); lampLight.position.set(0.6, 2.1, -0.1); g.add(lampLight);
-    this.scene.add(g);
-    this._pickable(g, { kind: 'item', item: 'drafting' });
+    g.name = 'кульман'; this.scene.add(g);
+    this._pickable(g, { kind: 'item', item: 'drafting' }); this._pickProxy(g, { kind: 'item', item: 'drafting' });
     this.addBlocker({ name: 'кульман', floor: 1, x: qd.x, z: qd.z, r: 1.1 });
     const wd = this._at(RING.rOut - 5.4, 115, {});
     this.itemAnchors.set('drafting', { group: g, camPos: [wd.x, y0 + 1.8, wd.z], camTgt: [qd.x, y0 + 1.4, qd.z], walk: [wd.x, wd.z], look: [qd.x, qd.z] });
@@ -1402,8 +1588,8 @@ export class OfficeScene {
     const glass = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.5, 0.64), P.MAT.glass()); glass.position.y = 1.22; shelf.add(glass);
     const label = P.canvasTexture(512, 128, (c) => { c.fillStyle = '#fdfbf4'; c.fillRect(0, 0, 512, 128); c.fillStyle = '#26211b'; c.font = '600 40px Georgia, serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('АВИВАК-2 · М 1:500', 256, 64); });
     const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), new THREE.MeshBasicMaterial({ map: label.texture })); labelMesh.position.set(0, 0.7, 0.41); shelf.add(labelMesh);
-    this.scene.add(shelf);
-    this._pickable(shelf, { kind: 'item', item: 'model' });
+    shelf.name = 'макет АВИВАК-2'; this.scene.add(shelf);
+    this._pickable(shelf, { kind: 'item', item: 'model' }); this._pickProxy(shelf, { kind: 'item', item: 'model' });
     this.addBlocker({ name: 'макет АВИВАК-2', floor: 1, x: qm.x, z: qm.z, r: 0.9 });
     const wm = this._at(RING.rIn + 5.7, 8, {});
     this.itemAnchors.set('model', { group: shelf, camPos: [wm.x, y0 + 1.6, wm.z], camTgt: [qm.x, y0 + 1.1, qm.z], walk: [wm.x, wm.z], look: [qm.x, qm.z] });
@@ -1415,13 +1601,13 @@ export class OfficeScene {
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2;
       const tleg = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.028, 1.35, 8), new THREE.MeshStandardMaterial({ color: 0xc99a3e, roughness: 0.5 }));
-      tleg.position.set(Math.cos(a) * 0.3, 0.62, Math.sin(a) * 0.3); tleg.rotation.z = Math.cos(a) * 0.36; tleg.rotation.x = -Math.sin(a) * 0.36; level.add(tleg);
+      tleg.position.set(Math.cos(a) * 0.3, 0.646, Math.sin(a) * 0.3); tleg.rotation.z = Math.cos(a) * 0.36; tleg.rotation.x = -Math.sin(a) * 0.36; level.add(tleg);   // торец наклонной ножки на полу (было −25 мм)
     }
     const head = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.05, 16), P.MAT.graphite()); head.position.y = 1.3; level.add(head);
     const dev = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.12, 0.12, 2, 0.02), new THREE.MeshStandardMaterial({ color: 0xd8b64a, roughness: 0.4 })); dev.position.y = 1.38; level.add(dev);
     const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.36, 12), P.MAT.black()); lens.rotation.z = Math.PI / 2; dev.add(lens);
-    this.scene.add(level);
-    this._pickable(level, { kind: 'item', item: 'level' });
+    level.name = 'нивелир'; this.scene.add(level);
+    this._pickable(level, { kind: 'item', item: 'level' }); this._pickProxy(level, { kind: 'item', item: 'level' });
     this.addBlocker({ name: 'нивелир', floor: 1, x: ql.x, z: ql.z, r: 0.5 });
     const wl = this._at(RING.rOut - 5.2, 246, {});
     this.itemAnchors.set('level', { group: level, camPos: [wl.x, y0 + 1.6, wl.z], camTgt: [ql.x, y0 + 1.3, ql.z], walk: [wl.x, wl.z], look: [ql.x, ql.z] });
@@ -1452,7 +1638,7 @@ export class OfficeScene {
    */
   _buildPostersAndPlants() {
     const y0 = RING.floor1;
-    const r = RING.rOut - RING.wallT - 0.06;
+    const r = RING.rOut - RING.wallT - 0.035;   // начало стопки постера — в 35 мм от грани стены: тыльная плоскость рамы на −16 мм, хорда 128-угольника провисает на 7 мм; стопка идёт внутрь
     // проёмы по углу (в градусах): вход, переход в зал реактора, переход в мастерскую
     const OPENINGS = [[-9, 9], [258, 272], [308, 322]];
     const taken = [];
@@ -1461,6 +1647,8 @@ export class OfficeScene {
       && slotFree(taken, OPENINGS.map(([f, t]) => [f - 360, t - 360]), deg, wDeg(w), 2.2);
     const place = (deg, w) => taken.push({ along: deg, width: wDeg(w) });
     this._wallSlots = taken;
+    // простенки секторов у наружной стены — занятые места: кодекс на 340° и 20° висел в толще перегородки
+    for (const b of [20, 65, 110, 250, 295, 340]) place(b, 0.4);
 
     const mech = ['gears', 'bearing', 'turbine', 'valve'];
     let mi = 0;
@@ -1470,7 +1658,7 @@ export class OfficeScene {
       const q = this._at(r, deg, {});
       const poster = P.makePoster({ width: 1.15, frame: 'red', draw: (c, w, h) => P.drawMechanicalPoster(c, w, h, kind), pickInfo: { kind: 'poster', series: 'mech', id: kind } });
       poster.position.set(q.x, y0 + 1.72, q.z);
-      poster.rotation.y = q.a;
+      poster.rotation.y = q.a + Math.PI;        // лицом в зал: с q.a канва смотрела в стекло, изнутри была видна пустая рама (критик)
       P.air(poster, `постер ${kind}`);
       this.scene.add(poster);
       place(deg, 1.15);
@@ -1494,7 +1682,7 @@ export class OfficeScene {
       const q = this._at(r, deg, {});
       const poster = P.makePoster({ width: 0.8, frame: 'walnut', draw: (c, w, h) => P.drawCodexPoster(c, w, h, kind), pickInfo: { kind: 'poster', series: 'codex', id: kind } });
       poster.position.set(q.x, y0 + 1.68, q.z);
-      poster.rotation.y = q.a;
+      poster.rotation.y = q.a + Math.PI;
       P.air(poster, `кодекс ${kind}`);
       this.scene.add(poster);
       place(deg, 0.8);
@@ -1502,7 +1690,8 @@ export class OfficeScene {
     }
 
     // растения по кромке атриума на обоих этажах
-    for (const [deg, kind, floor] of [[42, 'ficus', 1], [88, 'monstera', 1], [140, 'ficus', 1], [196, 'monstera', 1], [244, 'ficus', 1], [300, 'monstera', 1], [70, 'ficus', 2], [160, 'monstera', 2], [250, 'ficus', 2], [330, 'monstera', 2]]) {
+    // углы в стороне от простенков (20/65/110/250/295/340): на 250° фикус стоял в перегородке, на 244 и 300 — кроной в ней
+    for (const [deg, kind, floor] of [[42, 'ficus', 1], [88, 'monstera', 1], [140, 'ficus', 1], [196, 'monstera', 1], [226, 'ficus', 1], [308, 'monstera', 1], [70, 'ficus', 2], [160, 'monstera', 2], [262, 'ficus', 2], [330, 'monstera', 2]]) {
       const q = this._at(RING.rIn + 1.3, deg, {});
       const y = floor === 2 ? RING.floor2 : RING.floor1;
       const pl = kind === 'monstera' ? P.makeMonstera(1.2) : P.makeFicus(1.3);
@@ -1518,7 +1707,7 @@ export class OfficeScene {
     this._clock = clock;
     const cq = this._at(RING.rOut - RING.wallT - 0.08, 0, {});
     const clockMesh = new THREE.Mesh(new THREE.CircleGeometry(0.45, 40), new THREE.MeshBasicMaterial({ map: clock.texture }));
-    clockMesh.position.set(cq.x, y0 + 3.55, cq.z);
+    clockMesh.position.set(cq.x, y0 + 3.5, cq.z);   // верх 3,95 — под плитой второго этажа (3,98)
     clockMesh.rotation.y = cq.a;
     P.air(clockMesh, 'часы');
     this.scene.add(clockMesh);
@@ -1716,6 +1905,7 @@ export class OfficeScene {
 
     if (this.wings) this.wings.update(dt, t);
     if (!this._tour) this.walk.update(dt);
+    this._updateLightPool();
     this.renderer.render(this.scene, this.camera);
   }
 

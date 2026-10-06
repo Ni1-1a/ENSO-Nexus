@@ -14,12 +14,12 @@
 
 import * as THREE from './vendor/three.module.min.js';
 import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
-import * as P from './office-props.js?v=9';
+import * as P from './office-props.js?v=11';
 import {
   RING, FLOOR1, FLOOR2, PAVILIONS, CORES, ATRIUM, pt,
   OPENINGS, openingHalfAngle, openingOnFloor, wallGaps, coreLink, structuralBlockers,
-} from './office-plan.mjs?v=9';
-import { stairStep, railPose } from './office-geom.mjs?v=9';
+} from './office-plan.mjs?v=11';
+import { stairStep, railPose } from './office-geom.mjs?v=11';
 
 /* ---------- Н1: три градации светлого ---------- */
 
@@ -93,7 +93,13 @@ function ringSlab(rIn, rOut, y, thickness = 0.2, tone = TONE.floor) {
   geo.userData.flat = true;
   polarUV(geo);
   geo.rotateX(-Math.PI / 2);
-  geo.translate(0, y, 0);
+  /*
+   * ВЕРХ плиты — на отметке y, тело плиты ниже. Выдавливание идёт вдоль +Z,
+   * после поворота это +Y: без сдвига на толщину плита лежала от y до
+   * y + 0,22, и всё, что стоит на отметке (кресла, люди, стойка), сидело в
+   * ней на 220 мм — аудит В1 показал это сотнями пересечений «плита × …».
+   */
+  geo.translate(0, y - thickness, 0);
   const m = new THREE.Mesh(geo, stoneMat(tone, 2));
   m.receiveShadow = true;
   m.name = 'плита';
@@ -113,8 +119,15 @@ function arcWall(r, from, to, y0, y1, mat, t = RING.wallT, seg = 64) {
   shape.absarc(0, 0, r + t / 2, from, to, false);
   shape.absarc(0, 0, r - t / 2, to, from, true);
   const geo = new THREE.ExtrudeGeometry(shape, { depth: y1 - y0, bevelEnabled: false, curveSegments: seg });
+  /*
+   * Выдавливание идёт по +z, после rotateX(−π/2) — ВВЕРХ от нуля. Сдвиг обязан
+   * быть на y0: с прежним translate(0, y1) каждая полоса стены стояла на свою
+   * высоту выше положенного — окна первого этажа на 3,35…5,75 вместо 0,95…3,35,
+   * цоколь на 0,95…1,9, а от пола до 0,95 стены не было вовсе. Аудит В1 этого
+   * не видел, пока пометка airborne снимала проверку пересечений (круг 4).
+   */
   geo.rotateX(-Math.PI / 2);
-  geo.translate(0, y1, 0);
+  geo.translate(0, y0, 0);
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true; m.receiveShadow = true;
   return m;
@@ -157,11 +170,15 @@ function coreStair(spec) {
   const len = spec.axis === 'z' ? spec.z1 - spec.z0 : spec.x1 - spec.x0;
   const rise = (spec.yTo - spec.yFrom) / spec.steps;
   const run = len / spec.steps;
+  // ступень — короб от своей верхней грани до низа марша: марш сплошной, ступени не висят
+  const base = Math.min(spec.yFrom, spec.yTo) - 0.02;
   for (let i = 0; i < spec.steps; i++) {
     const p = stairStep(spec, i);
+    const top = p.y + Math.abs(rise) / 2 + 0.01;
+    const hStep = top - base;
     const st = spec.axis === 'z'
-      ? box(w - 0.06, Math.abs(rise) + 0.02, Math.abs(run) + 0.02, stepMat, p.x, p.y, p.z)
-      : box(Math.abs(run) + 0.02, Math.abs(rise) + 0.02, w - 0.06, stepMat, p.x, p.y, p.z);
+      ? box(w - 0.06, hStep, Math.abs(run) + 0.02, stepMat, p.x, base + hStep / 2, p.z)
+      : box(Math.abs(run) + 0.02, hStep, w - 0.06, stepMat, p.x, base + hStep / 2, p.z);
     st.castShadow = true; st.receiveShadow = true;
     g.add(st);
     // теневой шов по кромке: без него ступень не отличается от ступени (Н1)
@@ -195,7 +212,7 @@ function coreStair(spec) {
 
 export function buildShell(scene, ctx) {
   const g = new THREE.Group();
-  g.name = 'оболочка';
+  g.name = 'оболочка'; g.userData.container = true; g.userData.zone = 'exterior';
   scene.add(g);
 
   /* --- полы: по одному мешу на отметку, развёртка мировая (Р4) --- */
@@ -209,8 +226,13 @@ export function buildShell(scene, ctx) {
   const wallMat = stoneMat(TONE.wall, 6);
   ctx.wallMat = wallMat;
   const topY = RING.floor2 + RING.height;
+  /*
+   * В3: стекло БЕЗ transmission. Один прозрачный-преломляющий материал в кадре
+   * заставляет three.js рисовать всю непрозрачную сцену второй раз в текстуру
+   * с мип-уровнями: в вестибюле это было 3662 вызова и 39 мс вместо 1834 и 12.
+   */
   const glassMat = new THREE.MeshPhysicalMaterial({
-    color: 0xdfeaf2, transmission: 0.9, thickness: 0.02, roughness: 0.04, ior: 1.45, transparent: true, side: THREE.DoubleSide,
+    color: 0xdfeaf2, roughness: 0.04, metalness: 0.05, ior: 1.45, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false,
   });
   ctx.windowMat = glassMat;
   // цоколь, простенок между этажами и парапет кровли — камень; между ними стекло
@@ -230,7 +252,7 @@ export function buildShell(scene, ctx) {
   const segFor = (a0, a1) => Math.max(8, Math.round(((a1 - a0) / (Math.PI * 2)) * 128));
   for (const [y0, y1, mat, isGlass] of bands) {
     const level = y0 >= RING.floor2 - 0.1 ? 2 : 1;
-    for (const [a0, a1] of wallGaps(level)) {
+    for (const [a0, a1] of wallGaps(level, y0)) {
       const w = arcWall(rW, SA(a0), SA(a1), y0, y1, mat, RING.wallT, segFor(a0, a1));
       if (isGlass) { P.air(w, 'окно'); ctx.windows.push(w); } else P.air(w, 'наружная стена');
       g.add(w);
@@ -270,7 +292,7 @@ export function buildShell(scene, ctx) {
   for (const [y, level] of [[0.95, 1], [RING.floor2 + 0.95, 2]]) {
     for (const [a0, a1] of wallGaps(level)) {
       const sill = arcWall(rW - 0.06, SA(a0), SA(a1), y, y + 0.05, stoneMat(TONE.detail, 2), 0.2, segFor(a0, a1));
-      P.air(sill);
+      P.air(sill, 'подоконник');
       g.add(sill);
     }
   }
@@ -280,18 +302,24 @@ export function buildShell(scene, ctx) {
   P.air(roof, 'кровля');
   g.add(roof);
   const glassRoof = new THREE.Mesh(new THREE.CircleGeometry(RING.rIn + 0.4, 96), new THREE.MeshPhysicalMaterial({
-    color: 0xdfeaf2, transmission: 0.86, roughness: 0.06, thickness: 0.02, transparent: true, side: THREE.DoubleSide,
+    color: 0xdfeaf2, roughness: 0.06, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false,
   }));
   glassRoof.rotation.x = -Math.PI / 2;
-  glassRoof.position.y = topY + 0.6;
+  glassRoof.position.y = topY + 0.74;          // на балках (их верх topY + 0.73), а не сквозь них
   P.air(glassRoof, 'стеклянная крыша');
   g.add(glassRoof);
+  // двенадцать радиальных балок сходятся в узле: до узла 10 мм, друг в друга не заходят
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.14, 24), P.MAT.brushed());
+  hub.position.set(0, topY + 0.66, 0);
+  P.air(hub, 'узел крыши');
+  g.add(hub);
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(RING.rIn + 0.4, 0.14, 0.12), P.MAT.brushed());
-    beam.position.set(Math.sin(a) * (RING.rIn + 0.4) / 2, topY + 0.66, Math.cos(a) * (RING.rIn + 0.4) / 2);
+    const r0 = 0.63, r1 = RING.rIn + 0.4;
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(r1 - r0, 0.14, 0.12), P.MAT.brushed());
+    beam.position.set(Math.sin(a) * (r0 + r1) / 2, topY + 0.66, Math.cos(a) * (r0 + r1) / 2);
     beam.rotation.y = a + Math.PI / 2;
-    P.air(beam);
+    P.air(beam, 'балка крыши атриума');
     g.add(beam);
   }
 
@@ -306,8 +334,9 @@ export function buildShell(scene, ctx) {
   /* --- теневой шов в стыке стены и пола: 45 мм тушью (Н1) --- */
   for (const [y, level] of [[RING.floor1, 1], [RING.floor2, 2]]) {
     for (const [a0, a1] of wallGaps(level)) {
-      const seam = arcWall(RING.rOut - RING.wallT, SA(a0), SA(a1), y, y + SEAM, P.MAT.ink(), 0.03, segFor(a0, a1));
-      P.air(seam);
+      // полоса 30 мм лежит ВПЛОТНУЮ к внутренней грани стены (зазор 2 мм), а не в её толще
+      const seam = arcWall(RING.rOut - RING.wallT - 0.017, SA(a0), SA(a1), y, y + SEAM, P.MAT.ink(), 0.03, segFor(a0, a1));
+      P.air(seam, 'теневой шов');
       g.add(seam);
     }
   }
@@ -315,7 +344,9 @@ export function buildShell(scene, ctx) {
   /* --- парапет по всему контуру атриума на втором этаже --- */
   g.add(P.air(parapetArc(RING.rIn + 0.12, 0, Math.PI * 2, RING.floor2), 'парапет атриума'));
   // и по кромке первого этажа у сада — низкий борт, чтобы кромка читалась
-  const kerb = arcWall(RING.rIn + 0.08, 0, Math.PI * 2, RING.floor1 - 0.02, RING.floor1 + 0.1, stoneMat(TONE.detail, 2), 0.16, 96);
+  // внутренняя грань на 12 мм дальше кромки газона: хорда 96-угольника провисает на 5,6 мм, и на 3 мм дуги пересекались
+  const kerb = arcWall(RING.rIn + 0.092, 0, Math.PI * 2, RING.floor1 + 0.002, RING.floor1 + 0.1, stoneMat(TONE.detail, 2), 0.16, 96);
+  kerb.name = 'бортик сада';
   g.add(kerb);
 
   /* --- перегородки между секторами: простенки от наружной стены к атриуму --- */
@@ -389,6 +420,7 @@ export function buildShell(scene, ctx) {
     // пол коридора от кольца до ядра
     const L = coreLink(c);
     const lf = new THREE.Mesh(new THREE.BoxGeometry(L.x1 - L.x0, 0.2, L.z1 - L.z0), stoneMat(TONE.floor, 3));
+    lf.name = 'пол коридора ядра';
     lf.position.set((L.x0 + L.x1) / 2, RING.floor1 - 0.1, (L.z0 + L.z1) / 2);
     lf.receiveShadow = true; cg.add(lf);
     const top = box(w, 0.22, d, stoneMat(TONE.wall, 3), cx, topY + 0.11, cz);
@@ -412,7 +444,7 @@ export function buildShell(scene, ctx) {
 
 export function buildAtrium(scene, ctx) {
   const g = new THREE.Group();
-  g.name = 'атриум';
+  g.name = 'атриум'; g.userData.container = 'floating'; g.userData.zone = 'furnishing';
   scene.add(g);
 
   const grassMat = new THREE.MeshStandardMaterial({ color: 0x6d9553, roughness: 0.95 });
@@ -440,24 +472,55 @@ export function buildAtrium(scene, ctx) {
      * и в кадре не появлялись вовсе.
      */
     const c0 = -Math.PI / 2;
+    /*
+     * Ряд ОБРЕЗАН КРОМКОЙ САДА: дуга вокруг экрана на концах выходит за круг
+     * атриума (ряд 5 — на 0,86 м поверх плиты кольца и бортика). Точка шейпа
+     * (x, y) оказывается в мире на (x, sz − y); радиус луча из фокуса экрана
+     * ограничивается кругом RA.
+     */
+    const RA = RING.rIn - 0.25;
+    const clipR = (ang, r) => {
+      const s = Math.sin(ang);
+      const disc = RA * RA - sz * sz * (1 - s * s);
+      if (disc < 0) return r;
+      return Math.min(r, sz * s + Math.sqrt(disc));
+    };
+    const NA = 48, a0 = c0 - 1.15, a1 = c0 + 1.15;
     const shape = new THREE.Shape();
-    shape.absarc(0, 0, r1, c0 - 1.15, c0 + 1.15, false);
-    shape.absarc(0, 0, r0, c0 + 1.15, c0 - 1.15, true);
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: ATRIUM.rowRise + 0.02, bevelEnabled: false, curveSegments: 48 });
+    for (let k = 0; k <= NA; k++) {
+      const ang = a0 + (a1 - a0) * k / NA, rr = clipR(ang, r1);
+      if (k === 0) shape.moveTo(rr * Math.cos(ang), rr * Math.sin(ang)); else shape.lineTo(rr * Math.cos(ang), rr * Math.sin(ang));
+    }
+    for (let k = NA; k >= 0; k--) {
+      const ang = a0 + (a1 - a0) * k / NA, rr = clipR(ang, r0);
+      shape.lineTo(rr * Math.cos(ang), rr * Math.sin(ang));
+    }
+    shape.closePath();
+    // носик — только там, где наружная дуга не обрезана
+    let nA = a0, nB = a1;
+    while (nA < c0 && clipR(nA, r1) < r1 - 0.001) nA += 0.01;
+    while (nB > c0 && clipR(nB, r1) < r1 - 0.001) nB -= 0.01;
+    // низ каждого ряда — на 10 мм выше наружного газона (−0,16): ряд 1 прежде
+    // уходил на 0,36 вниз сквозь газон (аудит В1, круг 3)
+    // ряд 1 (верх 0) опирается на наружный газон; ряд i — на отметку верха ряда i−1
+    // (ниже его короб только резал бы бортик сада и плиту кольца)
+    const rowBottom = i === 0 ? -0.15 : y - ATRIUM.rowRise + 0.003;
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: y - rowBottom, bevelEnabled: false, curveSegments: 48 });
     geo.userData.flat = true;
     worldUV(geo, 1.5);
     geo.rotateX(-Math.PI / 2);
     const row = new THREE.Mesh(geo, stepMat);
     // выдавливание идёт ВВЕРХ, поэтому отметка меша — низ, а верх ряда обязан
     // совпасть с `atriumFloor` (правило 11)
-    row.position.set(0, y - ATRIUM.rowRise - 0.02, sz);
+    row.position.set(0, rowBottom, sz);
     row.receiveShadow = true; row.castShadow = true;
     row.name = `ряд ${i + 1}`;
     g.add(row);
     // теневой шов по носку ряда
-    const nos = new THREE.Mesh(new THREE.TorusGeometry(r1, 0.018, 6, 64, 2.3), P.MAT.ink());
+    const nos = new THREE.Mesh(new THREE.TorusGeometry(r1, 0.018, 6, 64, Math.max(0.05, nB - nA)), P.MAT.ink());
+    nos.name = `носик ряда ${i + 1}`;
     nos.rotation.x = -Math.PI / 2;
-    nos.rotation.z = c0 - 1.15;                 // порядок XYZ: Rz применяется первым
+    nos.rotation.z = nA;                        // порядок XYZ: Rz применяется первым
     nos.position.set(0, y + 0.012, sz);
     P.air(nos);
     g.add(nos);
@@ -480,7 +543,8 @@ export function buildAtrium(scene, ctx) {
     if (Math.abs(Math.PI - a) < 0.55) continue;
     // деревья отодвинуты от кромки атриума: на r = rIn − 1.5 крона висела ровно
     // на уровне глаз того, кто идёт по кольцу
-    const r = RING.rIn - 1.4 - (i % 3) * 0.5;
+    // у экрана (±46° от оси) деревья на 1,2 м глубже: крона дерева на 140° лежала на экране и его стойке
+    const r = RING.rIn - 1.4 - (i % 3) * 0.5 - (Math.abs(Math.PI - a) < 0.8 ? 1.2 : 0);
     const x = Math.sin(a) * r, z = Math.cos(a) * r;
     const k = 0.85 + ((i * 7) % 5) / 10;
     pos.set(x, 2.05 * k, z); sc.setScalar(k);
@@ -490,6 +554,12 @@ export function buildAtrium(scene, ctx) {
     spots.push({ x, z, r: 0.6 });
   }
   ctx.treeSpots = spots;
+  // пропущенные экземпляры (ось экрана) оставались с единичной матрицей — дерево в начале координат посреди сада
+  const hidden = new THREE.Matrix4().compose(new THREE.Vector3(0, -60, 0), q, new THREE.Vector3(0.001, 0.001, 0.001));
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2 + 0.35;
+    if (Math.abs(Math.PI - a) < 0.55) { trunks.setMatrixAt(i, hidden); crowns.setMatrixAt(i, hidden); }
+  }
   trunks.instanceMatrix.needsUpdate = true; crowns.instanceMatrix.needsUpdate = true;
   trunks.castShadow = true; crowns.castShadow = true;
   trunks.name = 'деревья атриума';
@@ -506,7 +576,7 @@ export function buildAtrium(scene, ctx) {
 
 export function buildPavilionShell(scene, spec) {
   const g = new THREE.Group();
-  g.name = spec.name;
+  g.name = `${spec.name} · оболочка`; g.userData.container = true; g.userData.zone = 'exterior';
   scene.add(g);
   const w = spec.x1 - spec.x0, d = spec.z1 - spec.z0;
   const cx = (spec.x0 + spec.x1) / 2, cz = (spec.z0 + spec.z1) / 2;
@@ -517,37 +587,84 @@ export function buildPavilionShell(scene, spec) {
   fl.receiveShadow = true;
   fl.name = 'пол павильона';
   g.add(fl);
-  for (const [bw, bd, bx, bz] of [[w + 0.5, 0.25, cx, spec.z0], [w + 0.5, 0.25, cx, spec.z1], [0.25, d, spec.x0, cz], [0.25, d, spec.x1, cz]]) {
-    const wall = box(bw, spec.ceiling - spec.floor, bd, wallMat, bx, (spec.ceiling + spec.floor) / 2, bz);
-    wall.castShadow = true; wall.receiveShadow = true;
-    P.air(wall);
-    g.add(wall);
+  /*
+   * Стена, в которую упирается переход, ПРОРЕЗАНА под него (правило 15: проём —
+   * сущность плана): до этого все четыре стены были сплошными, и из перехода
+   * человек выходил в камень, хотя проходимость считала проём открытым.
+   */
+  const L0 = spec.link;
+  const wallPieces = (axis, pos) => {
+    const run = axis === 'x' ? [cx - (w + 0.5) / 2, cx + (w + 0.5) / 2] : [cz - d / 2, cz + d / 2];
+    const cut = axis === 'x'
+      ? (L0.z0 - 0.3 <= pos && pos <= L0.z1 + 0.3 ? [L0.x0, L0.x1] : null)
+      : (L0.x0 - 0.3 <= pos && pos <= L0.x1 + 0.3 ? [L0.z0, L0.z1] : null);
+    const out = [];
+    const add = (from, to, y0, y1) => { if (to - from < 0.05 || y1 - y0 < 0.05) return; out.push({ from, to, y0, y1 }); };
+    if (!cut) { add(run[0], run[1], spec.floor, spec.ceiling); return out; }
+    add(run[0], cut[0], spec.floor, spec.ceiling);
+    add(cut[1], run[1], spec.floor, spec.ceiling);
+    add(cut[0], cut[1], 3.4, spec.ceiling);                       // над потолком перехода (3.2…3.4)
+    if (spec.floor < -0.3) add(cut[0], cut[1], spec.floor, -0.225);   // под полом перехода (−0.22…0), если павильон ниже
+    return out;
+  };
+  for (const [axis, pos] of [['x', spec.z0], ['x', spec.z1], ['z', spec.x0], ['z', spec.x1]]) {
+    for (const p of wallPieces(axis, pos)) {
+      const len = p.to - p.from, mid = (p.from + p.to) / 2, h = p.y1 - p.y0, ym = (p.y0 + p.y1) / 2;
+      const wall = axis === 'x' ? box(len, h, 0.25, wallMat, mid, ym, pos) : box(0.25, h, len, wallMat, pos, ym, mid);
+      wall.castShadow = true; wall.receiveShadow = true;
+      P.air(wall, 'стена павильона');
+      g.add(wall);
+    }
   }
   const top = box(w + 0.5, 0.25, d + 0.5, stoneMat(TONE.wall, 4), cx, spec.ceiling + 0.12, cz);
   P.air(top, 'кровля павильона');
   g.add(top);
 
   // переход из кольца: пол, стены, потолок
-  const L = spec.link;
+  /*
+   * В плане прямоугольник перехода заходит в павильон глубоко (мастерская: на
+   * 1,7 м) — ради связности проходимости. Геометрия же обрезается по стене
+   * павильона с заходом 0,15 (правило 17): иначе стены и потолок перехода
+   * торчали бы внутри гаража.
+   */
+  const L = { ...spec.link };
+  // торец перехода остаётся В ТОЛЩЕ стены (0,25): на +0,15 стена перехода вылезала к плите пола гаража
+  if (L.x0 < spec.x1 && L.x1 > spec.x1 && spec.x1 - L.x0 > 0.3) L.x0 = spec.x1 - 0.05;
+  if (L.x1 > spec.x0 && L.x0 < spec.x0 && L.x1 - spec.x0 > 0.3) L.x1 = spec.x0 + 0.05;
+  if (L.z0 < spec.z1 && L.z1 > spec.z1 && spec.z1 - L.z0 > 0.3) L.z0 = spec.z1 - 0.05;
+  if (L.z1 > spec.z0 && L.z0 < spec.z0 && L.z1 - spec.z0 > 0.3) L.z1 = spec.z0 + 0.05;
   const lw = L.x1 - L.x0, ld = L.z1 - L.z0;
   const lx = (L.x0 + L.x1) / 2, lz = (L.z0 + L.z1) / 2;
   const lf = new THREE.Mesh(new THREE.BoxGeometry(lw, 0.22, ld), stoneMat(TONE.floor, 3));
+  lf.name = 'пол перехода';
   lf.position.set(lx, -0.11, lz); lf.receiveShadow = true; g.add(lf);
   for (const [bw, bd, bx, bz] of [[lw, 0.2, lx, L.z0], [lw, 0.2, lx, L.z1]]) {
     const wall = box(bw, 3.2, bd, wallMat, bx, 1.6, bz);
-    P.air(wall); g.add(wall);
+    P.air(wall, 'стена перехода'); g.add(wall);
   }
   const lt = box(lw, 0.2, ld, stoneMat(TONE.wall, 3), lx, 3.3, lz);
-  P.air(lt); g.add(lt);
+  P.air(lt, 'потолок перехода'); g.add(lt);
   /*
    * Свет в переходе: проём в павильон читался чёрным прямоугольником — за ним
    * не было ни одного источника (скриншот 08 круга 3).
    */
-  const n = Math.max(2, Math.round(Math.max(lw, ld) / 2.2));
+  /*
+   * Светильники — на отрезке оси перехода МЕЖДУ стеной павильона и наружной
+   * стеной кольца: прямоугольник перехода в плане заходит внутрь кольца на
+   * 1,2 м, и плафон на доле 0,75 длины оказывался в толще стены кольца.
+   */
+  const along = lw > ld ? 'x' : 'z';
+  const at = (t) => along === 'x' ? [L.x0 + lw * t, lz] : [lx, L.z0 + ld * t];
+  const okT = [];
+  for (let t = 0; t <= 1.0001; t += 0.02) {
+    const [px, pz] = at(t);
+    const edge = along === 'x' ? Math.min(px - L.x0, L.x1 - px) : Math.min(pz - L.z0, L.z1 - pz);
+    if (edge >= 0.45 && Math.hypot(px, pz) >= RING.rOut + 0.35) okT.push(t);
+  }
+  const t0 = okT.length ? okT[0] : 0.25, t1 = okT.length ? okT[okT.length - 1] : 0.75;
+  const n = Math.max(2, Math.round((t1 - t0) * Math.max(lw, ld) / 2.2));
   for (let i = 0; i < n; i++) {
-    const t = (i + 0.5) / n;
-    const px = lw > ld ? L.x0 + (L.x1 - L.x0) * t : lx;
-    const pz = lw > ld ? lz : L.z0 + (L.z1 - L.z0) * t;
+    const [px, pz] = at(t0 + (t1 - t0) * (i + 0.5) / n);
     const lamp = new THREE.PointLight(0xfff0dd, 1.4, 7, 1.6);
     lamp.position.set(px, 3.0, pz); g.add(lamp);
     const can = new THREE.Mesh(new THREE.CircleGeometry(0.16, 14), new THREE.MeshBasicMaterial({ color: 0xfff7ea }));
