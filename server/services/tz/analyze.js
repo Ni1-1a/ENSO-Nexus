@@ -12,7 +12,11 @@
  *   - дедупликация и вердикт — dedup.js (спека v1.1, правки 3–4);
  *   - находки категории «нормативная_база» принудительно needs_human: true —
  *     в v1 модуль НЕ проверяет статус НПА по внешним источникам, и отчёт
- *     всегда несёт пометку «нормативная актуальность не проверялась».
+ *     всегда несёт пометку «нормативная актуальность не проверялась»;
+ *   - цитата модели сверяется с полным текстом ТЗ (quote-check.js); находка без
+ *     дословной цитаты возвращается той же модели в том же диалоге — до
+ *     QUOTE_RETRY_ROUNDS кругов (07.10.2026): статус меняет только повторная
+ *     сверка кодом, снятые и оставленные без цитаты находки идут человеку.
  *
  * Вызов модели — ТОЛЬКО через adapter.structuredCall (свои HTTP-клиенты модулю
  * не положены); callFn подменяется в тестах через _setCallFn.
@@ -22,6 +26,7 @@ const prompts = require('../prompts');
 const store = require('./store');
 const checklists = require('./checklists');
 const { dedupe, verdict } = require('./dedup');
+const quoteCheck = require('../quote-check');
 
 // Потолок текста ТЗ, уходящего модели за один проход. Обрезка честно
 // проговаривается в unverified — молча урезанный документ выглядит проверенным.
@@ -272,14 +277,17 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
 
   // 3. Дефекты формулировок, противоречия, ссылки, ИРД
   store.setRunProgress(runId, 'формулировки, противоречия, ссылки (3/3)…');
-  const findOut = await callWithRetry({
+  const findingsArgs = {
     system: prompts.load('tz-findings', { objectSummary: objectSummary(cls, project.object || {}) }),
     messages: [{ role: 'user', content: `Текст задания на проектирование:\n\n${doc.text}` }],
-    sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'tz_findings', maxTokens: 32000,
+  };
+  const findOut = await callWithRetry({
+    ...findingsArgs, sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'tz_findings', maxTokens: 32000,
   }, 'дефекты');
   const found = parse(findOut, 'дефекты');
 
-  const modelFindings = (Array.isArray(found.findings) ? found.findings : [])
+  // База needs_human без учёта цитаты — она понадобится повторной сверке после возврата
+  const prepared = (Array.isArray(found.findings) ? found.findings : [])
     .filter((f) => f && f.problem)
     .map((f) => ({
       ...f,
@@ -291,6 +299,33 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
       needs_human: f.category === 'нормативная_база' || !f.znp_ref ? true : !!f.needs_human,
       requirement_source: null,
     }));
+  // Цитата модели сверяется с ПОЛНЫМ текстом ТЗ кодом (правило нормоконтроля,
+  // одно на платформу — services/quote-check.js): не найдена дословно или
+  // отсутствует → находка остаётся, но уходит человеку с причиной.
+  // Находки полноты из матрицы цитат не несут и сверке не подлежат.
+  let modelFindings = prepared.map((f) => quoteCheck.markQuote(f, run.document_text));
+
+  // Возврат автору: находки без дословной цитаты — той же модели в том же диалоге
+  // (ТЗ → её ответ → задание повтора), до QUOTE_RETRY_ROUNDS кругов. Статус меняет
+  // только повторная сверка кодом; сбой повтора прогон не роняет.
+  const retry = await quoteCheck.retryUnverified({
+    findings: modelFindings,
+    text: run.document_text,
+    baseNeedsHuman: (f, i) => prepared[i].needs_human,
+    describe: (f) => `${f.category}, ${f.znp_ref}: ${f.problem}`,
+    onRound: (round, n) => store.setRunProgress(runId,
+      `возврат ${n} находок модели за дословной цитатой (круг ${round}/${config.quoteRetryRounds})…`),
+    call: async (tail, schema) => {
+      const out = await callWithRetry({
+        ...findingsArgs,
+        messages: [...findingsArgs.messages, { role: 'assistant', content: findOut.text || '' }, ...tail],
+        sessionId, route, schema, schemaName: 'quote_retry', maxTokens: 8000,
+        internal: true, // служебное обращение: токены считает, счётчик запросов не расходует
+      }, 'повтор по цитатам');
+      return adapter.tryParse(out.text || '');
+    },
+  });
+  modelFindings = retry.findings;
 
   // Детерминированная сборка: полнота из матрицы + находки модели → дедуп → вердикт
   store.setRunProgress(runId, 'сборка отчёта…');
@@ -298,9 +333,14 @@ async function runAnalysis(runId, { callFn = null, host = '' } = {}) {
     ...completenessFindings(matrix, checklist, funding),
     ...modelFindings,
   ]);
+  const quoteSummary = quoteCheck.unverifiedSummary(findings);
+  if (quoteSummary) unverified.push(quoteSummary);
+  const retrySummary = quoteCheck.retrySummary(retry.stats);
+  if (retrySummary) unverified.push(retrySummary);
 
   const result = {
     generated_at: new Date().toISOString(),
+    quote_retry: retry.stats,
     norm_check_mode: 'offline',
     norm_check_note: 'Нормативная актуальность не проверялась: прогон без внешних источников (A5/A6 спеки отключены в этой версии).',
     object: {

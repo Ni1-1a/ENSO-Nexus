@@ -166,7 +166,18 @@ test('проверка документа: загрузка текста БЕЗ 
   assert.ok(run.result.ntd_refs.some((r) => /СП 48\.13330/.test(r.code)));
 });
 
-function fakeDocModel({ schemaName }) {
+let retryArgs = null;
+function fakeDocModel(args) {
+  const { schemaName } = args;
+  if (schemaName === 'quote_retry') {
+    retryArgs = args;
+    return {
+      text: JSON.stringify({ answers: [
+        { ref: 'D-001', decision: 'quote', quote: 'Бетон B25. Плиты перекрытия', ntd_quote: null, reason: '' },
+        { ref: 'D-002', decision: 'withdraw', quote: null, ntd_quote: null, reason: 'масса оборудования в документе не менялась' },
+      ] }),
+    };
+  }
   if (schemaName === 'doccheck_classify') {
     return { text: JSON.stringify({ doc_type: 'razdel-kzh', kind_note: 'ПЗ КЖ', confidence: 'высокая', evidence: 'Бетон B25' }) };
   }
@@ -185,6 +196,15 @@ function fakeDocModel({ schemaName }) {
           where: 'спецификация поз. 8',
           quote: null, standard: null, clause: null, clause_confidence: null,
           action: 'проверить', kind: 'неполнота',
+        },
+        {
+          // дословная цитата, без пункта НТД, действие «исправить» — единственная
+          // находка, которой человек не нужен
+          what: 'Ссылка на СП 63.13330.2018 без указания редакции и изменений',
+          where: 'ПЗ стр. 1',
+          quote: 'Плиты перекрытия по СП 63.13330.2018',
+          standard: null, clause: null, clause_confidence: null,
+          action: 'исправить', kind: 'оформление',
         },
       ],
       missing_data: ['узлы армирования'],
@@ -233,6 +253,40 @@ test('проверка документа: полный прогон с подм
     assert.strictEqual(second.needs_human, true);
     // Hermes-предупреждение о пунктах — в unverified
     assert.ok(result.unverified.some((u) => /гипотезы/.test(u.what)));
+    // Сверка цитат — правило нормоконтроля (quote-check.js), одно на платформу:
+    // «плиты из бетона B25» в документе нет — находка вернулась модели, новая
+    // цитата найдена дословно; пункт НТД у находки есть, потому человек всё равно нужен
+    assert.strictEqual(first.quote, 'Бетон B25. Плиты перекрытия');
+    assert.strictEqual(first.quote_check, 'verbatim');
+    assert.strictEqual(first.quote_retry, 'confirmed');
+    assert.strictEqual(first.quote_note, null);
+    assert.strictEqual(first.needs_human, true);
+    // без цитаты — модель на возврате сняла находку: она не удалена, а у человека с причиной
+    assert.strictEqual(second.quote_check, 'missing');
+    assert.strictEqual(second.quote_retry, 'withdrawn');
+    assert.strictEqual(second.needs_human, true);
+    assert.match(second.quote_note, /снята моделью при повторном запросе: масса оборудования в документе не менялась/);
+    // повтор — служебное обращение в том же диалоге: документ → ответ модели → задание
+    assert.ok(retryArgs, 'возврат находок модели не вызывался');
+    assert.strictEqual(retryArgs.internal, true);
+    assert.strictEqual(retryArgs.messages.length, 3);
+    assert.strictEqual(retryArgs.messages[1].role, 'assistant');
+    assert.match(retryArgs.messages[2].content, /ref: D-001 — коллизия, ПЗ стр\. 4 \/ спецификация табл\. 2: Класс бетона/);
+    assert.doesNotMatch(retryArgs.messages[2].content, /ref: D-003/);
+    assert.deepStrictEqual({ returned: result.quote_retry.returned, confirmed: result.quote_retry.confirmed, withdrawn: result.quote_retry.withdrawn },
+      { returned: 2, confirmed: 1, withdrawn: 1 });
+    // дословная цитата, без пункта, «исправить» — человек не нужен
+    const third = result.findings.find((f) => f.kind === 'оформление');
+    assert.strictEqual(third.quote_check, 'verbatim');
+    assert.strictEqual(third.quote_note, null);
+    assert.strictEqual(third.needs_human, false);
+    assert.strictEqual(result.findings.length, 3, 'находка со спорной цитатой не должна выбрасываться');
+    const qs = result.unverified.find((u) => /без дословного подтверждения/.test(u.what));
+    assert.ok(qs, 'сводки сверки цитат нет в unverified');
+    assert.match(qs.what, /: 1 — без цитаты$/);
+    const rs = result.unverified.find((u) => /Повторный запрос модели/.test(u.what));
+    assert.ok(rs, 'сводки возврата находок нет в unverified');
+    assert.match(rs.what, /по 2 находкам .* подтверждено 1, снято моделью 1/);
 
     // решение ставит человек, ФИО пишет сервер
     const set = await api(`/api/doccheck/runs/${runId}/findings/${first.id}/decision`, {
@@ -249,6 +303,10 @@ test('проверка документа: полный прогон с подм
     const sheet2 = zip.getEntry('xl/worksheets/sheet2.xml').getData().toString('utf8');
     assert.match(sheet1, /принято/);
     assert.match(sheet1, /6\.1\.1/);
+    // итог сверки цитаты и повтора уходит в реестр отдельной колонкой
+    assert.match(sheet1, /Сверка цитаты/);
+    assert.match(sheet1, /нет цитаты; повтор: снята моделью/);
+    assert.match(sheet1, /найдена дословно; повтор: подтверждена/);
     assert.match(sheet2, /СП 63\.13330/);
   } finally {
     analyze._setCallFn(null);

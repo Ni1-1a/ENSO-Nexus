@@ -16,18 +16,12 @@
  * подменённый текст — худшее, что может сделать платформа.
  */
 const checklists = require('./checklists');
+// Нормализация для поиска цитаты — та же, что у сверки цитат на всей платформе
+// (services/quote-check.js): кавычки, тире, ё, регистр, пробелы. Своей копии
+// здесь нет намеренно — иначе анализ находил бы цитату, а редакция не находила.
+const { normalize: norm, MIN_QUOTE } = require('../quote-check');
 
 const HEAD = 'ДОПОЛНЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ ТЗ';
-
-/** Нормализация для поиска цитаты: пробелы, кавычки и тире у всех разные. */
-function norm(s) {
-  return String(s || '')
-    .replace(/[«»""„"]/g, '"')
-    .replace(/[–—−]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
 
 /** Абзацы документа: блок, отделённый пустой строкой. */
 function paragraphs(text) {
@@ -63,7 +57,7 @@ function place(text, items) {
     const head = q.length > 40 ? q.slice(0, 40) : '';
     const unique = head && normParas.filter((p) => p.includes(head)).length === 1;
     let at = -1;
-    if (q && q.length >= 12) {
+    if (q && q.length >= MIN_QUOTE) {
       at = normParas.findIndex((p) => p.includes(q));
       if (at < 0 && unique) at = normParas.findIndex((p) => p.includes(head));
     }

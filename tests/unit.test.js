@@ -1610,3 +1610,207 @@ test('промты: в коде не осталось зашитых систе�
   }
   assert.deepStrictEqual(stuck, [], 'промт вернулся в код — место ему в prompts/*.md');
 });
+
+/* ---------------- сверка цитат: один модуль на платформу (07.10.2026) ---------------- */
+
+test('сверка цитат: нормализация сводит кавычки, тире, ё, регистр и пробелы', () => {
+  const qc = require('../server/services/quote-check');
+  assert.strictEqual(qc.normalize('«Ёлка»  —  тест'), '"елка" - тест');
+  assert.strictEqual(qc.normalize('“Elka” – TEST'), '"elka" - test');
+  assert.strictEqual(qc.normalize('  а\n\tб  '), 'а б');
+});
+
+test('сверка цитат: три исхода и порог содержательности', () => {
+  const qc = require('../server/services/quote-check');
+  const text = '2. Мощность: уточняется. 3. Стоимость — по смете.';
+  assert.deepStrictEqual(qc.checkQuote('Мощность: уточняется', text), { status: 'verbatim', reason: null });
+  // ё/е, кавычки и переносы строк не мешают дословности
+  assert.strictEqual(qc.checkQuote('Стоимость - по\nсмете', text).status, 'verbatim');
+  assert.strictEqual(qc.checkQuote('Стоимость: по договору', text).status, 'not_found');
+  assert.strictEqual(qc.checkQuote('по смете', text).status, 'missing', 'короче MIN_QUOTE — не цитата');
+  assert.strictEqual(qc.checkQuote(null, text).status, 'missing');
+  assert.strictEqual(qc.checkQuote('', text).status, 'missing');
+  assert.strictEqual(qc.quoteInText('Мощность: уточняется', text), true);
+  assert.strictEqual(qc.quoteInText('по смете', text), false);
+  assert.strictEqual(qc.MIN_QUOTE, 12);
+});
+
+test('сверка цитат: markQuote помечает находку и не снимает needs_human', () => {
+  const qc = require('../server/services/quote-check');
+  const text = 'Здание трёхэтажное, высота этажа 3,3 м.';
+  const ok = qc.markQuote({ quote: 'высота этажа 3,3 м', needs_human: false }, text);
+  assert.strictEqual(ok.quote_check, 'verbatim');
+  assert.strictEqual(ok.quote_note, null);
+  assert.strictEqual(ok.needs_human, false);
+  // человек уже нужен по другой причине — остаётся нужен
+  const kept = qc.markQuote({ quote: 'высота этажа 3,3 м', needs_human: true }, text);
+  assert.strictEqual(kept.needs_human, true);
+  const bad = qc.markQuote({ quote: 'высота этажа 4,2 м', needs_human: false }, text);
+  assert.strictEqual(bad.quote_check, 'not_found');
+  assert.strictEqual(bad.needs_human, true);
+  assert.strictEqual(bad.quote_note, qc.REASON.not_found);
+  // сводка: считаются только not_found и missing
+  const summary = qc.unverifiedSummary([ok, bad, qc.markQuote({ quote: null }, text)]);
+  assert.match(summary.what, /1 — цитата не найдена в тексте дословно, 1 — без цитаты/);
+  assert.strictEqual(qc.unverifiedSummary([ok]), null);
+});
+
+test('сверка цитат: нормоконтроль, ТЗ, проверка документа и редакция ТЗ пользуются одним кодом', () => {
+  const fs = require('fs');
+  const qc = require('../server/services/quote-check');
+  const verify = require('../server/services/normo/checks/verify');
+  // verify.js отдаёт те же функции, а не свою копию
+  assert.strictEqual(verify.quoteInText, qc.quoteInText);
+  assert.strictEqual(verify.normalize, qc.normalize);
+  // в модулях нет второй реализации нормализации цитат: правило «ё → е» живёт в одном файле
+  const own = [];
+  for (const file of projectSources()) {
+    if (file.endsWith('quote-check.js')) continue;
+    const src = fs.readFileSync(file, 'utf8');
+    if (/replace\(\/\[её\]\/gi/.test(src)) own.push(file);
+  }
+  assert.deepStrictEqual(own, [], 'своя нормализация цитат вне quote-check.js');
+  // и все три модуля с цитатами модели действительно его зовут
+  for (const m of ['tz/analyze.js', 'doccheck/analyze.js', 'tz/revision.js', 'normo/checks/verify.js']) {
+    const src = fs.readFileSync(require('path').join(__dirname, '..', 'server', 'services', m), 'utf8');
+    assert.match(src, /quote-check/, `${m} не использует общую сверку цитат`);
+  }
+});
+
+/* ---------------- возврат находки модели-автору (quote-check.js) ---------------- */
+
+test('возврат автору: решения модели применяются, статус меняет только повторная сверка кодом', async () => {
+  const qc = require('../server/services/quote-check');
+  const text = 'Пояснительная записка. Высота этажа 3,3 м. Класс бетона B25 по спецификации.';
+  const base = [
+    { id: 'A', what: 'верная', quote: 'высота этажа 3,3 м' },
+    { id: 'B', what: 'выдуманная цитата', quote: 'высота этажа 4,2 м' },
+    { id: 'C', what: 'без цитаты', quote: null },
+    { id: 'D', what: 'снять', quote: 'класс бетона B30' },
+    { id: 'E', what: 'упорная', quote: 'класс бетона B40' },
+    { id: 'F', what: 'молчун', quote: 'класс бетона B50' },
+  ].map((f) => qc.markQuote(f, text));
+  const calls = [];
+  const call = async (tail, schema) => {
+    calls.push(tail.map((m) => m.role).join(','));
+    assert.strictEqual(schema, qc.RETRY_SCHEMA);
+    assert.match(tail[tail.length - 1].content, /ЗАДАЧА[\s\S]*УСЛОВИЯ[\s\S]*ОТВЕТ/);
+    if (calls.length === 1) {
+      assert.match(tail[0].content, /ref: B — выдуманная цитата; твоя цитата: «высота этажа 4,2 м»; причина: цитата не найдена/);
+      assert.doesNotMatch(tail[0].content, /ref: A/); // верная находка не возвращается
+      return { answers: [
+        { ref: 'B', decision: 'quote', quote: 'Класс бетона B25 по спецификации', ntd_quote: null, reason: '' },
+        { ref: 'C', decision: 'keep', quote: null, ntd_quote: null, reason: 'раздела в документе нет' },
+        { ref: 'D', decision: 'withdraw', quote: null, ntd_quote: null, reason: 'ошибся' },
+        { ref: 'E', decision: 'quote', quote: 'класс бетона B45', ntd_quote: null, reason: '' },
+        { ref: 'A', decision: 'withdraw', quote: null, ntd_quote: null, reason: 'чужая' }, // A не возвращалась — игнор
+        { ref: 'Z', decision: 'quote', quote: 'высота этажа 3,3 м', ntd_quote: null, reason: 'новая' }, // новых находок нет
+      ] };
+    }
+    assert.match(tail[2].content, /ref: E .*\(повторно\)/);
+    assert.doesNotMatch(tail[2].content, /ref: B|ref: C|ref: D/); // закрытые на первом круге не возвращаются
+    return { answers: [{ ref: 'E', decision: 'quote', quote: 'класс бетона B46', ntd_quote: null, reason: '' }] };
+  };
+  const { findings, stats } = await qc.retryUnverified({ findings: base, text, call, rounds: 2, baseNeedsHuman: () => false });
+  assert.strictEqual(findings.length, 6, 'находки не добавляются и не исчезают');
+  const by = (id) => findings.find((f) => f.id === id);
+  // верную находку повтор не трогает
+  assert.strictEqual(by('A').quote_retry, undefined);
+  assert.strictEqual(by('A').needs_human, false);
+  // новая цитата найдена дословно — подтверждена, needs_human снят до базы
+  const B = by('B');
+  assert.strictEqual(B.quote, 'Класс бетона B25 по спецификации');
+  assert.strictEqual(B.quote_check, 'verbatim');
+  assert.strictEqual(B.quote_note, null);
+  assert.strictEqual(B.needs_human, false);
+  assert.strictEqual(B.quote_retry, 'confirmed');
+  assert.strictEqual(B.quote_retry_rounds, 1);
+  assert.match(B.quote_retry_note, /подтверждена .* \(круг 1\)/);
+  // «оставить без цитаты» — человеку с причиной модели и причиной сверки
+  const C = by('C');
+  assert.strictEqual(C.quote_retry, 'kept');
+  assert.strictEqual(C.needs_human, true);
+  assert.match(C.quote_note, /оставлена моделью без цитаты: раздела в документе нет; нет содержательной цитаты/);
+  // снятая находка не удаляется
+  const D = by('D');
+  assert.strictEqual(D.quote_retry, 'withdrawn');
+  assert.strictEqual(D.needs_human, true);
+  assert.strictEqual(D.quote_check, 'not_found');
+  assert.match(D.quote_note, /снята моделью при повторном запросе: ошибся/);
+  // два круга неверных цитат — не подтверждена, последняя цитата сохранена
+  const E = by('E');
+  assert.strictEqual(E.quote_retry, 'unconfirmed');
+  assert.strictEqual(E.quote_retry_rounds, 2);
+  assert.strictEqual(E.quote, 'класс бетона B46');
+  assert.strictEqual(E.needs_human, true);
+  assert.match(E.quote_note, /не найдена в тексте .* дословно; не подтверждена и после повторного запроса/);
+  // без ответа оба круга — так и записано, цитата прежняя
+  const F = by('F');
+  assert.strictEqual(F.quote_retry, 'unanswered');
+  assert.strictEqual(F.quote, 'класс бетона B50');
+  assert.strictEqual(F.needs_human, true);
+  assert.deepStrictEqual(stats, { rounds: 2, returned: 5, confirmed: 1, withdrawn: 1, kept: 1, unconfirmed: 1, unanswered: 1, calls: 2, error: null });
+  // диалог растёт: второй круг видит задание и ответ первого
+  assert.deepStrictEqual(calls, ['user', 'user,assistant,user']);
+  const summary = qc.retrySummary(stats);
+  assert.match(summary.what, /по 5 находкам .* \(кругов: 2\): подтверждено 1, снято моделью 1, оставлено без цитаты 1, не подтверждено 1, без ответа 1/);
+  assert.strictEqual(qc.retrySummary({ returned: 0 }), null);
+});
+
+test('возврат автору: выключатель, база needs_human и сбой повтора', async () => {
+  const qc = require('../server/services/quote-check');
+  const text = 'Высота этажа 3,3 м. Класс бетона B25.';
+  const base = [qc.markQuote({ id: 'B', what: 'x', quote: 'класс бетона B30', needs_human: true }, text)];
+  // QUOTE_RETRY_ROUNDS=0 — модель не зовётся, находки как были
+  let called = 0;
+  const off = await qc.retryUnverified({ findings: base, text, rounds: 0, call: async () => { called += 1; return null; } });
+  assert.strictEqual(called, 0);
+  assert.strictEqual(off.stats.returned, 0);
+  assert.strictEqual(off.findings[0].quote_retry, undefined);
+  // needs_human по другим причинам подтверждённая цитата не снимает
+  const kept = await qc.retryUnverified({
+    findings: base, text, rounds: 1, baseNeedsHuman: () => true,
+    call: async () => ({ answers: [{ ref: 'B', decision: 'quote', quote: 'Класс бетона B25', ntd_quote: null, reason: '' }] }),
+  });
+  assert.strictEqual(kept.findings[0].quote_retry, 'confirmed');
+  assert.strictEqual(kept.findings[0].quote_check, 'verbatim');
+  assert.strictEqual(kept.findings[0].needs_human, true);
+  // обрыв до модели — не ошибка прогона: сбой в сводке, находка без ответа
+  const broken = await qc.retryUnverified({ findings: base, text, rounds: 2, call: async () => { throw new Error('обрыв соединения'); } });
+  assert.match(broken.stats.error, /круг 1: обрыв соединения/);
+  assert.strictEqual(broken.stats.calls, 1);
+  assert.strictEqual(broken.findings[0].quote_retry, 'unanswered');
+  assert.strictEqual(broken.findings[0].needs_human, true);
+  assert.match(qc.retrySummary(broken.stats).what, /без ответа 1; сбой повтора — круг 1/);
+  // неразборный ответ — то же
+  const junk = await qc.retryUnverified({ findings: base, text, rounds: 2, call: async () => ({ findings: [] }) });
+  assert.match(junk.stats.error, /неразборный ответ/);
+  assert.strictEqual(junk.findings[0].quote_retry, 'unanswered');
+  // схема ответа: required перечисляет все ключи, необязательное — союз с null (правило платформы)
+  const item = qc.RETRY_SCHEMA.properties.answers.items;
+  assert.deepStrictEqual(item.required, Object.keys(item.properties));
+  assert.deepStrictEqual(item.properties.quote.type, ['string', 'null']);
+});
+
+test('схемы структурного вывода: необязательный enum не пишется союзом типов с null (Anthropic отвергает)', () => {
+  const schemas = {
+    'doccheck/analyze.js': require('../server/services/doccheck/analyze'),
+    'tz/analyze.js': require('../server/services/tz/analyze'),
+    'quote-check.js': require('../server/services/quote-check'),
+  };
+  const bad = [];
+  const walk = (node, where) => {
+    if (Array.isArray(node)) return node.forEach((n, i) => walk(n, `${where}[${i}]`));
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node.type) && Array.isArray(node.enum)) bad.push(where);
+    if (Array.isArray(node.enum) && node.enum.includes(null)) bad.push(`${where} (null в enum)`);
+    for (const [k, v] of Object.entries(node)) walk(v, `${where}.${k}`);
+  };
+  for (const [file, mod] of Object.entries(schemas)) {
+    for (const [name, value] of Object.entries(mod)) {
+      if (/SCHEMA$/.test(name)) walk(value, `${file}:${name}`);
+    }
+    if (mod.completenessSchema) walk(mod.completenessSchema({ items: [{ id: 'x' }] }), `${file}:completenessSchema`);
+  }
+  assert.deepStrictEqual(bad, [], 'enum вместе с type: [..., null] — Anthropic такую схему не принимает');
+});

@@ -332,3 +332,80 @@ test('чужого не пускаем: без токена платформы �
   const { status } = await api('/api/normo/projects');
   assert.equal(status, 401);
 });
+
+test('LLM-слой: находка без дословной цитаты возвращается модели, статус меняет только verify.js (модель подменена)', async (t) => {
+  if (!available) return t.skip(unavailableReason);
+  const adapter = require('../server/services/claude/adapter');
+  const corpus = require('../server/services/normo/ntd-corpus');
+  const normoStore = require('../server/services/normo/store');
+  const llm = require('../server/services/normo/checks/llm');
+  const project = await normoStore.createProject({
+    name: 'Возврат автору (тест)', stage: 'П', dateStarted: '2026-10-07', owner: 'u_test', platformProjectId: 'legacy',
+  });
+  const DOC = 'Пояснительная записка. Проектная документация состоит из текстовой части и графической части. Узлы обозначены кружками.';
+  const rule = (id, wording, severity) => ({
+    id, title: id, severity, source: { ntd: 'ПП РФ № 87', clause: '3' }, check: { description: 'проверить' },
+    wording, fix_hint: null, auto: 'llm', hash: `h-${id}`, codes: {},
+  });
+  const rules = [rule('T-1', 'ПД состоит из двух частей', 'major'), rule('T-2', 'Узлы обозначаются', 'minor')];
+  const orig = { findClause: corpus.findClause, extractText: normoStore.extractText, call: adapter.structuredCall };
+  corpus.findClause = async () => ({
+    doc: { id: 1, code: 'ПП РФ № 87' },
+    chunks: [{ clause: '3', body: 'Проектная документация состоит из текстовой и графической частей.', chunk_no: 0 }],
+  });
+  normoStore.extractText = async () => DOC;
+  const calls = [];
+  adapter.structuredCall = async (args) => {
+    calls.push(args);
+    if (args.schemaName === 'normo_findings') {
+      return { text: JSON.stringify({ findings: [
+        // цитата из документа пересказана — верификатор её не найдёт
+        { rule_id: 'T-1', quote: 'состоит из текста и графики', ntd: 'ПП РФ № 87', clause: '3',
+          ntd_quote: 'состоит из текстовой и графической частей', location_file: 'пз.docx', location_hint: 'стр. 1',
+          wording: 'В ПЗ состав частей назван неточно, что грозит замечанием экспертизы.', confidence: 0.8 },
+        // цитаты верные, но находка об ОТСУТСТВИИ — правило двух адресов, модели не возвращается
+        { rule_id: 'T-2', quote: 'Узлы обозначены кружками', ntd: 'ПП РФ № 87', clause: '3',
+          ntd_quote: 'состоит из текстовой и графической частей', location_file: 'пз.docx', location_hint: 'стр. 2',
+          wording: 'В документе отсутствует обозначение узлов на полке линии-выноски.', confidence: 0.6 },
+      ], unchecked: [] }) };
+    }
+    // возврат: служебное обращение в тот же диалог, только по T-1
+    assert.strictEqual(args.schemaName, 'quote_retry');
+    assert.strictEqual(args.internal, true);
+    assert.strictEqual(args.messages.length, 3);
+    assert.strictEqual(args.messages[1].role, 'assistant');
+    assert.match(args.messages[2].content, /ref: R-1 — правило T-1 \(ПП РФ № 87 п\.3\): В ПЗ состав частей назван неточно/);
+    assert.match(args.messages[2].content, /твоя цитата пункта НТД/);
+    assert.doesNotMatch(args.messages[2].content, /ref: R-2/);
+    return { text: JSON.stringify({ answers: [
+      { ref: 'R-1', decision: 'quote', quote: 'состоит из текстовой части и графической части', ntd_quote: null, reason: '' },
+    ] }) };
+  };
+  try {
+    const { findings, journal, retry } = await llm.runLlmRules({
+      project,
+      version: { section_code: 'ПЗ', section_name: 'Пояснительная записка', stage: 'П' },
+      files: [{ original_name: 'пз.docx', sha256: 'test' }],
+      rules,
+    });
+    assert.strictEqual(calls.length, 2, 'ожидались проверка и один круг возврата');
+    assert.strictEqual(findings.length, 2);
+    const t1 = findings.find((f) => f.rule.id === 'T-1');
+    assert.strictEqual(t1.verification, 'auto');
+    assert.strictEqual(t1.docQuote, 'состоит из текстовой части и графической части');
+    assert.strictEqual(t1.quote_retry, 'confirmed');
+    assert.match(t1.detail, /подтверждено верификатором после повторного запроса \(круг 1\)/);
+    const t2 = findings.find((f) => f.rule.id === 'T-2');
+    assert.strictEqual(t2.verification, 'needs_human');
+    assert.strictEqual(t2.quote_retry, undefined);
+    assert.match(t2.detail, /правило двух адресов/);
+    assert.strictEqual(journal.get('T-1').outcome, 'finding');
+    assert.deepStrictEqual(
+      { returned: retry.returned, confirmed: retry.confirmed, rounds: retry.rounds, error: retry.error },
+      { returned: 1, confirmed: 1, rounds: 1, error: null });
+  } finally {
+    corpus.findClause = orig.findClause;
+    normoStore.extractText = orig.extractText;
+    adapter.structuredCall = orig.call;
+  }
+});

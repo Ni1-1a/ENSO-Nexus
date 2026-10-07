@@ -103,6 +103,20 @@
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} КБ`;
     return `${(n / 1024 / 1024).toFixed(1)} МБ`;
   }
+  /** Сводка возврата находок модели-автору (params.llm_retry прогона, см. quote-check.js). */
+  function retryNote(r) {
+    if (!r || !r.returned) return null;
+    const parts = [
+      r.confirmed ? `подтверждено ${r.confirmed}` : null,
+      r.withdrawn ? `снято моделью ${r.withdrawn}` : null,
+      r.kept ? `оставлено без цитаты ${r.kept}` : null,
+      r.unconfirmed ? `не подтверждено ${r.unconfirmed}` : null,
+      r.unanswered ? `без ответа ${r.unanswered}` : null,
+    ].filter(Boolean);
+    return `возврат модели ${r.returned} ${plural(r.returned, 'замечания', 'замечаний', 'замечаний')} без дословной цитаты`
+      + ` (кругов ${r.rounds}): ${parts.join(', ') || 'ответа нет'}${r.error ? ` · сбой повтора: ${r.error}` : ''}`;
+  }
+
   function plural(n, one, few, many) {
     const m10 = n % 10; const m100 = n % 100;
     if (m10 === 1 && m100 !== 11) return one;
@@ -578,6 +592,7 @@
       : [
         `правил проверено: ${journal.length}`,
         `замечаний в прогоне: ${findings.length}`,
+        retryNote(run.params && run.params.llm_retry),
         run.finished_at ? `закончен ${fmtDateTime(run.finished_at)}` : null,
         cached && run.status === 'done' ? 'результат из кэша — комплект файлов и каталог правил не менялись' : null,
       ];

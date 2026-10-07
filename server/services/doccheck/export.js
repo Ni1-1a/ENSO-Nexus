@@ -4,6 +4,7 @@
  * ссылок на НТД вторым листом. Сборка adm-zip'ом, как в tz/export.js.
  */
 const AdmZip = require('adm-zip');
+const { LABEL: QUOTE_LABEL } = require('../quote-check');
 
 const esc = (v) => String(v == null ? '' : v)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -14,7 +15,8 @@ const DECISION_LABEL = { accepted: 'принято', rejected: 'отклонен
 
 const FINDING_COLS = [
   { label: '№', width: 8 }, { label: 'Что не так', width: 46 }, { label: 'Где', width: 24 },
-  { label: 'Цитата', width: 36 }, { label: 'Стандарт', width: 20 }, { label: 'Пункт', width: 12 },
+  { label: 'Цитата', width: 36 }, { label: 'Сверка цитаты', width: 20 },
+  { label: 'Стандарт', width: 20 }, { label: 'Пункт', width: 12 },
   { label: 'Уверенность в пункте', width: 16 }, { label: 'Действие', width: 12 },
   { label: 'Тип', width: 18 }, { label: 'Решение', width: 12 }, { label: 'Кем / когда', width: 22 },
 ];
@@ -59,7 +61,9 @@ function findingsXlsx(run) {
   const findingRows = rowsFor(FINDING_COLS, findings.map((f) => {
     const d = (run.decisions || {})[f.id];
     return [
-      f.id, f.what, f.where || '', f.quote || '', f.standard || '', f.clause || '',
+      f.id, f.what, f.where || '', f.quote || '',
+      [f.quote_check ? (QUOTE_LABEL[f.quote_check] || f.quote_check) : '', f.quote_retry_note ? `повтор: ${f.quote_retry_note}` : ''].filter(Boolean).join('; '),
+      f.standard || '', f.clause || '',
       f.clause ? (f.clause_confidence || '') : '', f.action || '', f.kind || '',
       d ? (DECISION_LABEL[d.decision] || d.decision) : '',
       d ? `${d.by || ''} ${String(d.at || '').slice(0, 10)}`.trim() : '',

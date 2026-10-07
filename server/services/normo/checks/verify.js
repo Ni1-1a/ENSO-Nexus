@@ -8,25 +8,9 @@
  * не выбрасывается и не выдаётся за проверенную (П43/П44 согласованного обзора).
  */
 const corpus = require('../ntd-corpus');
-
-const MIN_QUOTE = 12;
-
-/** Нормализация для сравнения цитат: кавычки/тире/ё/регистр/пробелы. */
-function normalize(s) {
-  return String(s || '')
-    .replace(/[«»„“”"]/g, '"')
-    .replace(/[–—−]/g, '-')
-    .replace(/[её]/gi, 'е')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-function quoteInText(quote, text) {
-  const q = normalize(quote);
-  if (q.length < MIN_QUOTE) return false;
-  return normalize(text).includes(q);
-}
+// Сверка цитаты с текстом документа — общая на платформу (services/quote-check.js):
+// тем же кодом и теми же формулировками пользуются «Анализ ТЗ» и «Проверка документа».
+const { MIN_QUOTE, normalize, quoteInText, checkQuote } = require('../../quote-check');
 
 /**
  * @returns {ok, verification: 'auto'|'needs_human', reasons: string[]}
@@ -34,11 +18,8 @@ function quoteInText(quote, text) {
 async function verifyFinding({ docText, docQuote, ntd, ntdClause, ntdQuote }) {
   const reasons = [];
 
-  if (!docQuote || normalize(docQuote).length < MIN_QUOTE) {
-    reasons.push('нет содержательной цитаты из проверяемого документа');
-  } else if (!quoteInText(docQuote, docText)) {
-    reasons.push('цитата не найдена в тексте проверяемого документа дословно');
-  }
+  const docCheck = checkQuote(docQuote, docText);
+  if (docCheck.reason) reasons.push(docCheck.reason);
 
   if (!ntd || !ntdClause) {
     reasons.push('не назван документ НТД или номер пункта');

@@ -8,6 +8,7 @@
  * файл самодостаточен. Функции чистые: вход — результат прогона, выход — Buffer.
  */
 const AdmZip = require('adm-zip');
+const { LABEL: QUOTE_LABEL } = require('../quote-check');
 
 const esc = (v) => String(v == null ? '' : v)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -31,6 +32,7 @@ const XLSX_COLS = [
   { label: 'Категория', width: 18 },
   { label: 'Пункт ТЗ', width: 22 },
   { label: 'Цитата', width: 40 },
+  { label: 'Сверка цитаты', width: 20 },
   { label: 'Дефект', width: 52 },
   { label: 'Источник требования', width: 46 },
   { label: 'Последствие', width: 22 },
@@ -59,7 +61,8 @@ function findingsXlsx(run) {
     const r = idx + 2;
     const d = (run.decisions || {})[f.id];
     const values = [
-      f.id, f.severity, f.category, f.znp_ref, f.quote || '', f.problem,
+      f.id, f.severity, f.category, f.znp_ref, f.quote || '',
+      [f.quote_check ? (QUOTE_LABEL[f.quote_check] || f.quote_check) : '', f.quote_retry_note ? `повтор: ${f.quote_retry_note}` : ''].filter(Boolean).join('; '), f.problem,
       sourceText(f), f.consequence || '', f.proposed_text || '',
       d ? (DECISION_LABEL[d.decision] || d.decision) : '',
       d ? `${d.by || ''} ${String(d.at || '').slice(0, 10)}`.trim() : '',
@@ -207,7 +210,11 @@ function reportDocx(run, project) {
       if (src) body.push(labeled('Источник требования:', src));
       if (f.consequence) body.push(labeled('Последствие:', f.consequence));
       if (f.proposed_text) body.push(labeled('Предлагаемая формулировка:', f.proposed_text));
-      if (f.needs_human) body.push(labeled('Внимание:', 'находка требует проверки человеком'));
+      if (f.needs_human) {
+        body.push(labeled('Внимание:', f.quote_note
+          ? `находка требует проверки человеком — ${f.quote_note}`
+          : 'находка требует проверки человеком'));
+      }
       if (d) body.push(labeled('Решение:', `${DECISION_LABEL[d.decision] || d.decision} — ${d.by || ''} ${String(d.at || '').slice(0, 10)}`));
     }
   }

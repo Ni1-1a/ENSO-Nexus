@@ -271,7 +271,7 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
 | PUT | `/api/tz/projects/:id/document` | `{ text, name? }` — вставить текст руками; нестрока → `400` |
 | POST | `/api/tz/projects/:id/document/file` | multipart `file`: DOCX, PDF с текстовым слоем, TXT, MD; скан → `422`; больше `UPLOAD_TOTAL_MB` → `413` |
 | POST | `/api/tz/projects/:id/analyze` | запустить прогон → `202 { runId, status: "queued" }`; идущий прогон → `409` |
-| GET | `/api/tz/runs/:rid` | `{ run }` — статус, прогресс, находки |
+| GET | `/api/tz/runs/:rid` | `{ run }` — статус, прогресс, находки; у находки модели `quote_check`/`quote_note` (сверка цитаты кодом) и, после возврата автору, `quote_retry` (`confirmed` / `withdrawn` / `kept` / `unconfirmed` / `unanswered`), `quote_retry_rounds`, `quote_retry_note`; сводка возврата — `result.quote_retry` и строка в `result.unverified` |
 | POST | `/api/tz/runs/:rid/findings/:fid/decision` | решение человека по находке |
 | GET | `/api/tz/runs/:rid/export.xlsx` | реестр замечаний (Excel); незавершённый прогон → `409` |
 | GET | `/api/tz/runs/:rid/export.docx` | отчёт (Word) |
@@ -292,7 +292,7 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
 | PUT | `/api/doccheck/checks/:id/document` | `{ text, name? }` — текст руками → `{ document: { name, chars }, runId }`: загрузка САМА запускает прогон, `runId` — его id (`null`, если прогон уже идёт); нестрока → `400` |
 | POST | `/api/doccheck/checks/:id/document/file` | multipart `file`: DOCX, PDF с текстовым слоем, TXT, MD, XML (график MS Project) → `201 { document, runId }` (автозапуск, как у PUT); больше `UPLOAD_TOTAL_MB` → `413` |
 | POST | `/api/doccheck/checks/:id/analyze` | прогон → `202 { runId, status: "queued" }` |
-| GET | `/api/doccheck/runs/:rid` | `{ run }` |
+| GET | `/api/doccheck/runs/:rid` | `{ run }` — у находок те же поля сверки цитаты и возврата автору, что в «Анализе ТЗ» (`quote_check`, `quote_note`, `quote_retry*`); сводка — `result.quote_retry` |
 | POST | `/api/doccheck/runs/:rid/findings/:fid/decision` | решение по находке |
 | GET | `/api/doccheck/runs/:rid/export.xlsx` | реестр находок (Excel) |
 | POST | `/api/doccheck/ab` | `{ name, provider?, model?, projectId? }` — сравнение редакций → `201 { ab }` |
@@ -334,7 +334,7 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
 | GET | `/api/normo/sections/:sid/versions` | `{ versions }` |
 | GET | `/api/normo/versions/:vid` | `{ version }` |
 | POST | `/api/normo/versions/:vid/check` | проверка версии, `{ force? }` → `{ runId, status: "running" \| "done" \| "failed", cached }`; `cached: true` — готовый прогон этой версии либо копия прогона той же по содержимому версии этого раздела (проверки заново не выполняются); `force: true` запускает заново; упавший (`failed`) прогон кэшем не считается — следующий запрос запускает проверку заново. Повторный прогон той же версии её замечания не дублирует: совпавшее по правилу и месту остаётся одной строкой (со статусом и решением человека) и переходит к новому прогону, не найденное вновь при выполненном правиле закрывается как `fixed`. Смысловые проверки включает `NORMO_LLM` |
-| GET | `/api/normo/runs/:rid` | `{ run }` |
+| GET | `/api/normo/runs/:rid` | `{ run }` — журнал по правилам и замечания; итог верификатора и возврата находки автору — хвостом `wording` в квадратных скобках, сводка возврата — `run.params.llm_retry` |
 | GET | `/api/normo/versions/:vid/findings` | `{ findings }` |
 | PATCH | `/api/normo/findings/:fid` | `{ status: open \| fixed \| rejected \| accepted_with_deviation, verification: human_confirmed \| human_rejected }` |
 | POST | `/api/normo/projects/:id/input-data` | multipart `files[]` + `kind` — исходные данные (ТЗ, ГПЗУ, ТУ) → извлечение требований; правила файлов те же, что у версий (`422`) |

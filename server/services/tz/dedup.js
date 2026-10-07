@@ -44,7 +44,15 @@ function dedupe(findings) {
       prev.consequence = f.consequence || prev.consequence;
     }
     if (f.requirement_source) prev.sources.push(f.requirement_source);
-    if (!prev.quote && f.quote) prev.quote = f.quote;
+    if (!prev.quote && f.quote) {
+      // цитата переезжает вместе с итогом её сверки (quote-check.js)
+      prev.quote = f.quote;
+      prev.quote_check = f.quote_check;
+      prev.quote_note = f.quote_note;
+      prev.quote_retry = f.quote_retry;
+      prev.quote_retry_rounds = f.quote_retry_rounds;
+      prev.quote_retry_note = f.quote_retry_note;
+    }
     if (!prev.proposed_text && f.proposed_text) prev.proposed_text = f.proposed_text;
     prev.needs_human = prev.needs_human || !!f.needs_human;
   }

@@ -592,6 +592,10 @@
       f.needs_human ? h('span', { class: 'tz-badge' }, 'нужна проверка человеком') : null,
     ));
     if (f.quote) card.append(h('blockquote', {}, `«${f.quote}»`));
+    // итог сверки цитаты кодом (quote-check.js): причина, почему находка ушла человеку
+    if (f.quote_note) card.append(h('p', { class: 'row quote-note' }, `Сверка цитаты: ${f.quote_note}`));
+    // возврат находки модели-автору (quote-check.js): чем кончился повтор
+    if (f.quote_retry_note) card.append(h('p', { class: 'row quote-note' }, `Повторный запрос модели: ${f.quote_retry_note}`));
     card.append(h('p', { class: 'problem' }, f.problem));
     const sources = (f.sources && f.sources.length ? f.sources : (f.requirement_source ? [f.requirement_source] : []));
     for (const s of sources) {

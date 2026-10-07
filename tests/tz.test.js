@@ -157,8 +157,20 @@ test('анализ ТЗ: прогон без модели — честный 422
   assert.strictEqual(r.status, 422);
 });
 
-/* Подменённая модель: классификация → полнота → находки. Возвращает по схеме шага. */
-function fakeModel({ schemaName }) {
+/* Подменённая модель: классификация → полнота → находки → возврат находок за цитатой. Возвращает по схеме шага. */
+let retryArgs = null;
+function fakeModel(args) {
+  const { schemaName } = args;
+  if (schemaName === 'quote_retry') {
+    retryArgs = args;
+    // ссылки — по порядку находок модели: R-2 — «по смете» (без цитаты), R-3 — выдуманная цитата
+    return {
+      text: JSON.stringify({ answers: [
+        { ref: 'R-2', decision: 'keep', quote: null, ntd_quote: null, reason: 'реквизиты сметы в ТЗ не названы' },
+        { ref: 'R-3', decision: 'quote', quote: '1. Объект: цех.', ntd_quote: null, reason: '' },
+      ] }),
+    };
+  }
   if (schemaName === 'tz_classify') {
     return {
       text: JSON.stringify({
@@ -190,6 +202,12 @@ function fakeModel({ schemaName }) {
           severity: 'ЗАМЕЧАНИЕ', category: 'нормативная_база', znp_ref: 'п. 3',
           quote: 'по смете', problem: 'Ссылка на смету без реквизитов документа',
           consequence: 'срыв срока', proposed_text: null, needs_human: false,
+        },
+        {
+          // цитата, которой в тексте ТЗ нет: модель «улучшила» формулировку
+          severity: 'ЗАМЕЧАНИЕ', category: 'формулировка', znp_ref: 'п. 1',
+          quote: 'Объект: производственный цех вакцин', problem: 'Назначение объекта не раскрыто',
+          consequence: 'уточнение на экспертизе', proposed_text: null, needs_human: false,
         },
       ],
     }),
@@ -226,6 +244,45 @@ test('анализ ТЗ: полный прогон с подменённой м�
     // нормативная_база принудительно needs_human: статус НПА в v1 не сверяется
     const norm = result.findings.find((f) => f.category === 'нормативная_база');
     assert.strictEqual(norm.needs_human, true);
+    // Сверка цитат — то же правило, что в нормоконтроле (quote-check.js):
+    // дословная цитата → verbatim, needs_human не ставится
+    const verbatim = result.findings.find((f) => f.quote === 'Мощность: уточняется');
+    assert.strictEqual(verbatim.quote_check, 'verbatim');
+    assert.strictEqual(verbatim.quote_note, null);
+    assert.strictEqual(verbatim.needs_human, false);
+    // «по смете» короче MIN_QUOTE — содержательной цитаты нет; на возврате модель
+    // оставила находку без цитаты — она у человека с причиной модели и причиной сверки
+    assert.strictEqual(norm.quote_check, 'missing');
+    assert.strictEqual(norm.quote_retry, 'kept');
+    assert.match(norm.quote_note, /оставлена моделью без цитаты: реквизиты сметы в ТЗ не названы; нет содержательной цитаты/);
+    // цитаты, которой в тексте нет: находка вернулась модели в том же диалоге,
+    // новая цитата найдена дословно — подтверждена, человек уже не нужен
+    const invented = result.findings.find((f) => /Назначение объекта/.test(f.problem));
+    assert.ok(invented, 'находка с ненайденной цитатой выброшена, а должна остаться');
+    assert.strictEqual(invented.quote, '1. Объект: цех.');
+    assert.strictEqual(invented.quote_check, 'verbatim');
+    assert.strictEqual(invented.quote_retry, 'confirmed');
+    assert.strictEqual(invented.needs_human, false);
+    assert.strictEqual(invented.quote_note, null);
+    assert.match(invented.quote_retry_note, /подтверждена .* \(круг 1\)/);
+    // повтор ушёл служебным обращением в тот же диалог: ТЗ → ответ модели → задание
+    assert.ok(retryArgs, 'возврат находок модели не вызывался');
+    assert.strictEqual(retryArgs.internal, true);
+    assert.strictEqual(retryArgs.messages.length, 3);
+    assert.strictEqual(retryArgs.messages[1].role, 'assistant');
+    assert.match(retryArgs.messages[2].content, /ref: R-3 — формулировка, п\. 1: Назначение объекта не раскрыто; твоя цитата: «Объект: производственный цех вакцин»/);
+    assert.doesNotMatch(retryArgs.messages[2].content, /ref: R-1/); // дословная находка не возвращается
+    // находки полноты из матрицы цитат не несут — сверке не подлежат
+    assert.strictEqual(tep.quote_check, undefined);
+    // сводка в «не удалось проверить»: после возврата не найденных нет, 1 без цитаты
+    const qs = result.unverified.find((u) => /без дословного подтверждения/.test(u.what));
+    assert.ok(qs, 'сводки сверки цитат нет в unverified');
+    assert.doesNotMatch(qs.what, /цитата не найдена/);
+    assert.match(qs.what, /1 — без цитаты/);
+    const rs = result.unverified.find((u) => /Повторный запрос модели/.test(u.what));
+    assert.ok(rs, 'сводки возврата находок нет в unverified');
+    assert.match(rs.what, /по 2 находкам .* \(кругов: 1\): подтверждено 1, оставлено без цитаты 1/);
+    assert.deepStrictEqual({ returned: result.quote_retry.returned, confirmed: result.quote_retry.confirmed }, { returned: 2, confirmed: 1 });
     // вердикт по порогам: есть СУЩЕСТВЕННО, блокеров нет → «условно готово»
     assert.strictEqual(result.verdict.status, 'условно готово');
     assert.strictEqual(result.verdict.blocking_count, 0);

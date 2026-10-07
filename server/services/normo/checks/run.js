@@ -30,6 +30,7 @@ const db = require('../db');
 const rulesCatalog = require('../rules');
 const store = require('../store');
 const deterministic = require('./deterministic');
+const quoteCheck = require('../../quote-check');
 
 function cacheKey(contentHash, rulesHash, params) {
   return crypto.createHash('sha256')
@@ -234,7 +235,7 @@ async function processRun(run, { version, project, rules, llm }) {
     const llmRules = rules.filter((r) => r.auto === 'llm');
     const t0 = Date.now();
     const llmRunner = require('./llm');
-    const { findings, journal: llmJournal } = await llmRunner.runLlmRules({
+    const { findings, journal: llmJournal, retry } = await llmRunner.runLlmRules({
       project, version, files: version.files, rules: llmRules,
     });
     const per = llmRules.length ? Math.round((Date.now() - t0) / llmRules.length) : 0;
@@ -243,6 +244,13 @@ async function processRun(run, { version, project, rules, llm }) {
       journal.set(r.id, { ...j, durationMs: per });
     }
     newFindings.push(...findings);
+    // Возврат находок автору виден в прогоне: сводка — в params.llm_retry и в логе сервера
+    if (retry && retry.returned) {
+      await db.query(
+        "UPDATE analysis_runs SET params = coalesce(params, '{}'::jsonb) || $2::jsonb WHERE id = $1",
+        [run.id, JSON.stringify({ llm_retry: retry })]);
+      console.log(`[normo/run] прогон ${run.id}: ${quoteCheck.retrySummary(retry).what}`);
+    }
   }
 
   // 3. Журнал в БД
@@ -289,7 +297,10 @@ async function processRun(run, { version, project, rules, llm }) {
       await db.query('UPDATE findings SET run_id = $1 WHERE id = $2', [run.id, kept.id]);
       continue;
     }
-    const wording = nf.wordingOverride || (nf.detail ? `${nf.rule.wording} [${nf.detail}]` : nf.rule.wording);
+    // Причина верификатора (и итог повтора) не теряется и при своей формулировке модели:
+    // раньше с wordingOverride detail пропадал, и needs_human стоял без объяснения
+    const base = nf.wordingOverride || nf.rule.wording;
+    const wording = nf.detail ? `${base} [${nf.detail}]` : base;
     await db.query(
       `INSERT INTO findings (run_id, version_id, rule_id, rule_hash, origin, severity, verification,
          location, doc_quote, ntd, ntd_clause, ntd_quote, wording, fix_hint, confidence, codes, predecessor_id)

@@ -613,6 +613,10 @@
     ));
     card.append(h('p', { class: 'problem' }, f.what));
     if (f.quote) card.append(h('blockquote', {}, `«${f.quote}»`));
+    // итог сверки цитаты кодом (quote-check.js): причина, почему находка ушла человеку
+    if (f.quote_note) card.append(h('p', { class: 'row quote-note' }, `Сверка цитаты: ${f.quote_note}`));
+    // возврат находки модели-автору (quote-check.js): чем кончился повтор
+    if (f.quote_retry_note) card.append(h('p', { class: 'row quote-note' }, `Повторный запрос модели: ${f.quote_retry_note}`));
     if (f.standard) {
       card.append(h('p', { class: 'row' },
         `Стандарт: ${f.standard}${f.clause ? ` · пункт ${f.clause} (уверенность: ${f.clause_confidence || 'низкая'}) — гипотеза, сверить по официальному тексту` : ' · пункт моделью не назван'}`));

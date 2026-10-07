@@ -18,11 +18,18 @@
  * Тип «tz» прогоном не проверяется — человека ведут в модуль «Анализ ТЗ»,
  * там проверка полнее. Неопределённый тип — честный итог с перечнем ссылок
  * на НТД и просьбой выбрать тип, а не пустой «успех».
+ *
+ * Цитата находки сверяется с полным текстом документа (quote-check.js); находка
+ * без дословной цитаты возвращается той же модели в том же диалоге — до
+ * QUOTE_RETRY_ROUNDS кругов (07.10.2026): статус меняет только повторная
+ * сверка кодом, снятые и оставленные без цитаты находки идут человеку.
  */
+const config = require('../../config');
 const prompts = require('../prompts');
 const doclib = require('../doclib');
 const ntdRefs = require('./ntd-refs');
 const store = require('./store');
+const quoteCheck = require('../quote-check');
 
 const ANALYZE_CHAR_LIMIT = 160_000;
 const CLASSIFY_CHAR_LIMIT = 20_000;
@@ -63,7 +70,9 @@ const FINDINGS_SCHEMA = {
           quote: { type: ['string', 'null'], description: 'Дословная цитата дефектного места' },
           standard: { type: ['string', 'null'], description: 'Обозначение НТД (ГОСТ/СП/ПП) без пункта' },
           clause: { type: ['string', 'null'], description: 'Номер пункта, ТОЛЬКО если уверен' },
-          clause_confidence: { type: ['string', 'null'], enum: ['высокая', 'средняя', 'низкая', null] },
+          // enum с null внутри союза типов Anthropic отвергает («Enum value 'высокая' does not match
+          // declared type ['string','null']», живой прогон 07.10.2026) — необязательный enum пишется anyOf
+          clause_confidence: { anyOf: [{ type: 'string', enum: ['высокая', 'средняя', 'низкая'] }, { type: 'null' }] },
           action: { type: 'string', enum: ['исправить', 'проверить', 'нет данных'] },
           kind: {
             type: 'string',
@@ -180,6 +189,7 @@ async function runCheck(runId, { callFn = null, host = '' } = {}) {
   let findings = [];
   let missingData = [];
   let modelNotes = null;
+  let quoteRetry = null;
 
   const routeDef = doclib.ROUTES[classification.type] || null;
   if (routeDef && !run.provider) {
@@ -212,18 +222,24 @@ async function runCheck(runId, { callFn = null, host = '' } = {}) {
     let parsed = null;
     let usedLimit = null;
     let lastErr = null;
+    let usedArgs = null; // system и реплика, на которые модель ответила: нужны возврату находок
+    let usedOut = null;
     for (const limit of ladder) {
       const doc = documentForModel(run.document_text, limit);
       try {
-        const out = await callWithRetry({
+        const args = {
           system: prompts.load('doccheck-run', {
             carcass: carcass ? `${carcass.body}\n\n` : '',
             task: entry.body,
           }),
           messages: [{ role: 'user', content: `Документ «${check.document_name || check.name}» (тип: ${classification.label}):\n\n${doc.text}` }],
-          sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'doccheck_findings', maxTokens: 24000,
+        };
+        const out = await callWithRetry({
+          ...args, sessionId, route, schema: FINDINGS_SCHEMA, schemaName: 'doccheck_findings', maxTokens: 24000,
         }, 'проверка');
         parsed = parse(out, 'проверка');
+        usedArgs = args;
+        usedOut = out;
         usedLimit = doc.truncated ? limit : null;
         break;
       } catch (err) {
@@ -249,10 +265,42 @@ async function runCheck(runId, { callFn = null, host = '' } = {}) {
         // а неизвестная уверенность читается как низкая (Д4)
         clause_confidence: f.clause ? (f.clause_confidence || 'низкая') : null,
         needs_human: !!f.clause || f.action !== 'исправить'
-          || f.kind === 'устаревшая редакция' || !f.quote,
-      }));
+          || f.kind === 'устаревшая редакция',
+      }))
+      // Цитата сверяется с ПОЛНЫМ текстом документа кодом (правило нормоконтроля,
+      // одно на платформу — services/quote-check.js): нет цитаты или не найдена
+      // дословно → needs_human с причиной; находка не выбрасывается.
+      .map((f) => quoteCheck.markQuote(f, run.document_text));
+
+    // Возврат автору: находки без дословной цитаты — той же модели в том же
+    // диалоге (документ → её ответ → задание повтора), до QUOTE_RETRY_ROUNDS кругов.
+    // Статус меняет только повторная сверка кодом; сбой повтора прогон не роняет.
+    const retry = await quoteCheck.retryUnverified({
+      findings,
+      text: run.document_text,
+      // needs_human без учёта цитаты: пункт НТД (Д4), действие ≠ «исправить» (Д1), устаревшая редакция
+      baseNeedsHuman: (f) => !!f.clause || f.action !== 'исправить' || f.kind === 'устаревшая редакция',
+      describe: (f) => `${f.kind || 'находка'}${f.where ? `, ${f.where}` : ''}: ${f.what}`,
+      onRound: (round, n) => store.setRunProgress(runId,
+        `возврат ${n} находок модели за дословной цитатой (круг ${round}/${config.quoteRetryRounds})…`),
+      call: async (tail, schema) => {
+        const out = await callWithRetry({
+          ...usedArgs,
+          messages: [...usedArgs.messages, { role: 'assistant', content: usedOut.text || '' }, ...tail],
+          sessionId, route, schema, schemaName: 'quote_retry', maxTokens: 8000,
+          internal: true, // служебное обращение: токены считает, счётчик запросов не расходует
+        }, 'повтор по цитатам');
+        return adapter.tryParse(out.text || '');
+      },
+    });
+    findings = retry.findings;
+    quoteRetry = retry.stats;
     missingData = Array.isArray(parsed.missing_data) ? parsed.missing_data.slice(0, 20) : [];
     modelNotes = parsed.notes || null;
+    const quoteSummary = quoteCheck.unverifiedSummary(findings);
+    if (quoteSummary) unverified.push(quoteSummary);
+    const retrySummary = quoteCheck.retrySummary(retry.stats);
+    if (retrySummary) unverified.push(retrySummary);
 
     routed = {
       prompt_id: promptId,
@@ -282,6 +330,7 @@ async function runCheck(runId, { callFn = null, host = '' } = {}) {
     classification,
     routed,
     findings,
+    quote_retry: quoteRetry,
     missing_data: missingData,
     model_notes: modelNotes,
     ntd_refs: refs.refs,
