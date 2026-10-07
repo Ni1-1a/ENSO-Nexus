@@ -121,7 +121,8 @@ function verifyCitations(citations, excerpts) {
     const c = {
       n: Number.isInteger(raw && raw.n) ? raw.n : null,
       doc: String((raw && raw.doc) || '').trim(),
-      clause: raw && raw.clause != null ? String(raw.clause).trim() : '',
+      // «п. 4.3.» модели → «4.3»: интерфейс сам подписывает «п.», иначе выходило «п. п. 4.3.»
+      clause: raw && raw.clause != null ? String(raw.clause).trim().replace(/^\s*(?:пп?\.|пункт)\s*/i, '').replace(/[.\s]+$/, '') : '',
       quote: String((raw && raw.quote) || '').trim(),
       claim: String((raw && raw.claim) || '').trim(),
     };
