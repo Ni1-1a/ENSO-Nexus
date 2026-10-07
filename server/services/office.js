@@ -383,7 +383,7 @@ async function pickRoute({ user, host, provider = '', model = '' }) {
 }
 
 function moduleLines(summary) {
-  const NAMES = { tz: '1 · Анализ ТЗ', site: '2 · Посадка здания', doc: '3 · Проверка документа', normo: '4 · Нормоконтроль', gge: '5 · Контроль ГГЭ', akty: '6 · Акты (АОСР)' };
+  const NAMES = { tz: '1 · Анализ ТЗ', site: '2 · Посадка здания', doc: '3 · Проверка документа', normo: '4 · Нормоконтроль', gge: '5 · Контроль ГГЭ', akty: '6 · Акты (АОСР)', ntd: '7 · Вопрос по нормам' };
   return Object.entries(NAMES)
     .map(([k, label]) => `${label}: ${summary && summary[k] ? summary[k].line : 'нет данных'}`)
     .join('\n');

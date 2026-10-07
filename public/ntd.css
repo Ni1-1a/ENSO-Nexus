@@ -1,0 +1,63 @@
+/* Модуль «Вопрос по нормам» — стили страницы ПОВЕРХ styles.css и mod.css.
+   Правило платформы: styles.css не трогаем, только токены темы — тёмная подхватывается сама.
+   Статусы ссылок: подтверждено — зелёный, сверить — терракота, не найдено — красный. */
+
+.nt-ask textarea {
+  width: 100%; box-sizing: border-box; min-height: 110px; resize: vertical;
+  border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm);
+  background: var(--fill); color: var(--text); padding: 10px 12px; font: inherit; font-size: 14px; line-height: 1.5;
+}
+.nt-ask textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
+.nt-opts { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr); gap: 0 24px; align-items: start; }
+.nt-check { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; font-size: 13.5px; cursor: pointer; }
+.nt-check input { margin-top: 3px; }
+.nt-check .hint { display: block; margin-top: 3px; }
+.nt-check[hidden] { display: none; }
+.nt-ask .mod-bar { gap: 14px; align-items: center; margin-top: 16px; }
+.nt-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
+
+/* ответ */
+.nt-question { font-family: var(--font-display); font-size: 17px; line-height: 1.45; margin: 0 0 14px; overflow-wrap: anywhere; }
+.nt-answer { font-size: 14.5px; line-height: 1.6; }
+.nt-answer p { margin: 0 0 10px; }
+.nt-answer ul { margin: 4px 0 10px; padding-left: 20px; }
+.nt-answer li { margin: 2px 0; }
+.nt-answer code { font-family: var(--font-mono); font-size: 13px; }
+.nt-ref {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); text-decoration: none;
+  padding: 0 3px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.nt-ref:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.nt-notfound { padding: 12px 14px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--orange) 12%, transparent); color: var(--text); font-size: 13.5px; }
+
+/* ссылки на выдержки */
+.nt-cites { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.nt-cite {
+  border-left: 3px solid var(--text-3); border-radius: 4px; padding: 8px 12px; background: var(--fill);
+}
+.nt-cite[data-status="confirmed"] { border-left-color: var(--green); }
+.nt-cite[data-status="partial"], .nt-cite[data-status="registry"] { border-left-color: var(--orange); }
+.nt-cite[data-status="unknown"] { border-left-color: var(--red); }
+.nt-cite-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 4px; }
+.nt-cite-doc { font-weight: 600; font-size: 13.5px; }
+.nt-cite-claim { font-size: 13px; color: var(--text); margin: 0 0 4px; }
+.nt-cite-quote { font-size: 12.5px; color: var(--text-2); margin: 0; font-style: italic; overflow-wrap: anywhere; }
+.nt-cite-note { font-size: 12px; color: var(--text-2); margin: 4px 0 0; }
+.mod-badge[data-cite="confirmed"] { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.mod-badge[data-cite="partial"], .mod-badge[data-cite="registry"] { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.mod-badge[data-cite="unknown"] { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+
+/* выдержки, которые видела модель */
+.nt-excerpts { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.nt-excerpt { padding: 8px 12px; border-radius: var(--radius-sm); background: var(--fill); font-size: 12.5px; line-height: 1.5; }
+.nt-excerpt:target { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.nt-excerpt-head { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2); margin-bottom: 4px; }
+.nt-excerpt-text { white-space: pre-wrap; color: var(--text); overflow-wrap: anywhere; }
+
+/* список вопросов */
+.nt-q-text { font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+
+@media (max-width: 800px) {
+  .nt-opts { grid-template-columns: 1fr; }
+}
+html[data-view="c"] .nt-opts { grid-template-columns: 1fr; }

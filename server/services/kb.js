@@ -13,6 +13,9 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const { db, now } = require('../db');
+// встроенный fetch рвёт ожидание заголовков на 300-й секунде (UND_ERR_HEADERS_TIMEOUT):
+// занятая LM Studio отвечает на пакет эмбеддингов дольше — единственный лимит здесь наш
+const { patientFetch } = require('./ai/patient-fetch');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS kb_chunks (
@@ -249,20 +252,31 @@ function rowInBase(r, kbId) {
  * Поиск по базе — операция быстрая, очередь на ней не заметна.
  */
 let embedChain = Promise.resolve();
+// в тестах эмбеддер подменяется: живой LM Studio там нет
+let overrideEmbedFn = null;
+function _setEmbedFn(fn) { overrideEmbedFn = fn; }
 async function embed(texts) {
-  const run = embedChain.then(() => embedOnce(texts), () => embedOnce(texts));
+  const once = () => (overrideEmbedFn ? overrideEmbedFn(texts) : embedOnce(texts));
+  const run = embedChain.then(once, once);
   // цепочка не должна рваться от чужой ошибки — иначе следующий запрос уйдёт мимо очереди
   embedChain = run.then(() => {}, () => {});
   return run;
 }
 
 async function embedOnce(texts) {
-  const res = await fetch(`${config.localAiBaseUrl}/embeddings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: config.kbEmbeddingModel, input: texts }),
-    signal: AbortSignal.timeout(120000),
-  });
+  let res;
+  try {
+    res = await patientFetch(`${config.localAiBaseUrl}/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: config.kbEmbeddingModel, input: texts }),
+      signal: AbortSignal.timeout(config.kbEmbedTimeoutMs),
+    });
+  } catch (err) {
+    // «fetch failed» без причины не отличить от таймаута: причину (ECONNRESET, EPIPE…) — в текст
+    const cause = err && err.cause ? ` (${err.cause.code || err.cause.message || err.cause})` : '';
+    throw new Error(`${err.message}${cause}`);
+  }
   if (!res.ok) throw new Error(`embeddings HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   return data.data.map((d) => Float32Array.from(d.embedding));
@@ -299,16 +313,16 @@ async function reindex({ log = () => {} } = {}) {
   for (let i = 0; i < chunks.length && !failed; i += BATCH) {
     const batch = chunks.slice(i, i + BATCH);
     let vecs = null;
-    for (let attempt = 1; attempt <= 4 && !vecs; attempt++) {
+    for (let attempt = 1; attempt <= config.kbEmbedRetries && !vecs; attempt++) {
       try {
         vecs = await embed(batch.map((c) => `${c.doc} п.${c.clause}: ${c.text}`.slice(0, MAX_CHUNK_CHARS)));
       } catch (err) {
-        if (attempt === 4) {
+        if (attempt === config.kbEmbedRetries) {
           log(`Эмбеддинги недоступны после ${attempt} попыток (${err.message}) — сохраняю без векторов (поиск по словам)`);
           failed = true;
         } else {
           log(`…повтор ${attempt} (эмбеддинги: ${err.message})`);
-          await new Promise((r) => setTimeout(r, attempt * 15000)); // LM Studio мог быть занят другой задачей
+          await new Promise((r) => setTimeout(r, Math.min(attempt, 4) * 15000)); // LM Studio мог быть занят другой задачей
         }
       }
     }
@@ -326,6 +340,49 @@ async function reindex({ log = () => {} } = {}) {
   const stats = status();
   log(`Готово: ${stats.chunks} чанков, ${stats.docs} документов, векторов: ${stats.withVectors}`);
   return stats;
+}
+
+/**
+ * Дозаполнить векторы у чанков, оставшихся без них.
+ *
+ * Переиндексация при недоступных эмбеддингах сохраняет чанки без векторов
+ * («тихая деградация»: поиск молча уходит на слова). Раньше единственным
+ * лекарством была полная переиндексация с нуля — и уже посчитанные векторы
+ * терялись. Здесь считаются ТОЛЬКО недостающие, на месте; чанки и их порядок
+ * не меняются. Сбой эмбеддингов останавливает работу с числом сделанного —
+ * без векторов ничего не дописывается.
+ */
+async function embedMissing({ log = () => {}, batchSize = 32 } = {}) {
+  const rows = db.prepare('SELECT id, doc, clause, text FROM kb_chunks WHERE embedding IS NULL ORDER BY id').all();
+  log(`Чанков без векторов: ${rows.length}`);
+  const update = db.prepare('UPDATE kb_chunks SET embedding = ? WHERE id = ?');
+  let done = 0;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize);
+    let vecs = null;
+    for (let attempt = 1; attempt <= config.kbEmbedRetries && !vecs; attempt++) {
+      try {
+        vecs = await embed(batch.map((c) => `${c.doc} п.${c.clause}: ${c.text}`.slice(0, MAX_CHUNK_CHARS)));
+      } catch (err) {
+        if (attempt === config.kbEmbedRetries) {
+          throw new Error(`Эмбеддинги недоступны после ${attempt} попыток (${err.message}); дозаполнено ${done} из ${rows.length}`);
+        }
+        log(`…повтор ${attempt} (эмбеддинги: ${err.message})`);
+        await new Promise((r) => setTimeout(r, Math.min(attempt, 4) * 15000));
+      }
+    }
+    batch.forEach((c, j) => update.run(toBlob(vecs[j]), c.id));
+    done += batch.length;
+    if ((i / batchSize) % 10 === 0) log(`…${done}/${rows.length}`);
+  }
+  // отметка меняется, чтобы кэши поиска и сводки (в том числе в другом процессе) перечитались
+  db.prepare('INSERT INTO kb_meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run('indexed_at', now());
+  invalidateStatus();
+  invalidateCache();
+  const stats = status();
+  log(`Готово: дозаполнено ${done}, векторов теперь ${stats.withVectors} из ${stats.chunks}`);
+  return { filled: done, ...stats };
 }
 
 /**
@@ -408,8 +465,13 @@ function keywordScore(queryWords, text) {
   return score / (queryWords.length || 1);
 }
 
-/** Топ-K релевантных чанков для запроса (в выбранной базе). Никогда не бросает — при сбое вернёт []. */
-async function search(query, k = config.kbTopK, kbId = 'main') {
+/**
+ * Топ-K релевантных чанков для запроса (в выбранной базе). Никогда не бросает — при сбое вернёт [].
+ * `meta` (необязательно) получает `mode`: vector | keyword | none — вызывающий может
+ * честно сказать человеку, что поиск шёл по словам, а не по смыслу (эмбеддинги выгружены).
+ */
+async function search(query, k = config.kbTopK, kbId = 'main', meta = null) {
+  if (meta) meta.mode = 'none';
   try {
     const rows = loadCache().filter((r) => rowInBase(r, kbId));
     if (!rows.length || !query.trim()) return [];
@@ -421,6 +483,7 @@ async function search(query, k = config.kbTopK, kbId = 'main') {
         scored = withVec.map((r) => ({ r, s: cosine(qv, r.vec) }));
       } catch { scored = null; }
     }
+    if (meta) meta.mode = scored ? 'vector' : 'keyword';
     if (!scored) {
       const words = query.toLowerCase().split(/[^a-zа-яё0-9.]+/).filter(Boolean);
       scored = rows.map((r) => ({ r, s: keywordScore(words, `${r.doc} ${r.clause} ${r.text}`) }));
@@ -445,4 +508,4 @@ async function excerptsFor(query, kbId = 'main') {
 
 // splitChunk открыт для модуля «Датасет»: он режет свои элементы ТЕМ ЖЕ
 // механизмом, что и база знаний (таблицы — по строкам, с повтором шапки)
-module.exports = { reindex, search, status, excerptsFor, loadSourceChunks, splitChunk, cosine, keywordScore, MAX_CHUNK_CHARS, MIN_CHUNK_CHARS };
+module.exports = { reindex, embedMissing, search, status, excerptsFor, loadSourceChunks, splitChunk, cosine, keywordScore, MAX_CHUNK_CHARS, MIN_CHUNK_CHARS, _setEmbedFn };

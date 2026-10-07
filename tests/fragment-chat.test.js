@@ -16,6 +16,10 @@ process.env.USERS_FILE = path.join(os.tmpdir(), `pilot1-frag-users-${process.pid
 process.env.RATE_LIMIT_GENERAL = '1000';
 process.env.RATE_LIMIT_EXPENSIVE = '1000';
 process.env.RATE_LIMIT_AUTH = '1000';   // тестов много, каждый входит своим человеком
+// база знаний для теста выдержек: каталог пустой, чанки кладутся прямо в таблицу
+const KB_TMP = path.join(os.tmpdir(), `pilot1-frag-kb-${process.pid}`);
+fs.mkdirSync(KB_TMP, { recursive: true });
+process.env.KB_DIR = KB_TMP;
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -35,6 +39,7 @@ after(() => {
   server.close();
   fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });
   fs.rmSync(process.env.USERS_FILE, { force: true });
+  fs.rmSync(KB_TMP, { recursive: true, force: true });
 });
 
 const api = async (p, opts = {}) => {
@@ -291,4 +296,57 @@ test('обсуждение фрагмента: в удалённом проек�
     method: 'POST', headers: auth(token), body: JSON.stringify({ message: 'Вопрос' }),
   });
   assert.equal(res.status, 404);
+});
+
+/*
+ * База знаний в обсуждении (07.10.2026, разбор ArmetaCAD): раньше обсуждение
+ * базу не видело, и на вопрос «по нормам» модель честно молчала — промт
+ * запрещает называть нормативы, которых нет во входе. Теперь выдержки идут
+ * блоком <knowledge_base>, а источники ответа возвращаются и хранятся.
+ */
+test('обсуждение фрагмента: выдержки базы знаний уходят модели, источники ответа строит код', async () => {
+  const { db, now } = require('../server/db');
+  db.prepare("INSERT INTO kb_chunks (doc, clause, text, priority, embedding, kb) VALUES (?,?,?,?,NULL,'main')")
+    .run('СП 4.13130.2013', '4.3', 'Противопожарные расстояния между зданиями принимаются не менее 6 м для зданий I и II степеней огнестойкости.', '');
+  db.prepare("INSERT INTO kb_meta (key, value) VALUES ('indexed_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(now());
+
+  const token = await login('Базист');
+  const project = await makeProject(token, 'Проект с базой');
+  const { body: made } = await api('/api/fragment-chat/threads', {
+    method: 'POST', headers: auth(token),
+    body: JSON.stringify({ projectId: project.id, module: 'doc', fragment: 'Расстояние между зданиями принято 5 м.' }),
+  });
+  let seen = null;
+  fragmentChat._setCallFn(async (args) => {
+    seen = args;
+    return { text: 'Это меньше 6 м по СП 4.13130.2013 [1]; про СП 999.13330.2099 сказать нечего.' };
+  });
+  const answer = await api(`/api/fragment-chat/threads/${made.thread.id}/messages`, {
+    method: 'POST', headers: auth(token),
+    body: JSON.stringify({ message: 'Какое противопожарное расстояние между зданиями I и II степеней огнестойкости допустимо?' }),
+  });
+  fragmentChat._setCallFn(null);
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+
+  const kbMsg = seen.messages.find((m) => typeof m.content === 'string' && m.content.startsWith('<knowledge_base>'));
+  assert.ok(kbMsg, 'блока <knowledge_base> в сообщениях нет');
+  assert.match(kbMsg.content, /\[1\] СП 4\.13130\.2013, п\. 4\.3/);
+  // выдержки стоят ПЕРЕД вопросом, а вопрос — последним
+  assert.equal(seen.messages[seen.messages.length - 1].content.slice(0, 5), 'Какое');
+  assert.equal(seen.messages[seen.messages.length - 2].content, kbMsg.content);
+
+  const src = answer.body.sources;
+  assert.ok(src && src.excerpts.length === 1 && src.excerpts[0].doc === 'СП 4.13130.2013');
+  assert.equal(src.mode, 'keyword');
+  assert.equal(src.refs.find((r) => r.code === 'СП 4.13130.2013').status, 'excerpt');
+  assert.equal(src.refs.find((r) => r.code === 'СП 999.13330.2099').status, 'unknown');
+
+  // источники хранятся вместе с репликой
+  const again = await api(`/api/fragment-chat/threads/${made.thread.id}`, { headers: auth(token) });
+  const reply = again.body.thread.messages.find((m) => m.role === 'assistant');
+  assert.ok(reply.sources && reply.sources.refs.length === 2);
+  assert.equal(again.body.thread.messages.find((m) => m.role === 'user').sources, null);
+
+  const prompts = require('../server/services/prompts');
+  assert.match(prompts.load('fragment-chat'), /<knowledge_base>/);
 });

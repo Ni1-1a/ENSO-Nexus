@@ -441,7 +441,7 @@ test('встроенных скриптов в index.html нет — CSP script-
  * разных страницах означают, что про одну забыли.
  */
 test('frag-chat.js подключён на всех страницах модулей и одной версией', () => {
-  const pages = ['index.html', 'tz.html', 'doccheck.html', 'normo.html', 'gge.html', 'akty.html'];
+  const pages = ['index.html', 'tz.html', 'doccheck.html', 'normo.html', 'gge.html', 'akty.html', 'ntd.html'];
   const versions = new Set();
   for (const page of pages) {
     const html = fs.readFileSync(path.join(__dirname, '..', 'public', page), 'utf8');

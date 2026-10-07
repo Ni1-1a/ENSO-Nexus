@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вопрос по нормам — Enso-nexus</title>
+  <meta name="description" content="Вопрос к базе знаний платформы: ответ со ссылками на документ и пункт, каждая ссылка сверена кодом с выдержкой">
+  <meta name="theme-color" content="#f3efe6">
+  <link rel="stylesheet" href="tokens.css?v=1">
+  <link rel="stylesheet" href="styles.css?v=60">
+  <link rel="stylesheet" href="mod.css?v=7">
+  <link rel="stylesheet" href="shell.css?v=12">
+  <link rel="stylesheet" href="ntd.css?v=1">
+  <script src="boot.js?v=4"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M30 15h32l14 14v56H30z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><path d='M62 15v14h14' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M42 48a8 8 0 1 1 11 7.4c-2.5 1.3-3 3-3 5.6' fill='none' stroke='%23B95740' stroke-width='5' stroke-linecap='round'/><circle cx='50' cy='70' r='3.2' fill='%23B95740'/></svg>">
+</head>
+<body data-page="module" data-module="ntd">
+  <div class="shell" id="shell">
+    <!-- Хром платформы (капсула или панель проектов, навигация по модулям,
+         человек, нейросеть) строит общий shell.js -->
+    <div id="chrome"></div>
+    <main class="content" id="content">
+      <section id="nt-screen" class="mod-screen active" aria-label="Вопрос по нормам">
+        <header class="toolbar">
+          <h1>Вопрос по нормам</h1>
+          <p class="toolbar-note">Спросите базу знаний платформы: код находит выдержки, модель отвечает только по ним, а каждую ссылку на документ и пункт код сверяет с выдержкой дословно.</p>
+        </header>
+
+        <div class="card nt-ask" id="nt-ask-card">
+          <h2>Вопрос</h2>
+          <textarea id="nt-q" maxlength="2000" placeholder="Например: какой минимальный противопожарный разрыв между зданиями I степени огнестойкости?"></textarea>
+          <div class="nt-opts">
+            <div class="field">
+              <label for="nt-kb">База знаний</label>
+              <select id="nt-kb"></select>
+              <p id="nt-kb-note" class="hint"></p>
+            </div>
+            <div>
+              <label class="nt-check" id="nt-corpus-wrap" hidden>
+                <input type="checkbox" id="nt-corpus">
+                <span>Подключить корпус нормоконтроля<span id="nt-corpus-note" class="hint"></span></span>
+              </label>
+              <p id="nt-corpus-off" class="hint" hidden></p>
+            </div>
+          </div>
+          <div class="mod-bar">
+            <button id="nt-ask" class="btn btn-primary" type="button">Спросить</button>
+            <span id="nt-ai-note" class="hint"></span>
+          </div>
+          <p id="nt-error" class="mod-error" role="alert" hidden></p>
+        </div>
+
+        <!-- ══════════ Ответ ══════════ -->
+        <div id="nt-answer" hidden>
+          <div class="card" id="nt-answer-card" data-frag-anchor="ответ по нормам">
+            <div class="mod-run-head">
+              <h2>Ответ</h2>
+              <span class="mod-spacer"></span>
+              <span id="nt-a-status" class="nt-status"></span>
+            </div>
+            <p id="nt-a-question" class="nt-question"></p>
+            <p id="nt-a-meta" class="toolbar-sub"></p>
+            <p id="nt-a-progress" class="hint" aria-live="polite" hidden></p>
+            <p id="nt-a-error" class="mod-error" role="alert" hidden></p>
+            <div id="nt-a-body" class="nt-answer" hidden></div>
+          </div>
+
+          <div class="card" id="nt-cites-card" hidden>
+            <div class="mod-run-head">
+              <h2>Ссылки на нормы</h2>
+              <span id="nt-cites-counts" class="findings-counts"></span>
+            </div>
+            <p class="h2-note">Статус у каждой ссылки ставит код: «подтверждено» — документ, пункт и дословная цитата сходятся с выдержкой; остальное — сверить по документу. Непроверенное не выброшено, а помечено.</p>
+            <ul id="nt-cites" class="nt-cites"></ul>
+            <div id="nt-notes-wrap" hidden>
+              <h3>Замечания кода к ответу</h3>
+              <ul id="nt-notes" class="mod-unverified"></ul>
+            </div>
+            <div id="nt-missing-wrap" hidden>
+              <h3>Чего не хватило</h3>
+              <ul id="nt-missing" class="mod-unverified"></ul>
+            </div>
+            <div id="nt-anomalies-wrap" hidden>
+              <h3>Аномалии в выдержках</h3>
+              <ul id="nt-anomalies" class="mod-unverified"></ul>
+            </div>
+          </div>
+
+          <details class="card card-fold" id="nt-excerpts-card" hidden>
+            <summary class="fold-summary">
+              <span class="fold-title">Выдержки, которые видела модель</span>
+              <span class="fold-count" id="nt-excerpts-count"></span>
+              <svg class="set-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <p id="nt-search-line" class="hint"></p>
+            <ul id="nt-excerpts" class="nt-excerpts"></ul>
+          </details>
+
+          <div class="mod-bar">
+            <button id="nt-again" class="btn btn-quiet btn-sm" type="button">Спросить ещё раз</button>
+            <span class="mod-spacer"></span>
+            <button id="nt-delete" class="btn btn-danger btn-sm" type="button" hidden>Удалить вопрос</button>
+          </div>
+        </div>
+
+        <!-- ══════════ История ══════════ -->
+        <div class="mod-bar mod-bar-section">
+          <h2 class="section-h2">Вопросы проекта</h2>
+        </div>
+        <p class="h2-note">Все вопросы, заданные в этом проекте, с ответами и статусами ссылок. Откройте любой, чтобы вернуться к ответу.</p>
+        <div id="nt-list" class="mod-grid" aria-live="polite"></div>
+        <p id="nt-list-empty" class="empty-state" hidden>Вопросов в этом проекте ещё не было.</p>
+        <p id="nt-list-error" class="mod-error" role="alert" hidden></p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ══════════ Вход — тот же, что на главной ══════════ -->
+  <div id="auth-screen" class="auth" data-state="enter" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
+    <div class="auth-sheet">
+      <div class="auth-mark" aria-hidden="true">
+        <svg viewBox="0 0 100 100" fill="none">
+          <path d="M20 33 L78 23 L82 71 L25 80 Z" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/>
+          <rect x="42" y="45" width="27" height="20" stroke="currentColor" stroke-width="4"/>
+          <path d="M28 41 L73 33" stroke="currentColor" stroke-width="3.5" stroke-dasharray="7 5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1 id="auth-title" class="auth-title">Enso-nexus</h1>
+      <p class="auth-sub">Модуль «Вопрос по нормам»</p>
+
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="auth-field">
+          <span>Фамилия</span>
+          <input id="auth-last" type="text" name="lastName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <label class="auth-field">
+          <span>Имя</span>
+          <input id="auth-first" type="text" name="firstName" maxlength="60" autocomplete="off" autocapitalize="words" spellcheck="false" required>
+        </label>
+        <p id="auth-error" class="auth-error" role="alert" hidden></p>
+        <button id="auth-submit" class="btn btn-primary auth-submit" type="submit">Войти на платформу</button>
+        <p id="auth-mode-note" class="auth-note"></p>
+      </form>
+
+      <div class="auth-pending">
+        <h2>Заявка отправлена</h2>
+        <p>Имя <b id="auth-pending-name"></b> добавлено в список заявок.
+           Доступ откроется, когда владелец платформы одобрит запись.</p>
+        <div class="auth-actions">
+          <button id="auth-recheck" class="btn btn-primary btn-sm" type="button">Проверить снова</button>
+          <button id="auth-another" class="btn btn-quiet btn-sm" type="button">Другое имя</button>
+        </div>
+      </div>
+
+      <div class="auth-fail">
+        <h2>Сервер не отвечает</h2>
+        <p>Скорее всего, компьютер с платформой выключен. Попробуйте ещё раз через минуту.</p>
+        <div class="auth-actions">
+          <button id="auth-retry" class="btn btn-primary btn-sm" type="button">Повторить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+
+  <script src="auth.js?v=5"></script>
+  <script src="shell.js?v=11"></script>
+  <!-- обсуждение выделенного фрагмента: общее для всех страниц -->
+  <script src="frag-chat.js?v=4"></script>
+  <script src="ntd.js?v=1"></script>
+</body>
+</html>

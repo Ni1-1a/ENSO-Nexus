@@ -282,13 +282,33 @@
   const MODULE_LABEL = {
     tz: 'Анализ ТЗ', site: 'Посадка здания', doc: 'Проверка документа',
     normo: 'Нормоконтроль', gge: 'Контроль ГГЭ', akty: 'Акты (АОСР)',
-    office: 'Виртуальный офис', dataset: 'Датасет',
+    ntd: 'Вопрос по нормам', office: 'Виртуальный офис', dataset: 'Датасет',
   };
 
   function renderPlace(sel) {
     const project = (window.EnsoShell && window.EnsoShell.project && window.EnsoShell.project.name) || '';
     const parts = [MODULE_LABEL[shellModule()] || 'Платформа', project, sel.anchor].filter(Boolean);
     info.textContent = parts.join(' · ');
+  }
+
+  /**
+   * Источники ответа (07.10.2026): какие выдержки базы знаний видела модель и
+   * откуда каждый названный в ответе норматив — из выдержки или по памяти.
+   * Перечень строит сервер (код, не модель); здесь только показ.
+   */
+  function sourcesHtml(s) {
+    if (!s) return '';
+    const rows = [];
+    if (s.refs && s.refs.length) {
+      rows.push(`<span class="fc-src-h">Нормативы в ответе:</span> ${s.refs.map((r) => `<span class="fc-src" data-status="${esc(r.status)}" title="${esc(r.label || '')}">${esc(r.code)}${r.status === 'excerpt' ? '' : ' — не подтверждено выдержкой'}</span>`).join(', ')}`);
+    }
+    if (s.excerpts && s.excerpts.length) {
+      rows.push(`<span class="fc-src-h">Выдержки базы:</span> ${s.excerpts.map((e) => `<span class="fc-src">[${esc(e.n)}] ${esc(e.doc)}${e.clause ? `, п. ${esc(e.clause)}` : ''}</span>`).join('; ')}`);
+    } else {
+      rows.push('<span class="fc-src-h">Выдержек из базы знаний не нашлось</span>');
+    }
+    if (s.mode === 'keyword') rows.push('<span class="fc-src-note">поиск по базе шёл по словам — эмбеддинги недоступны</span>');
+    return `<div class="fc-sources">${rows.map((r) => `<div>${r}</div>`).join('')}</div>`;
   }
 
   function renderMessages() {
@@ -300,6 +320,7 @@
         <div class="fc-msg fc-${m.role === 'assistant' ? 'ai' : 'me'}">
           <div class="fc-who">${esc(m.role === 'assistant' ? (m.model || m.provider || 'Нейросеть') : (m.author_name || 'Вы'))}</div>
           <div class="fc-text">${m.role === 'assistant' ? md(m.content) : esc(m.content).replace(/\n/g, '<br>')}</div>
+          ${m.role === 'assistant' ? sourcesHtml(m.sources) : ''}
         </div>`).join('');
     }
     if (state.sending) {
@@ -366,7 +387,7 @@
       state.sending = false;
       input.disabled = false;
       input.value = '';                       // чистим ТОЛЬКО после успеха
-      state.thread.messages.push({ role: 'assistant', content: out.reply, provider: out.provider, model: out.model });
+      state.thread.messages.push({ role: 'assistant', content: out.reply, provider: out.provider, model: out.model, sources: out.sources || null });
       renderMessages();
     } catch (err) {
       /*

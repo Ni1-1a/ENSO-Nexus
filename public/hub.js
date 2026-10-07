@@ -25,7 +25,7 @@
   const STAGES = ['предпроект', 'П', 'Р', 'П+Р', 'стройка'];
   const VIEW_DESC = {
     a: 'Панель проектов слева, полоса стадий над содержимым. Ближе всего к прежнему виду.',
-    b: 'Капсула сверху, проект открывается столом из шести модулей. Самый воздушный.',
+    b: 'Капсула сверху, проект открывается столом из семи модулей. Самый воздушный.',
     c: 'Узкая колонка, проект как вертикальная лента модулей, рейка с номерами слева.',
     d: 'Лист с рамкой, закладки модулей и основная надпись — как лист проекта.',
   };
@@ -86,7 +86,7 @@
       <div class="pc-foot">
         <span class="pc-bar">${MODULES.map((m) => `<span data-state="${esc((sum[m.key] && sum[m.key].state) || 'none')}"></span>`).join('')}</span>
         <div class="pc-line">
-          <span>${startedN ? `${startedN} из 6 модулей начаты` : 'модули не начаты'}${last ? ` · последнее: ${esc(lowerFirst(last.m.name))}, ${S.fmtDate(last.s.at)}` : ''}</span>
+          <span>${startedN ? `${startedN} из ${MODULES.length} модулей начаты` : 'модули не начаты'}${last ? ` · последнее: ${esc(lowerFirst(last.m.name))}, ${S.fmtDate(last.s.at)}` : ''}</span>
           <span class="pc-open">${gotoModule ? `Открыть «${esc(gotoModule.name)}»` : 'Открыть'} ${svg(ICONS.arrowRight)}</span>
         </div>
       </div>

@@ -127,3 +127,43 @@ test('база знаний: старый разбор не выдаётся н�
   assert.strictEqual(st.chunks, main.chunks,
     'в общий итог фрагмент попадает один раз, сколько бы баз его ни показывало');
 });
+
+/*
+ * Дозаполнение векторов (07.10.2026): индекс, собранный при недоступных
+ * эмбеддингах, лечится на месте — без полной переиндексации и без потери уже
+ * посчитанных векторов. Сбой эмбеддингов останавливает работу, а не пишет пустоту.
+ */
+test('база знаний: embedMissing считает векторы только у пустых и не трогает готовые', async () => {
+  const kb = require('../server/services/kb');
+  const { db } = require('../server/db');
+  db.exec('DELETE FROM kb_chunks');
+  const ins = db.prepare("INSERT INTO kb_chunks (doc, clause, text, priority, embedding, kb) VALUES (?,?,?,?,?,'main')");
+  const ready = Buffer.from(Float32Array.from([0.5, 0.5, 0]).buffer);
+  ins.run('СП 1', '1', 'чанк с вектором', '', ready);
+  ins.run('СП 1', '2', 'чанк без вектора', '', null);
+  ins.run('СП 1', '3', 'ещё один без вектора', '', null);
+  let asked = [];
+  kb._setEmbedFn(async (texts) => { asked = asked.concat(texts); return texts.map(() => Float32Array.from([1, 0, 0])); });
+  try {
+    const r = await kb.embedMissing({ log: () => {} });
+    assert.strictEqual(r.filled, 2);
+    assert.strictEqual(asked.length, 2, 'эмбеддились только пустые чанки');
+    assert.ok(asked.every((t) => /без вектора/.test(t)));
+    assert.strictEqual(db.prepare('SELECT count(*) c FROM kb_chunks WHERE embedding IS NULL').get().c, 0);
+    const kept = db.prepare("SELECT embedding FROM kb_chunks WHERE clause = '1'").get().embedding;
+    assert.ok(Buffer.from(kept).equals(ready), 'готовый вектор пересчитан');
+
+    // эмбеддинги упали — работа останавливается с числом сделанного, пустота не пишется
+    ins.run('СП 1', '4', 'четвёртый без вектора', '', null);
+    kb._setEmbedFn(async () => { throw new Error('LM Studio занята'); });
+    process.env.KB_EMBED_RETRIES = '1';
+    const config = require('../server/config');
+    const prev = config.kbEmbedRetries; config.kbEmbedRetries = 1;
+    await assert.rejects(() => kb.embedMissing({ log: () => {} }), /недоступны после 1 попыток.*дозаполнено 0 из 1/);
+    config.kbEmbedRetries = prev;
+    assert.strictEqual(db.prepare('SELECT count(*) c FROM kb_chunks WHERE embedding IS NULL').get().c, 1);
+  } finally {
+    kb._setEmbedFn(null);
+    db.exec('DELETE FROM kb_chunks');
+  }
+});

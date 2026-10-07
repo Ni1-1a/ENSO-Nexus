@@ -5,7 +5,7 @@
  * Решение владельца 02.09.2026: сначала заводится проект, потом в нём
  * выбирается модуль; модули стоят в порядке надобности проекту:
  *   1 Анализ ТЗ → 2 Посадка здания → 3 Проверка документа →
- *   4 Нормоконтроль → 5 Контроль ГГЭ → 6 Акты (АОСР).
+ *   4 Нормоконтроль → 5 Контроль ГГЭ → 6 Акты (АОСР) → 7 Вопрос по нормам (07.10.2026).
  *
  * Сущности модулей привязаны к проекту колонкой project_id: sessions (посадка),
  * tz_projects, doccheck_checks, doccheck_ab — в основной SQLite; проекты
@@ -23,7 +23,7 @@ const { db, now } = require('../db');
 
 const LEGACY_ID = 'legacy';
 /** Порядок модулей — порядок надобности проекту. Ключи общие с клиентом. */
-const MODULES = ['tz', 'site', 'doc', 'normo', 'gge', 'akty'];
+const MODULES = ['tz', 'site', 'doc', 'normo', 'gge', 'akty', 'ntd'];
 const ID_RE = /^[\w-]{1,64}$/;
 
 db.exec(`
@@ -420,6 +420,18 @@ function summarizeDoc(id) {
   return { state: 'ok', count: total, line: parts.join(' · '), at };
 }
 
+/**
+ * «Вопрос по нормам» живёт в ntd-ask.js (таблица ntd_questions); модуль не
+ * подключён — честное «none», а не падение списка проектов.
+ */
+function summarizeNtd(id) {
+  try {
+    return require('./ntd-ask').summary(id);
+  } catch {
+    return NONE('Не задавался');
+  }
+}
+
 function summarizeMark(id, module, verb) {
   const m = db.prepare('SELECT * FROM project_marks WHERE project_id = ? AND module = ?').get(id, module);
   if (!m) return NONE(verb);
@@ -484,6 +496,7 @@ async function summarize(ids, user = null) {
       normo: nm,
       gge: summarizeMark(id, 'gge', 'Не запускался'),
       akty: summarizeMark(id, 'akty', 'Не запускались'),
+      ntd: summarizeNtd(id),
     };
   }
   return out;

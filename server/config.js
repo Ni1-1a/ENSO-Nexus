@@ -221,6 +221,11 @@ const config = {
   kbVerifiedDir: process.env.KB_VERIFIED_DIR || '',
   kbEmbeddingModel: process.env.KB_EMBEDDING_MODEL || 'text-embedding-qwen3-embedding-0.6b',
   kbTopK: int('KB_TOP_K', 6),
+  // потолок ожидания одного запроса эмбеддингов: при занятой LM Studio (чужая генерация)
+  // пакет из 32 чанков отвечает дольше двух минут, и индексация шла с повторами (07.10.2026)
+  kbEmbedTimeoutMs: int('KB_EMBED_TIMEOUT_MS', 120000),
+  // сколько раз повторять пакет эмбеддингов, прежде чем индексация сдастся (4 — как было)
+  kbEmbedRetries: Math.max(1, int('KB_EMBED_RETRIES', 4)),
 
   // Дополнительные AI-провайдеры (выбор в интерфейсе per session)
   openaiApiKey: process.env.OPENAI_API_KEY || '',

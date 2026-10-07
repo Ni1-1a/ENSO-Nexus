@@ -372,7 +372,7 @@ html[data-view="a"] .sb-list { list-style: none; margin: 0; padding: 0 2px; over
 html[data-view="a"] .sb-platform { flex-direction: column; align-items: stretch; gap: 2px; margin-bottom: 4px; }
 html[data-view="a"] .sb-platform a { border-radius: var(--radius-sm); padding: 7px 10px; font-size: 13px; }
 /* полоса стадий над содержимым */
-html[data-view="a"] .project-head .module-nav { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; }
+html[data-view="a"] .project-head .module-nav { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 14px; }
 html[data-view="a"] .project-head .mn-item {
   flex-direction: column; gap: 8px; padding: 12px 0 0;
   border-top: 3px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: 2px;
@@ -836,6 +836,12 @@ a.proj-new, a.proj-new:hover { text-decoration: none; color: inherit; }
   .fc-pill, .fc-panel { animation: none; }
 }
 .fc-text p { margin: 0 0 8px; }
+/* источники ответа (07.10.2026): выдержки базы знаний, которые видела модель, и нормативы, названные в ответе */
+.fc-sources { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--stroke-soft); font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+.fc-sources > div { margin: 2px 0; }
+.fc-src-h { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+.fc-src[data-status="registry"], .fc-src[data-status="unknown"] { color: var(--orange); }
+.fc-src[data-status="excerpt"] { color: var(--text-2); }
 .fc-text p:last-child { margin-bottom: 0; }
 .fc-text .fc-h { font-weight: 600; }
 .fc-text ul { margin: 4px 0 8px; padding-left: 18px; }

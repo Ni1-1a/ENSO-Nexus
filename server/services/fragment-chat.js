@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS fragment_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_fragment_messages_thread ON fragment_messages(thread_id, created_at);
 `);
+// источники ответа (07.10.2026): выдержки базы знаний, которые видела модель, и нормативы, названные в ответе
+try { db.exec("ALTER TABLE fragment_messages ADD COLUMN sources TEXT NOT NULL DEFAULT ''"); } catch { /* колонка уже есть */ }
 
 const MAX_FRAGMENT = 6000;
 const MAX_CONTEXT = 8000;
@@ -68,7 +70,7 @@ const clip = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
 const userName = (user) => (user ? `${user.lastName || ''} ${user.firstName || ''}`.trim() : '');
 
 /** Модуль, в котором живёт обсуждение: чужие значения в базу не пускаем. */
-const MODULES = new Set(['tz', 'site', 'doc', 'normo', 'gge', 'akty', 'office', 'dataset', 'stats', '']);
+const MODULES = new Set(['tz', 'site', 'doc', 'normo', 'gge', 'akty', 'ntd', 'office', 'dataset', 'stats', '']);
 
 /**
  * Служебная сессия проекта для обращения к модели: расход виден в статистике
@@ -160,8 +162,13 @@ function threadRow(id) {
 function threadView(id) {
   const t = threadRow(id);
   if (!t) throw httpError(404, 'Обсуждение не найдено');
-  const messages = db.prepare('SELECT role, content, author_name, provider, model, created_at FROM fragment_messages WHERE thread_id = ? ORDER BY created_at')
-    .all(id);
+  const messages = db.prepare('SELECT role, content, author_name, provider, model, created_at, sources FROM fragment_messages WHERE thread_id = ? ORDER BY created_at')
+    .all(id)
+    .map((m) => {
+      let sources = null;
+      try { sources = m.sources ? JSON.parse(m.sources) : null; } catch { sources = null; }
+      return { ...m, sources };
+    });
   return {
     id: t.id,
     projectId: t.project_id,
@@ -194,7 +201,7 @@ function listThreads({ projectId = '', module = '', entityId = '', user = null, 
 const MODULE_LABEL = {
   tz: 'Анализ ТЗ', site: 'Посадка здания', doc: 'Проверка документа',
   normo: 'Нормоконтроль', gge: 'Контроль ГГЭ', akty: 'Акты (АОСР)',
-  office: 'Виртуальный офис', dataset: 'Датасет', stats: 'Статистика',
+  ntd: 'Вопрос по нормам', office: 'Виртуальный офис', dataset: 'Датасет', stats: 'Статистика',
 };
 
 /**
@@ -243,13 +250,34 @@ async function reply({ threadId, message, user = null, host = '' }) {
     .all(threadId, HISTORY).reverse()
     .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
 
+  /*
+   * База знаний (07.10.2026, разбор ArmetaCAD): выдержки по фрагменту и
+   * вопросу уходят модели блоком <knowledge_base>, как в чате посадки. До
+   * этого обсуждение базу не видело, и на любой вопрос «по нормам» модель
+   * честно молчала — промт запрещает называть нормативы, которых нет во входе.
+   * База — общая («main»: все документы, верифицированный разбор замещает
+   * старый). Выдержки пронумерованы: по номерам код потом сверяет, какие
+   * нормативы ответа подтверждены выдержкой, а какие названы по памяти.
+   */
+  const kb = require('./kb');
+  const ntdCite = require('./ntd-cite');
+  let excerpts = [];
+  const kbMeta = {};
+  try {
+    const found = await kb.search(`${t.fragment.slice(0, 600)}\n${text}`, config.kbTopK, 'main', kbMeta);
+    excerpts = found.map((f, i) => ({ n: i + 1, doc: f.doc, clause: f.clause || '', text: f.text, source: 'kb' }));
+  } catch (err) {
+    console.warn('[fragment-chat] выдержки базы знаний пропущены:', err.message);
+  }
+  const kbBlock = excerpts.length ? `<knowledge_base>\n${ntdCite.formatExcerpts(excerpts)}\n</knowledge_base>` : '';
+
   const sessionId = ensureServiceSession(t.project_id, user, host);
   // лимиты проекта считаются как везде: без этого обсуждение было единственным
   // местом платформы, где обращения к модели ничем не ограничены
   adapter.checkBudget(db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId));
   const args = {
     system,
-    messages: [{ role: 'user', content: opening }, ...history, { role: 'user', content: text }],
+    messages: [{ role: 'user', content: opening }, ...history, ...(kbBlock ? [{ role: 'user', content: kbBlock }] : []), { role: 'user', content: text }],
     sessionId,
     route,
     maxTokens: 1600,
@@ -257,17 +285,24 @@ async function reply({ threadId, message, user = null, host = '' }) {
   const out = await (overrideCallFn ? overrideCallFn(args) : adapter.plainCall(args));
   const answer = (out.text || '').trim() || 'Модель не ответила — повторите вопрос.';
 
+  // нормативы, названные в ответе: из выдержек, из реестра НТД или ниоткуда — перечень строит код
+  const sources = {
+    mode: kbMeta.mode || 'none',
+    excerpts: excerpts.map((e) => ({ n: e.n, doc: e.doc, clause: e.clause })),
+    refs: ntdCite.refsInText(answer, excerpts),
+  };
+
   const save = (role, content, extra = {}) => {
-    db.prepare(`INSERT INTO fragment_messages (id, thread_id, role, content, provider, model, author_name, created_at)
-        VALUES (?,?,?,?,?,?,?,?)`)
+    db.prepare(`INSERT INTO fragment_messages (id, thread_id, role, content, provider, model, author_name, created_at, sources)
+        VALUES (?,?,?,?,?,?,?,?,?)`)
       .run(crypto.randomUUID(), threadId, role, content, extra.provider || '', extra.model || '',
-        role === 'user' ? userName(user) : '', now());
+        role === 'user' ? userName(user) : '', now(), extra.sources ? JSON.stringify(extra.sources) : '');
   };
   save('user', text);
-  save('assistant', answer, { provider: route.provider, model: route.model || '' });
+  save('assistant', answer, { provider: route.provider, model: route.model || '', sources });
   db.prepare('UPDATE fragment_threads SET updated_at = ? WHERE id = ?').run(now(), threadId);
 
-  return { reply: answer, provider: route.provider, model: route.model || '', truncated: !!out.truncated };
+  return { reply: answer, provider: route.provider, model: route.model || '', truncated: !!out.truncated, sources };
 }
 
 /** Нить по ссылке: читает её только автор или владелец проекта. */

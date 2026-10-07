@@ -75,6 +75,8 @@ function createApp() {
   app.use('/api/office', logErrorResponses, require('./routes/office').router);
   // обсуждение выделенного фрагмента — общее для всех модулей (замечание владельца 10.09.2026)
   app.use('/api/fragment-chat', logErrorResponses, require('./routes/fragment-chat').router);
+  // модуль «Вопрос по нормам» — вопрос к базе знаний, ответ со ссылками, сверенными кодом (07.10.2026)
+  app.use('/api/ntd', logErrorResponses, require('./routes/ntd').router);
   // происхождение и структурный журнал сессии посадки: граф связей, «откуда это», события со ссылками (07.10.2026)
   app.use('/api', logErrorResponses, require('./routes/provenance').router);
   app.use('/api', logErrorResponses, apiRouter);

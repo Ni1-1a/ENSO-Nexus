@@ -379,6 +379,34 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
 | POST | `/api/akty/generate` | `registry` + `template` → ZIP черновиков; отчёт о пропусках в заголовке `X-Akty-Report`; `?project=<id>` ставит отметку (правило то же, что у ГГЭ); не zip под именем DOCX → `422` «Файл не читается как DOCX» |
 | POST | `/api/akty/dates` | `acts` + `journal` (XLSX) → таблица конфликтов дат; `?project=<id>` — отметка по тому же правилу |
 
+## Вопрос по нормам — `/api/ntd`
+
+Седьмой модуль проекта (07.10.2026): вопрос к базе знаний, ответ со ссылками на
+документ и пункт. Код находит выдержки (`kb.search`, по отметке — корпус
+нормоконтроля), модель отвечает только по ним, каждую ссылку код сверяет с
+выдержкой (`services/ntd-cite.js`). Ответ готовится в фоне. Все маршруты — **U**.
+
+| Метод | Путь | Смысл |
+|---|---|---|
+| GET | `/api/ntd/meta` | `{ bases: [{ id, label }], kb, corpus: { available, reason, docs: [{ code, chunks }] }, maxQuestion }` — базы знаний, состояние индекса, доступен ли корпус нормоконтроля |
+| GET | `/api/ntd/questions` | `?project=` → `{ questions: [{ id, projectId, question, kb, corpus, status, progress, error, provider, model, createdBy, createdByName, createdAt, finishedAt, found, counts }] }`; без `?project=` — вопросы видимых проектов; чужой проект → `404` |
+| POST | `/api/ntd/questions` | `{ projectId, question, kb?: "main" \| "verified", corpus?: boolean }` → `202 { question }` (статус `queued`); пустой вопрос или длиннее 2000 знаков → `422`; нестрока, чужая база, `corpus` не булев → `400`; у проекта не выбрана нейросеть → `422`; база знаний не подключена → `503`. Нейросеть — проектная, тело запроса её не задаёт |
+| GET | `/api/ntd/questions/:id` | `{ question }` + `result` (`answer`, `found`, `citations[]` — `n, doc, clause, quote, claim, excerpt, status: confirmed \| partial \| registry \| unknown, label, note`; `counts`, `missing`, `anomalies`, `uncited` (шифры в тексте без ссылки), `dangling` (`[n]` без записи), `notes`, `search { kb, kbLabel, mode: vector \| keyword \| none, kbCount, corpus: off \| ok \| unavailable, corpusCount, corpusNote }`, `modelCalled`) и `excerpts[]` — что видела модель. Без выдержек модель не вызывается (`modelCalled: false`) |
+| DELETE | `/api/ntd/questions/:id` | мягкое удаление — автор вопроса или владелец проекта; чужой → `404`/`403` |
+
+## Обсуждение фрагмента — `/api/fragment-chat`
+
+Разговор о выделенном на любой странице тексте (замечание владельца 10.09.2026).
+С 07.10.2026 модели уходят выдержки базы знаний (`main`, блок `<knowledge_base>`),
+а у реплики модели есть `sources`. Все маршруты — **U**.
+
+| Метод | Путь | Смысл |
+|---|---|---|
+| POST | `/api/fragment-chat/threads` | `{ projectId?, module?, entityId?, anchor?, fragment, context? }` → `{ thread }`; то же выделение в том же месте возвращает прежнюю нить; пустой фрагмент → `422`, чужой модуль → `400` |
+| GET | `/api/fragment-chat/threads` | `?project=&module=&entity=` → `{ threads }` — только свои нити |
+| GET | `/api/fragment-chat/threads/:id` | `{ thread }` с `messages[]`; у реплик модели `sources: { mode, excerpts: [{ n, doc, clause }], refs: [{ code, status: excerpt \| registry \| unknown, label }] }` |
+| POST | `/api/fragment-chat/threads/:id/messages` | `{ message }` → `{ reply, provider, model, truncated, sources }`; нейросеть — проектная, нет выбора → `422` |
+
 ## Датасет — `/api/dataset`
 
 Сбор обучающих пар для дообучения локальных моделей. Доступ: **U** плюс

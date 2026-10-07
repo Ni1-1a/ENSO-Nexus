@@ -29,6 +29,8 @@
     { key: 'normo', n: 4, name: 'Нормоконтроль', sub: 'Комплект документации целиком', href: '/normo.html' },
     { key: 'gge', n: 5, name: 'Контроль ГГЭ', sub: 'Реквизиты и формат перед экспертизой', href: '/gge.html' },
     { key: 'akty', n: 6, name: 'Акты (АОСР)', sub: 'Исполнительная документация на стройке', href: '/akty.html' },
+    // седьмой модуль (07.10.2026): вопрос к базе знаний с ответом, сверенным кодом
+    { key: 'ntd', n: 7, name: 'Вопрос по нормам', sub: 'Ответ по базе знаний со ссылкой на документ и пункт', href: '/ntd.html' },
   ];
   const PLATFORM = [
     { key: 'dataset', name: 'Датасет' },
@@ -45,6 +47,7 @@
     normo: DOC + '<path d="M9.5 14.5l2 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/>',
     gge: DOC + '<path d="M9 13l2 2 4-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 18h6" stroke-linecap="round"/>',
     akty: DOC + '<path d="M9 12h6M9 16h6M9 8h3" stroke-linecap="round"/>',
+    ntd: DOC + '<path d="M10.3 11.6a1.8 1.8 0 1 1 2.5 1.7c-.6.3-.8.7-.8 1.3v.3" stroke-linecap="round"/><path d="M12 17.4v.1" stroke-linecap="round" stroke-width="2.4"/>',
     back: '<path d="M14 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/>',
     chev: '<path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/>',
     plus: '<path d="M12 5v14M5 12h14" stroke-linecap="round"/>',
@@ -70,7 +73,7 @@
   const state = {
     view,
     page: document.body.dataset.page || 'module',       // index | module
-    module: document.body.dataset.module || '',         // tz | site | doc | normo | gge | akty | ''
+    module: document.body.dataset.module || '',         // tz | site | doc | normo | gge | akty | ntd | ''
     screen: '',                                          // index: projects | hub | analysis | settings | stats | dataset
     projectId: normId(params.get('project')),
     project: null,
@@ -432,7 +435,7 @@
         <div class="ph-actions" id="ph-actions"></div>`;
       document.dispatchEvent(new CustomEvent('enso:head'));
     } else if (m) {
-      box.innerHTML = `<p class="ph-line">${esc(p.name)} · модуль ${m.n} из 6</p>`;
+      box.innerHTML = `<p class="ph-line">${esc(p.name)} · модуль ${m.n} из ${MODULES.length}</p>`;
     } else {
       box.innerHTML = '';
     }
@@ -455,7 +458,7 @@
     const today = fmtDate(new Date().toISOString());
     const rows = p
       ? [['Объект', p.full_name || p.name, 'Стадия', p.stage || '—'],
-        ['Заказчик', p.client || '—', 'Модуль', m ? `${m.n} / 6` : '—'],
+        ['Заказчик', p.client || '—', 'Модуль', m ? `${m.n} / ${MODULES.length}` : '—'],
         ['Раздел', m ? m.name : (state.screen === 'hub' ? 'Стол проекта' : 'Лист'), 'Начат', fmtDate(p.created_at) || '—'],
         ['Исполнитель', who || '—', 'Дата', today]]
       : [['Платформа', 'Enso-nexus', 'Листов', '1'],
