@@ -1910,3 +1910,97 @@ html[data-boot="auth"] .shell { visibility: hidden; }
 
 /* подпись под полями окна проекта (нейросеть проекта, 10.09.2026) */
 .pf-hint { grid-column: 1 / -1; margin: -4px 0 0; font-size: 12px; color: var(--text-3); line-height: 1.45; }
+
+/* ======================================================================
+   Происхождение (07.10.2026): панель «Откуда это» в свойствах объекта,
+   вид «Связи» поверх плана, ссылки событий в «Журнале этапов».
+   Данные и поведение — public/provenance.js; граф строит сервер живым.
+   ====================================================================== */
+.vw-origin { margin-top: 12px; border-top: 1px solid var(--stroke-soft); padding-top: 10px; font-size: 12px; }
+.vw-origin[hidden] { display: none; }
+.vw-origin-title { font-family: var(--font-display); font-size: 13px; font-weight: 600; margin: 0 0 6px;
+                   display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.vw-origin-links { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); font-weight: 400; }
+.vw-origin-chain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.vw-origin-step { position: relative; padding-left: 12px; display: flex; flex-direction: column; gap: 4px; }
+/* вертикальная нить цепочки: от документа к решению */
+.vw-origin-step::before { content: ''; position: absolute; left: 3px; top: 6px; bottom: -6px; width: 1px; background: var(--stroke); }
+.vw-origin-step:last-child::before { bottom: 6px; }
+.vw-origin-step.here::before { background: var(--accent); width: 2px; left: 2.5px; }
+.vw-origin-type { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); }
+.vw-origin-node { display: flex; flex-direction: column; gap: 1px; text-align: left; width: 100%; padding: 6px 8px;
+                  border: 1px solid var(--stroke-soft); border-radius: var(--radius-sm); background: var(--panel);
+                  color: var(--text); cursor: pointer; font: inherit; font-size: 12px; line-height: 1.35; }
+.vw-origin-node:hover { border-color: var(--stroke); background: var(--panel-solid); }
+.vw-origin-node.current { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel-solid)); cursor: default; }
+/* сущность без записанного происхождения — пунктир, а не молчание */
+.vw-origin-node.orphan { border-style: dashed; }
+.vw-origin-kind { font-size: 10.5px; color: var(--text-3); }
+.vw-origin-label { font-weight: 500; overflow-wrap: anywhere; }
+.vw-origin-sub { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
+.vw-origin-note, .vw-origin-missing { font-size: 11.5px; color: var(--text-3); margin: 6px 0 0; line-height: 1.45; }
+.vw-origin-missing { color: var(--orange); }
+.vw-origin-foot { margin: 8px 0 0; }
+
+/* вид «Связи» — поверх сцены плана, своя прокрутка и зум только внутри */
+.vw-graph { position: absolute; inset: 0; z-index: 7; display: flex; flex-direction: column; background: var(--panel-solid); }
+.vw-graph[hidden] { display: none; }
+.vw-graph-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--stroke-soft); }
+.vw-graph-head h3 { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin: 0; }
+.vw-graph-head input[type="search"] { font-size: 12.5px; padding: 5px 10px; min-width: 160px; flex: 1 1 160px; max-width: 320px; }
+.vw-graph-opt { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.vw-graph-opt input { accent-color: var(--accent); }
+#vw-graph-close { margin-left: auto; width: 30px; height: 30px; }
+#vw-graph-close svg { width: 15px; height: 15px; }
+.vw-graph-stats { margin: 0; padding: 6px 14px; font-size: 11.5px; color: var(--text-3); border-bottom: 1px solid var(--stroke-soft); }
+.vw-graph-body { position: relative; flex: 1; min-height: 0; }
+.vw-graph-svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.pg-column { font-family: var(--font-display); font-size: 13px; font-weight: 600; fill: var(--text-2); }
+.pg-edge { fill: none; stroke: var(--text-3); stroke-opacity: .45; stroke-width: 1.2; }
+.pg-edge.hot { stroke: var(--accent); stroke-opacity: .95; stroke-width: 2; }
+.pg-edge.far { stroke-opacity: .12; }
+#pg-arrow path { fill: var(--text-3); }
+.pg-node { cursor: pointer; }
+.pg-node rect { fill: var(--panel-solid); stroke: var(--stroke); stroke-width: 1.2; }
+.pg-node:hover rect { stroke: var(--text-2); }
+.pg-node.selected rect { stroke: var(--accent); stroke-width: 2.2; fill: color-mix(in srgb, var(--accent) 8%, var(--panel-solid)); }
+.pg-node.orphan rect { stroke-dasharray: 4 3; }
+.pg-node.dim { opacity: .35; }
+.pg-kind { font-size: 10px; fill: var(--text-3); }
+.pg-label { font-size: 12px; fill: var(--text); font-weight: 500; }
+/* цвет кромки — тип сущности; тот же словарь цветов, что у платформы */
+.pg-file rect { stroke: var(--data); }
+.pg-fact rect { stroke: color-mix(in srgb, var(--data) 60%, var(--stroke)); }
+.pg-human rect { stroke: var(--accent); }
+.pg-rule rect { stroke: var(--orange); }
+.pg-object rect { stroke: var(--text-2); }
+.pg-zone rect { stroke: var(--red); }
+.pg-buildable rect { stroke: var(--green); stroke-width: 1.8; }
+.pg-variant rect { stroke: var(--green); }
+.pg-action rect { stroke: var(--orange); }
+.pg-result rect { stroke: var(--data); }
+.vw-graph-card { position: absolute; right: 12px; top: 12px; z-index: 2; width: min(340px, calc(100% - 24px));
+                 max-height: calc(100% - 24px); overflow-y: auto; background: var(--panel-solid); border: 1px solid var(--stroke);
+                 border-radius: var(--radius); box-shadow: var(--shadow-pop); padding: 12px 14px; font-size: 12px; }
+.vw-graph-card[hidden] { display: none; }
+.vw-graph-card h4 { font-family: var(--font-display); font-size: 14px; margin: 4px 0 6px; overflow-wrap: anywhere; }
+.vw-graph-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.vw-graph-card-sub { color: var(--text-2); margin: 0 0 6px; line-height: 1.45; overflow-wrap: anywhere; }
+.vw-graph-card-quote { color: var(--text-2); font-style: italic; margin: 0 0 6px; line-height: 1.45; overflow-wrap: anywhere; }
+.vw-graph-card-h { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); margin: 8px 0 4px; }
+.vw-graph-card-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.vw-graph-card-foot { margin: 10px 0 0; }
+.vw-graph-card-foot:empty { display: none; }
+
+/* ссылки события в «Журнале этапов» */
+.ev-links { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.ev-ref { font: inherit; font-size: 10.5px; line-height: 1.5; padding: 0 7px; border-radius: 999px; border: 1px solid var(--stroke-soft);
+          background: var(--panel); color: var(--text-2); cursor: pointer; max-width: 220px; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap; }
+.ev-ref:hover { border-color: var(--accent); color: var(--accent); }
+.ev-ref.plain { cursor: default; color: var(--text-3); }
+.ev-cause { font-size: 10.5px; color: var(--text-3); align-self: center; }
+@media (max-width: 800px) {
+  .vw-graph-head { gap: 6px; padding: 8px 10px; }
+  .vw-graph-card { right: 8px; left: 8px; top: auto; bottom: 8px; width: auto; max-height: 45%; }
+}

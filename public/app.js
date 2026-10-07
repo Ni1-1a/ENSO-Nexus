@@ -800,9 +800,10 @@ function render() {
   }
   // журнал строится снизу вверх: новые события приходят с сервера первыми;
   // раскрытием блока управляет только пользователь (см. init) — опрос его не трогает
+  // ссылки события (правило, зона, вариант, документ) — кнопками на план или в граф связи (provenance.js)
   syncList($('events-log'), v.events.map((e) => `
     <li class="ev-${e.level}">${esc(e.stage)}${e.detail ? ` — ${esc(e.detail)}` : ''}
-      <span class="meta">(${new Date(e.created_at).toLocaleTimeString('ru-RU')})</span></li>`));
+      <span class="meta">(${new Date(e.created_at).toLocaleTimeString('ru-RU')})</span>${window.Provenance ? window.Provenance.eventLinksHtml(e) : ''}</li>`));
 
   // chat (прокрутка — по контейнеру #chat, сообщения — в #chat-messages);
   // у проекта одна лента: отдельных чатов-тредов больше нет
@@ -2794,6 +2795,9 @@ async function init() {
   window.appSaveBlob = saveBlob;
   window.PlanViewer.init();
   $('vw-reload').addEventListener('click', () => window.PlanViewer.load(api, state.session));
+  // происхождение: панель «Откуда это», граф связей и ссылки журнала (provenance.js)
+  if (window.Provenance) window.Provenance.init({ api });
+  window.appOpenPlan = (opts) => window.PlanViewer.open(api, state.session, opts || {});
   $('plan-modal-close').addEventListener('click', () => window.PlanViewer.close());
   /*
    * План изменился во вьювере (правка объекта, пересчёт зон) — карточки ленты

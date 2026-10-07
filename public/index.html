@@ -6,7 +6,7 @@
   <title>Enso-nexus — платформа автоматического проектирования</title>
   <meta name="description" content="Платформа автоматического проектирования: анализ исходных данных, запретные зоны, посадка здания на участок и выгрузка чертежа">
   <meta name="theme-color" content="#f3efe6">
-  <link rel="stylesheet" href="styles.css?v=59">
+  <link rel="stylesheet" href="styles.css?v=61">
   <link rel="stylesheet" href="shell.css?v=11">
   <script src="boot.js?v=4"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23F3EFE6' stroke='%23D8D0C0' stroke-width='2'/><path d='M20 33 L78 23 L82 71 L25 80 Z' fill='none' stroke='%23B95740' stroke-width='6' stroke-linejoin='round'/><rect x='42' y='45' width='27' height='20' fill='none' stroke='%23B95740' stroke-width='5'/><path d='M28 41 L73 33' fill='none' stroke='%23B95740' stroke-width='4' stroke-dasharray='7 5' stroke-linecap='round'/></svg>">
@@ -639,6 +639,8 @@
         <button id="vw-export" class="pm-tool" type="button"
                 title="Скачать DWG с объектами, разложенными по слоям (с вашими переназначениями)">Скачать по слоям</button>
         <button id="vw-reload" class="pm-tool" type="button" title="Перечитать чертежи">Обновить</button>
+        <button id="vw-graph-btn" class="pm-tool" type="button"
+                title="Граф связей: откуда взялась каждая зона, вариант и мероприятие">Связи</button>
       </div>
       <details class="pm-layers-menu">
         <summary class="pm-tool">Слои</summary>
@@ -649,6 +651,27 @@
     <div id="vw-stage" class="vw-stage pm-stage">
       <svg id="vw-svg" class="vw-svg" role="img" aria-label="Схема участка"></svg>
       <div id="vw-tip" class="vw-tip" hidden></div>
+
+      <!-- Вид «Связи»: граф происхождения поверх плана (public/provenance.js).
+           Колонки — типы сущностей от документа к решению; по умолчанию видна
+           только окрестность выбранного узла, зоны свёрнуты по правилам. -->
+      <section id="vw-graph" class="vw-graph" hidden aria-label="Связи">
+        <div class="vw-graph-head">
+          <h3>Связи</h3>
+          <input id="vw-graph-search" type="search" placeholder="Найти узел…" aria-label="Поиск по графу связей">
+          <label class="vw-graph-opt"><input type="checkbox" id="vw-graph-ego" checked> только соседи выбранного</label>
+          <label class="vw-graph-opt"><input type="checkbox" id="vw-graph-fold" checked> зоны по правилам</label>
+          <button id="vw-graph-fit" class="pm-tool" type="button" title="Вписать граф в экран">Вписать</button>
+          <button id="vw-graph-close" class="icon-btn" type="button" aria-label="Закрыть связи">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <p id="vw-graph-stats" class="vw-graph-stats"></p>
+        <div class="vw-graph-body">
+          <svg id="vw-graph-svg" class="vw-graph-svg" role="img" aria-label="Граф связей"></svg>
+          <aside id="vw-graph-card" class="vw-graph-card" hidden aria-label="Узел графа"></aside>
+        </div>
+      </section>
 
       <!-- Свойства объекта: открывается кликом по объекту, живёт ВНУТРИ плана.
            Разбор угадывает тип по имени слоя и ошибается — здесь человек говорит,
@@ -664,6 +687,8 @@
           </button>
         </div>
         <dl id="vw-props-facts" class="vw-props-facts"></dl>
+        <!-- «Откуда это»: цепочка происхождения выбранного объекта (public/provenance.js) -->
+        <section id="vw-origin" class="vw-origin" hidden aria-label="Откуда это"></section>
         <form id="vw-props-form" class="vw-props-form">
           <label class="vw-props-field">
             <span>Что это на самом деле</span>
@@ -854,8 +879,10 @@
   <script src="frag-chat.js?v=3"></script>
   <script src="geo-transform.js?v=1"></script>
   <script src="zone-style.js?v=4"></script>
-  <script src="viewer.js?v=22"></script>
-  <script src="app.js?v=65"></script>
+  <script src="provenance-core.js?v=1"></script>
+  <script src="provenance.js?v=3"></script>
+  <script src="viewer.js?v=24"></script>
+  <script src="app.js?v=67"></script>
   <script src="dataset.js?v=6"></script>
   <script src="hub.js?v=10"></script>
 </body>

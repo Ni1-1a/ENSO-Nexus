@@ -653,6 +653,7 @@
   async function load(api, session) {
     state.api = api;
     state.session = session;
+    if (window.Provenance) window.Provenance.setSession(session);
     const stage = el('vw-stage');
     const empty = el('vw-empty');
     if (!session) {
@@ -822,7 +823,7 @@
      * забирала указатель себе (setPointerCapture), и кнопка клика не получала.
      * Колесо над панелью по той же причине зумило план вместо прокрутки списка.
      */
-    const inPanel = (e) => !!(e.target.closest && e.target.closest('#vw-props'));
+    const inPanel = (e) => !!(e.target.closest && e.target.closest('#vw-props, #vw-graph'));
 
     stage.addEventListener('wheel', (e) => {
       if (inPanel(e)) return;
@@ -898,6 +899,8 @@
     el('vw-prop-reset').addEventListener('click', resetProps);
 
     el('vw-select').addEventListener('click', () => setSelecting(!state.selecting));
+    // граф связей сессии — поверх сцены (provenance.js)
+    el('vw-graph-btn').addEventListener('click', () => { if (window.Provenance) window.Provenance.openGraph(); });
     el('vw-restrictions').addEventListener('click', computeRestrictions);
     el('vw-export').addEventListener('click', exportDrawing);
 
@@ -1073,6 +1076,8 @@
     const p = obj.properties || {};
     const pr = obj.provenance || {};
     const edit = editOf(objectId);
+    // «Откуда это»: цепочка происхождения объекта — документ → правило → зона → вариант (provenance.js)
+    if (window.Provenance) window.Provenance.showFor(objectId, layer);
 
     el('vw-props-title').textContent = p.userLabel || TYPE_LABELS[obj.type] || LAYER_TITLES[layer] || 'Объект';
 
@@ -1145,6 +1150,7 @@
     state.picked = null;
     state.multi = [];
     el('vw-props').hidden = true;
+    if (window.Provenance) window.Provenance.clearOrigin();
     draw();
   }
 
@@ -1575,12 +1581,14 @@
    * Один объект — открываем его свойства сразу: указание делается там же.
    * Несколько — подсвечиваем все и вписываем в экран их общий габарит.
    */
-  async function open(api, session, { focus = [] } = {}) {
+  async function open(api, session, { focus = [], node = '' } = {}) {
     const modal = el('plan-modal');
     modal.hidden = false;
     document.body.classList.add('modal-open');
     if (api) await load(api, session);
     requestAnimationFrame(() => {
+      // ссылка из журнала: узел графа — объект на плане или узел в виде «Связи»
+      if (node && window.Provenance) { fit(); updateStrokeScale(); window.Provenance.focusNode(node); return; }
       const ids = (focus || []).filter(Boolean);
       const found = ids.map((id) => findAnyObject(id)).filter(Boolean);
       if (!found.length) { fit(); updateStrokeScale(); return; }
@@ -1639,10 +1647,40 @@
     return out;
   }
 
+  /**
+   * Показать объект на плане: вписать в экран и открыть свойства (с «Откуда
+   * это»). Скрытый слой включается — иначе объект, на который указала ссылка
+   * журнала, остался бы невидимым. false — объекта в текущем плане нет.
+   */
+  function focusObject(objectId) {
+    const found = findAnyObject(objectId);
+    if (!found) return false;
+    if (!state.visible.has(found.layer)) { state.visible.add(found.layer); renderLayerToggles(); draw(); }
+    zoomToObjects([found.obj]);
+    openProps(found.obj.id, found.layer);
+    updateStrokeScale();
+    return true;
+  }
+
+  /** Несколько объектов разом (зоны одного правила): подсветить все и вписать их габарит. */
+  function focusObjects(ids) {
+    const found = (ids || []).map((id) => findAnyObject(id)).filter(Boolean);
+    if (!found.length) return false;
+    if (found.length === 1) return focusObject(found[0].obj.id);
+    for (const f of found) if (!state.visible.has(f.layer)) { state.visible.add(f.layer); renderLayerToggles(); }
+    state.multi = found.map((f) => ({ id: f.obj.id, layer: f.layer }));
+    zoomToObjects(found.map((f) => f.obj));
+    openBatchProps();
+    draw();
+    updateStrokeScale();
+    return true;
+  }
+
   function close() {
     el('plan-modal').hidden = true;
     document.body.classList.remove('modal-open');
     if (state.selecting) setSelecting(false);
+    if (window.Provenance) window.Provenance.closeGraph();
   }
 
   function isOpen() { return !el('plan-modal').hidden; }
@@ -1650,7 +1688,7 @@
   // публичный интерфейс для app.js
   window.PlanViewer = {
     init, load, fit, open, close, isOpen, thumbSvg,
-    setSelecting, removeAnnotation, computeRestrictions,
+    setSelecting, removeAnnotation, computeRestrictions, focusObject, focusObjects,
     get state() { return state; },
   };
 })();

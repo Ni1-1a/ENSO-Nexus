@@ -174,7 +174,23 @@ function rulesFromFacts(sessionId) {
 function mergeRules(fromModel = [], derived = []) {
   const key = (r) => `${r.kind}|${r.target && r.target.selector}|${r.valueM ?? r.value}`;
   const seen = new Set(fromModel.map(key));
-  return [...fromModel, ...derived.filter((r) => !seen.has(key(r)))];
+  /*
+   * Идентификаторы — сквозные. `rulesFromFacts` нумерует свой список с нуля,
+   * и до 07.10.2026 в сохранённых правилах под `rule-1` лежали и охранная зона
+   * от модели, и отступ из ГПЗУ: зона ссылалась на правило неоднозначно, и граф
+   * происхождения вёл от неё к чужому основанию. Группы показа это обходили
+   * (ключ группы — подпись правила), ссылка `properties.ruleId` — нет.
+   */
+  const taken = new Set(fromModel.map((r) => r.id));
+  let n = fromModel.length;
+  const renumbered = derived.filter((r) => !seen.has(key(r))).map((r) => {
+    if (!taken.has(r.id)) { taken.add(r.id); return r; }
+    let id;
+    do { n += 1; id = `rule-${n}`; } while (taken.has(id));
+    taken.add(id);
+    return { ...r, id };
+  });
+  return [...fromModel, ...renumbered];
 }
 
 /** Какие признаки ограничений встречаются в переданных документах. */

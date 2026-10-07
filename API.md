@@ -157,7 +157,8 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
 | POST | `/api/sessions/:id/token` | `{ deviceId? }` → `{ id, token }` — новый токен своей сессии (прежний отзывается); своя — заведённая этим человеком, «ничья» того же устройства, любая сессия проекта, который человек вправе править, или любая для владельца платформы; чужая → `403` | U |
 | POST | `/api/sessions/:id/device` | привязать сессию к устройству и закрепить за вошедшим | S+U |
 | GET | `/api/sessions/:id` | полное состояние (см. ниже) | S |
-| GET | `/api/sessions/:id/status` | `{ jobStatus, events }` — для опроса | S |
+| GET | `/api/sessions/:id/status` | `{ jobStatus, events }` — для опроса; у события `ref` (ссылки на сущности `[{ type, id, label }]`) и `cause` (причина: замечание, правка, человек) — структурный журнал, 07.10.2026 | S |
+| GET | `/api/sessions/:id/journal` | `?limit=` (до 1000) → `{ events, stats: { total, withRef, withCause } }` — журнал целиком со ссылками | S |
 | GET | `/api/sessions/:id/messages` | `{ messages }` | S |
 | DELETE | `/api/sessions/:id` | удалить сессию и все данные | S+U |
 | POST | `/api/sessions/:id/settings` | `{ aiProvider?, aiModel?, kbChoice?, title? }` → `{ ok }`; недоступный провайдер → `400` | S+U |
@@ -175,7 +176,9 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
   "files": [{ "id": "…", "name": "ГПЗУ.pdf", "size": 12345, "ext": "pdf" }],
   "messages": [{ "role": "assistant", "kind": "result", "content": "…" }],
   "questions": [{ "id": "…", "text": "…", "why": "…", "status": "pending", "answer": null, "options": [] }],
-  "events": [{ "stage": "Выполняется анализ", "level": "info", "created_at": "…" }],
+  "events": [{ "stage": "Зоны построены", "detail": "зон 8", "level": "info", "created_at": "…",
+               "ref": [{ "type": "rule", "id": "rule-1", "label": "охранная зона 10 м" }, { "type": "buildable", "id": "plan", "label": "…" }],
+               "cause": { "type": "human", "id": "note-…", "label": "замечание: …" } }],
   "results": [], "facts": [{ "key": "plot.area_m2", "value": "3700", "source": "ГПЗУ, стр. 1" }] }
 ```
 
@@ -221,6 +224,8 @@ S+U — `404 { error: "Проект не найден" }` всем, включа
 | POST | `/api/sessions/:id/plan/variants/:variantId/select` | выбрать вариант; `{ decisions: [{ actionId, decision: "allow" \| "forbid" }], decidedBy? }` | S+U |
 | POST | `/api/sessions/:id/plan/export` | комплект по выбранному варианту: PDF, схема PNG, чертёж | S+U |
 | GET | `/api/sessions/:id/critical-objects/unknown` | объекты чертежа, класс которых базе неизвестен | S |
+| GET | `/api/sessions/:id/provenance/graph` | граф происхождения сессии (07.10.2026): `{ nodes: [{ id: "тип:ключ", type, kind, label, sub, props, orphan?, why? }], edges: [{ from, to, rel }], types, stats: { nodes, edges, coverage, missing, builtMs }, missing, planId, version }` — строится живым из тех же таблиц, что план; типы колонок — `public/provenance-core.js`; `?include=<objectId>,…` добавляет объекты плана, которые ни в чём не участвуют | S |
+| GET | `/api/sessions/:id/provenance/of/:nodeId` | цепочка «откуда это» для узла: `{ node, ancestors, descendants, edges, links, missing }`; `?down=` — глубина следствий (1); узел вьювера — `object:<id>`, зона — `zone:<id>`, выбранный вариант — `variant:selected`, территория — `buildable:plan`; нет узла → `404` | S |
 
 ### Этапы согласования
 

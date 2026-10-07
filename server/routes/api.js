@@ -9,6 +9,9 @@ const { db, now, hashToken } = require('../db');
 const projects = require('../services/projects');
 const { sanitizeFilename, validateUpload } = require('../services/validation');
 const pipeline = require('../services/pipeline');
+const journal = require('../services/journal');
+/** Ссылка на вошедшего человека — причина решения, замечания, правки в журнале. */
+const who = (req) => (req.user ? journal.person(`${req.user.lastName || ''} ${req.user.firstName || ''}`.trim(), req.user.id) : null);
 const stages = require('../services/stages');
 const { rateLimit, sessionAuth, userAuth, optionalUser, sessionOwner, requestSizeLimit } = require('../middleware');
 
@@ -330,8 +333,9 @@ function sessionView(session) {
   const parseOpts = (s) => { try { const a = JSON.parse(s); return Array.isArray(a) ? a : []; } catch { return []; } };
   const questions = db.prepare('SELECT id, text, why, status, answer, options, created_at FROM questions WHERE session_id = ? ORDER BY created_at').all(session.id)
     .map((q) => ({ ...q, options: parseOpts(q.options) }));
-  // новые события первыми — журнал в UI строится снизу вверх
-  const events = db.prepare('SELECT stage, detail, level, created_at FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 50').all(session.id);
+  // новые события первыми — журнал в UI строится снизу вверх; ссылки и причины
+  // событий разбирает services/journal.js (структурный журнал, 07.10.2026)
+  const events = journal.list(session.id, { limit: 50 });
   const results = db.prepare('SELECT id, filename, title, format, size, created_at FROM results WHERE session_id = ? ORDER BY created_at').all(session.id);
   const facts = db.prepare('SELECT key, value, source FROM facts WHERE session_id = ? ORDER BY created_at').all(session.id);
   return {
@@ -383,8 +387,7 @@ router.get('/sessions/:id', sessionAuth, (req, res) => {
 });
 
 router.get('/sessions/:id/status', sessionAuth, (req, res) => {
-  const events = db.prepare('SELECT stage, detail, level, created_at FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 50').all(req.session.id);
-  res.json({ jobStatus: req.session.job_status, events });
+  res.json({ jobStatus: req.session.job_status, events: journal.list(req.session.id, { limit: 50 }) });
 });
 
 router.get('/sessions/:id/messages', sessionAuth, (req, res) => {
@@ -443,7 +446,8 @@ router.post('/sessions/:id/files', sessionAuth, sessionOwner, expensiveLimit, re
     uploaded.push({ id, name: originalName, size: f.buffer.length, ext: check.ext });
   }
   if (uploaded.length) {
-    pipeline.logEvent(req.session.id, 'Файлы загружены', uploaded.map((u) => u.name).join(', '));
+    pipeline.logEvent(req.session.id, 'Файлы загружены', uploaded.map((u) => u.name).join(', '), 'info',
+      { ref: uploaded.map((u) => journal.ref('file', u.id, u.name)), cause: who(req) });
     // автоназвание проекта — из первого загруженного файла
     if (!req.session.title) {
       db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(uploaded[0].name.slice(0, 60), req.session.id);
@@ -464,7 +468,7 @@ router.delete('/sessions/:id/files/:fileId', sessionAuth, sessionOwner, (req, re
   }
   require('../services/geometry/plan').invalidate(row.stored_path); // кэш разбора чертежа
   db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
-  pipeline.logEvent(req.session.id, 'Файл удалён', row.original_name);
+  pipeline.logEvent(req.session.id, 'Файл удалён', row.original_name, 'info', { cause: who(req) });
   res.json({ ok: true });
 });
 
@@ -644,7 +648,8 @@ router.post('/sessions/:id/plan/parcel-source', sessionAuth, sessionOwner, expen
         // подпись — по вошедшему; значение из тела только когда входа нет
         author: req.user ? `${req.user.lastName || ''} ${req.user.firstName || ''}`.trim() : String(body.author || ''),
       });
-      pipeline.logEvent(req.session.id, 'Границы участка заданы координатами', `${saved.points.length} точек`);
+      pipeline.logEvent(req.session.id, 'Границы участка заданы координатами', `${saved.points.length} точек`, 'info',
+        { ref: journal.ref('fact', 'parcel-source', 'границы по характерным точкам'), cause: who(req) });
       return res.json({ ok: true, source: saved, by: 'user' });
     }
 
@@ -696,7 +701,11 @@ router.post('/sessions/:id/plan/objects/:objectId', sessionAuth, sessionOwner, e
     const p = saved.patch;
     pipeline.logEvent(req.session.id, 'Свойства объекта плана исправлены',
       `${req.params.objectId}: ${[p.type && `тип → ${p.type}`, p.label && `назначение «${p.label}»`,
-        p.relocation && `решение: ${p.relocation}`].filter(Boolean).join(', ') || 'комментарий'}`);
+        p.relocation && `решение: ${p.relocation}`].filter(Boolean).join(', ') || 'комментарий'}`, 'info', {
+      ref: [journal.ref('object', req.params.objectId, p.label || found.obj.provenance.sourceLayer || found.layer),
+        journal.ref('human', `edit-${saved.id}`, 'правка объекта')],
+      cause: who(req),
+    });
     objectEditInChat(req.session.id, saved);
     /*
      * Что правка ИЗМЕНИЛА — в ответе, а не «сохранено» и тишина.
@@ -738,7 +747,7 @@ router.post('/sessions/:id/plan/objects/:objectId', sessionAuth, sessionOwner, e
 router.delete('/sessions/:id/plan/objects/:objectKey', sessionAuth, sessionOwner, (req, res) => {
   const ok = require('../services/geometry/object-edits').remove(req.session.id, req.params.objectKey);
   if (!ok) return res.status(404).json({ error: 'Правка не найдена' });
-  pipeline.logEvent(req.session.id, 'Правка свойств объекта отменена', req.params.objectKey);
+  pipeline.logEvent(req.session.id, 'Правка свойств объекта отменена', req.params.objectKey, 'info', { cause: who(req) });
   res.json({ ok: true });
 });
 
@@ -832,7 +841,9 @@ router.post('/sessions/:id/annotations', sessionAuth, sessionOwner, express.json
       coordinateSystem: req.body?.coordinateSystem,
       metadata: req.body?.metadata,
     });
-    pipeline.logEvent(req.session.id, 'Добавлено выделение на плане', (created.comment || '').slice(0, 120));
+    pipeline.logEvent(req.session.id, 'Добавлено выделение на плане', (created.comment || '').slice(0, 120), 'info', {
+      ref: journal.ref('annotation', created.id, created.comment || 'выделение без комментария'), cause: who(req),
+    });
     // Комментарий уходит РЕПЛИКОЙ В ЛЕНТУ. Раньше он жил только на плане: чтобы
     // вспомнить, что и где написано, приходилось открывать план и обходить рамки
     // мышью. В ленте он ищется, читается подряд и попадает в контекст анализа.
@@ -915,7 +926,11 @@ router.post('/sessions/:id/plan/restrictions', sessionAuth, sessionOwner, expens
 
     pipeline.logEvent(req.session.id, 'Рассчитаны зоны ограничений',
       `построено ${built.restrictions.length} по ${(built.zoneGroups || []).length} правилам, `
-      + `не построено ${built.unresolved.length}`);
+      + `не построено ${built.unresolved.length}`, 'info', {
+      ref: [...extracted.rules.map((r) => journal.ref('rule', r.id, ruleLabel(r))),
+        built.buildable && journal.ref('buildable', 'plan', `допустимая территория ${built.buildable.areaM2} м²`)],
+      cause: who(req),
+    });
     res.json({
       planId,
       restrictions: built.restrictions,
@@ -1148,9 +1163,14 @@ router.post('/sessions/:id/plan/variants', sessionAuth, sessionOwner, expensiveL
       planId, requirements, criterion, variants,
       stats: { перебрано: gen.tried, найдено: gen.total, отобрано: variants.length },
     });
+    const savedRun = runs.latestRun(req.session.id);
     pipeline.logEvent(req.session.id, 'Сгенерированы варианты посадки',
-      `вариантов ${variants.length}, кандидатов ${gen.total}`);
-    res.json({ runId, ...runs.latestRun(req.session.id), notes });
+      `вариантов ${variants.length}, кандидатов ${gen.total}`, 'info', {
+      ref: [journal.ref('variant', `run-${runId}`, 'подбор вариантов'),
+        ...savedRun.variants.map((v) => journal.ref('variant', v.id, `вариант ${v.number}`))],
+      cause: who(req),
+    });
+    res.json({ runId, ...savedRun, notes });
   } catch (err) { next(err); }
 });
 
@@ -1208,6 +1228,23 @@ function decisionAuthor(req) {
   return u ? `${u.lastName} ${u.firstName}`.trim() : '';
 }
 
+/** Ссылки события «Решение по мероприятию»: мероприятие, задетый объект, вариант; причина — человек. */
+function decisionLinks(variant, actionId, decidedBy) {
+  const action = (variant && variant.actions || []).find((a) => a.id === actionId) || null;
+  return {
+    ref: [journal.ref('action', actionId, action ? action.title : 'мероприятие'),
+      action && action.objectId && journal.ref('object', action.objectId, action.title),
+      variant && journal.ref('variant', variant.id, `вариант ${variant.number}`)],
+    cause: journal.person(decidedBy),
+  };
+}
+
+/** Подпись правила для ссылки журнала: тип и величина, без координат. */
+function ruleLabel(r) {
+  const RR = require('../services/geometry/restriction-rules');
+  return `${RR.KIND_LABELS[r.kind] || r.kind}${r.valueM != null ? ` ${r.valueM} м` : ''}`;
+}
+
 /** Решение по мероприятию, затрагивающему критический объект (ТЗ, п. 46). */
 router.post('/sessions/:id/plan/actions/:actionId', sessionAuth, sessionOwner, express.json(), (req, res, next) => {
   try {
@@ -1217,7 +1254,8 @@ router.post('/sessions/:id/plan/actions/:actionId', sessionAuth, sessionOwner, e
       .decideAction(req.session.id, req.params.actionId, { decision: req.body?.decision, decidedBy });
     if (!updated) return res.status(404).json({ error: 'Мероприятие не найдено' });
     pipeline.logEvent(req.session.id, 'Решение по мероприятию',
-      `${req.body?.decision === 'allow' ? 'разрешено' : 'запрещено'}, принял ${decidedBy}`);
+      `${req.body?.decision === 'allow' ? 'разрешено' : 'запрещено'}, принял ${decidedBy}`, 'info',
+      decisionLinks(updated, req.params.actionId, decidedBy));
     res.json(updated);
   } catch (err) {
     if (/Решение должно|Нужно указать/.test(err.message)) return res.status(400).json({ error: err.message });
@@ -1250,7 +1288,8 @@ function applyDecisions(req, variantId) {
       return { ok: false, status: 400, error: err.message };
     }
     pipeline.logEvent(req.session.id, 'Решение по мероприятию',
-      `${d && d.decision === 'allow' ? 'разрешено' : 'запрещено'}, принял ${decidedBy}`);
+      `${d && d.decision === 'allow' ? 'разрешено' : 'запрещено'}, принял ${decidedBy}`, 'info',
+      decisionLinks(variant, actionId, decidedBy));
   }
   return { ok: true };
 }
@@ -1271,7 +1310,10 @@ router.post('/sessions/:id/plan/variants/:variantId/select', sessionAuth, sessio
     const chosen = runs.select(req.session.id, req.params.variantId);
     if (!chosen) return res.status(404).json({ error: 'Вариант не найден' });
     // повторный выбор того же варианта идемпотентен и в журнале: второго события нет
-    if (!before || before.id !== chosen.id) pipeline.logEvent(req.session.id, 'Выбран вариант посадки', `вариант ${chosen.number}`);
+    if (!before || before.id !== chosen.id) {
+      pipeline.logEvent(req.session.id, 'Выбран вариант посадки', `вариант ${chosen.number}`, 'info',
+        { ref: journal.ref('variant', chosen.id, `вариант ${chosen.number}`), cause: who(req) });
+    }
     res.json(chosen);
   } catch (err) {
     if (/не принято решений/.test(err.message)) return res.status(409).json({ error: err.message });
@@ -1341,7 +1383,8 @@ router.post('/sessions/:id/stages/zones/approve', sessionAuth, sessionOwner, exp
       });
     }
     pipeline.addMessage(req.session.id, 'user', 'answer', 'Схема запретных зон согласована.');
-    pipeline.logEvent(req.session.id, 'Схема зон согласована пользователем');
+    pipeline.logEvent(req.session.id, 'Схема зон согласована пользователем', '', 'info',
+      { ref: journal.ref('buildable', 'plan', 'допустимая территория'), cause: who(req) });
     await pipeline.startVariantsStage(req.session.id, requirements);
     res.json({ ok: true, requirements });
   } catch (err) { next(err); }
@@ -1353,9 +1396,10 @@ router.post('/sessions/:id/stages/zones/revise', sessionAuth, sessionOwner, expe
     if (notString(res, req.body?.note, 'note')) return;
     const note = String(req.body?.note || '').trim();
     if (!note) return res.status(400).json({ error: 'Замечание пустое — писать в промпт нечего.' });
-    stages.addNote(req.session.id, 'zones', note);
+    const savedNote = stages.addNote(req.session.id, 'zones', note);
     pipeline.addMessage(req.session.id, 'user', 'comment', `Замечание к схеме зон: ${note}`);
-    pipeline.logEvent(req.session.id, 'Замечание к схеме зон', note.slice(0, 200));
+    pipeline.logEvent(req.session.id, 'Замечание к схеме зон', note.slice(0, 200), 'info',
+      { ref: journal.ref('human', `note-${savedNote.id}`, 'замечание к схеме зон'), cause: who(req) });
     await pipeline.startZonesStage(req.session.id);
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -1367,12 +1411,13 @@ router.post('/sessions/:id/stages/variants/revise', sessionAuth, sessionOwner, e
     if (notString(res, req.body?.note, 'note')) return;
     const note = String(req.body?.note || '').trim();
     if (!note) return res.status(400).json({ error: 'Замечание пустое — переделывать не по чему.' });
-    stages.addNote(req.session.id, 'variants', note);
+    const savedNote = stages.addNote(req.session.id, 'variants', note);
     const requirements = resolveRequirements(req.session.id, req.body);
     if (!requirements) return res.status(400).json({ error: 'Не заданы требования к зданию.', needsRequirements: true });
     requirements.notes = stages.notes(req.session.id, 'variants').join('; ');
     pipeline.addMessage(req.session.id, 'user', 'comment', `Замечание к вариантам: ${note}`);
-    pipeline.logEvent(req.session.id, 'Замечание к вариантам посадки', note.slice(0, 200));
+    pipeline.logEvent(req.session.id, 'Замечание к вариантам посадки', note.slice(0, 200), 'info',
+      { ref: journal.ref('human', `note-${savedNote.id}`, 'замечание к вариантам'), cause: who(req) });
     await pipeline.startVariantsStage(req.session.id, requirements);
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -1409,7 +1454,8 @@ router.post('/sessions/:id/stages/variants/approve', sessionAuth, sessionOwner, 
       });
     }
     pipeline.addMessage(req.session.id, 'user', 'answer', `Вариант ${chosen.number} согласован — собрать чертёж.`);
-    pipeline.logEvent(req.session.id, 'Вариант согласован', `вариант ${chosen.number}`);
+    pipeline.logEvent(req.session.id, 'Вариант согласован', `вариант ${chosen.number}`, 'info',
+      { ref: journal.ref('variant', chosen.id, `вариант ${chosen.number}`), cause: who(req) });
     await pipeline.startDrawingStage(req.session.id);
     res.json({ ok: true, variant: chosen.number });
   } catch (err) { next(err); }

@@ -8,6 +8,7 @@ const busyFlag = require('./busy-flag');
 const progress = require('./progress');
 const stages = require('./stages');
 const prompts = require('./prompts');
+const journal = require('./journal');
 
 const runningJobs = new Set();
 /** sessionId → AbortController выполняющейся задачи (для «Прервать обработку»). */
@@ -26,31 +27,33 @@ function isAbort(err, signal) {
   return (signal && signal.aborted) || (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'));
 }
 
-/**
+/*
  * Проект могли удалить, пока задача выполнялась, — это штатное действие
  * человека, а не авария. Запись в журнал и в ленту по исчезнувшей сессии
- * молча пропускается: иначе INSERT падает на внешнем ключе, исключение летит
- * из catch-ветки, и всё, что стоит в коде после записи, уже не выполняется.
+ * молча пропускается (services/journal.js: sessionAlive / isGoneError).
  */
-function sessionAlive(sessionId) {
-  return !!db.prepare('SELECT 1 AS ok FROM sessions WHERE id = ?').get(sessionId);
+const { sessionAlive, isGoneError } = journal;
+
+/**
+ * Событие журнала. Пятый аргумент — ссылки на сущности и причину
+ * (`{ ref, cause }`, см. services/journal.js): по ним клиент даёт кнопки
+ * «показать на плане» и «откуда это». Без него событие пишется как раньше.
+ */
+function logEvent(sessionId, stage, detail = '', level = 'info', links = null) {
+  return journal.logEvent(sessionId, stage, detail, level, links);
 }
 
-/** Пропускать ли запись: сессии больше нет либо она исчезла между проверкой и вставкой. */
-function isGoneError(err) {
-  return err && (err.errcode === 787 || /FOREIGN KEY/i.test(String(err.message)));
+/** Подпись правила для ссылки журнала: тип по-русски и величина, без координат. */
+function ruleRefLabel(r) {
+  const RR = require('./geometry/restriction-rules');
+  return `${RR.KIND_LABELS[r.kind] || r.kind}${r.valueM != null ? ` ${r.valueM} м` : ''}${r.target && r.target.hint ? ` — ${r.target.hint}` : ''}`;
 }
 
-function logEvent(sessionId, stage, detail = '', level = 'info') {
-  if (!sessionAlive(sessionId)) return false;
-  try {
-    db.prepare('INSERT INTO events (session_id, stage, detail, level, created_at) VALUES (?,?,?,?,?)')
-      .run(sessionId, stage, detail, level, now());
-    return true;
-  } catch (err) {
-    if (isGoneError(err)) return false;
-    throw err;
-  }
+/** Последнее замечание человека к этапу — причина перезапуска этапа в журнале. */
+function lastNoteRef(sessionId, stage) {
+  const row = db.prepare('SELECT id, note FROM stage_notes WHERE session_id = ? AND stage = ? ORDER BY created_at DESC LIMIT 1')
+    .get(sessionId, stage);
+  return row ? journal.ref('human', `note-${row.id}`, `замечание: ${String(row.note).slice(0, 120)}`) : null;
 }
 
 function setJobStatus(sessionId, status) {
@@ -217,7 +220,8 @@ async function runJob(sessionId, instruction, signal, extraInstruction = '', pre
       logEvent(sessionId, 'Формируются выходные документы');
       progress.set(sessionId, { phase: 'saving', label: 'Формирование выходных документов…' });
       const files = await materializeOutputs(sessionId, result);
-      logEvent(sessionId, 'Анализ завершён', `Сформировано файлов: ${files.length}`);
+      logEvent(sessionId, 'Анализ завершён', `Сформировано файлов: ${files.length}`, 'info',
+        { ref: files.map((f) => journal.ref('result', f.id, f.filename)) });
       setJobStatus(sessionId, 'completed');
       // есть чертежи — работа идёт дальше сама: объекты, зоны, схема на согласование
       advanceToZones = hasCadFiles(sessionId);
@@ -276,7 +280,7 @@ function hasCadFiles(sessionId) {
  * тот же механизм прерывания: два тяжёлых расчёта одновременно положили бы
  * и LM Studio, и HTTP.
  */
-async function runStageJob(sessionId, { label, stage, work }) {
+async function runStageJob(sessionId, { label, stage, work, links = null }) {
   const session = db.prepare("SELECT * FROM sessions WHERE id = ? AND status = 'active'").get(sessionId);
   if (!session) throw Object.assign(new Error('Сессия не найдена'), { status: 404 });
   await claimSlot(sessionId); // согласование важнее ответа помощника
@@ -293,7 +297,7 @@ async function runStageJob(sessionId, { label, stage, work }) {
     prevStage = stages.get(sessionId);
     stages.set(sessionId, stage);
     setJobStatus(sessionId, 'running');
-    logEvent(sessionId, label);
+    logEvent(sessionId, label, '', 'info', links);
   } finally {
     releaseClaim(sessionId);
   }
@@ -336,6 +340,7 @@ async function startZonesStage(sessionId) {
   return runStageJob(sessionId, {
     label: 'Определение объектов и запретных зон',
     stage: 'zones',
+    links: { cause: lastNoteRef(sessionId, 'zones') },
     work: async (signal) => {
       const planSvc = require('./geometry/plan');
       const extract = require('./geometry/restriction-extract');
@@ -377,7 +382,10 @@ async function startZonesStage(sessionId) {
             ({ planId, site } = await planSvc.ensurePlan(sessionId)); // перечитываем с применённой границей
             logEvent(sessionId, 'Границы участка взяты из документа',
               `${found.points.length} характерных точек, «${found.meta.sourceDocument || 'документ'}»`
-              + (found.meta.cadastralNumber ? `, ЗУ ${found.meta.cadastralNumber}` : ''));
+              + (found.meta.cadastralNumber ? `, ЗУ ${found.meta.cadastralNumber}` : ''), 'info', {
+              ref: [journal.ref('fact', 'parcel-source', 'границы по характерным точкам'),
+                site.parcel && journal.ref('object', site.parcel.id, 'границы участка')],
+            });
           } else {
             // Теперь документ спрашивается всегда, и «таблицы нет» — обычный
             // исход для комплекта без ГПЗУ. Тревожным он остаётся только там,
@@ -431,8 +439,12 @@ async function startZonesStage(sessionId) {
       const derivedRules = extract.rulesFromFacts(sessionId);
       const allRules = extract.mergeRules(extracted.rules, derivedRules);
       if (allRules.length > extracted.rules.length) {
+        const added = allRules.slice(extracted.rules.length);
         logEvent(sessionId, 'Правила выведены из фактов без модели',
-          `добавлено ${allRules.length - extracted.rules.length}: ${derivedRules.map((r) => `${r.kind} ${r.valueM} м`).join(', ')}`);
+          `добавлено ${added.length}: ${added.map((r) => `${r.kind} ${r.valueM} м`).join(', ')}`, 'info', {
+          ref: added.map((r) => journal.ref('rule', r.id, ruleRefLabel(r))),
+          cause: journal.ref('fact', (added[0].source && added[0].source.quote || '').split(' = ')[0] || 'facts', 'факт анализа'),
+        });
       }
 
       progress.set(sessionId, { phase: 'zones', label: 'Построение зон и допустимой территории…' });
@@ -444,7 +456,11 @@ async function startZonesStage(sessionId) {
       site.buildable = built.buildable;
 
       logEvent(sessionId, 'Зоны построены',
-        `зон ${built.restrictions.length}, не построено ${built.unresolved.length}`);
+        `зон ${built.restrictions.length}, не построено ${built.unresolved.length}`, 'info', {
+        ref: [...allRules.map((r) => journal.ref('rule', r.id, ruleRefLabel(r))),
+          built.buildable && journal.ref('buildable', 'plan', `допустимая территория ${built.buildable.areaM2} м²`)],
+        cause: lastNoteRef(sessionId, 'zones'),
+      });
 
       // Сверка площади участка с документами и предупреждения разбора чертежа
       // попадают в ту же карточку: согласовывать схему, не увидев «участок
@@ -453,7 +469,8 @@ async function startZonesStage(sessionId) {
       const mismatch = stages.parcelAreaMismatch(sessionId, site);
       if (mismatch) {
         dataWarnings.push(mismatch);
-        logEvent(sessionId, 'Площадь участка расходится с документами', mismatch, 'warn');
+        logEvent(sessionId, 'Площадь участка расходится с документами', mismatch, 'warn',
+          { ref: site.parcel && journal.ref('object', site.parcel.id, 'границы участка') });
       }
       for (const w of [...(site.warnings || []), ...(built.warnings || [])]) {
         const text = typeof w === 'string' ? w : w && w.message;
@@ -466,10 +483,11 @@ async function startZonesStage(sessionId) {
       const hints = stages.manualHints(site, built);
       if (hints.length) {
         logEvent(sessionId, 'Схеме нужны указания человека',
-          hints.map((h) => h.kind).join(', '));
+          hints.map((h) => h.kind).join(', '), 'info',
+          { ref: hints.flatMap((h) => (h.objectIds || []).slice(0, 10).map((id) => journal.ref('object', id, h.kind))) });
       }
 
-      stages.addCard(sessionId, 'zones', {
+      const cardId = stages.addCard(sessionId, 'zones', {
         planId,
         manualHints: hints,
         zones: stages.zonesSummary(site),
@@ -491,7 +509,8 @@ async function startZonesStage(sessionId) {
       });
       stages.set(sessionId, 'zones_review');
       setJobStatus(sessionId, 'awaiting_approval');
-      logEvent(sessionId, 'Схема зон отправлена на согласование');
+      logEvent(sessionId, 'Схема зон отправлена на согласование', '', 'info',
+        { ref: [journal.ref('card', cardId, 'карточка согласования зон'), built.buildable && journal.ref('buildable', 'plan', 'допустимая территория')] });
     },
   });
 }
@@ -501,6 +520,7 @@ async function startVariantsStage(sessionId, requirements) {
   return runStageJob(sessionId, {
     label: 'Генерация вариантов посадки',
     stage: 'variants',
+    links: { cause: lastNoteRef(sessionId, 'variants') },
     work: async () => {
       const planSvc = require('./geometry/plan');
       const queue = require('./geometry/queue');
@@ -529,8 +549,14 @@ async function startVariantsStage(sessionId, requirements) {
         planId, requirements, criterion: 'maxArea', variants,
         stats: { перебрано: gen.tried, найдено: gen.total, отобрано: variants.length },
       });
+      const saved = runs.latestRun(sessionId);
       logEvent(sessionId, 'Сгенерированы варианты посадки',
-        `вариантов ${variants.length}, кандидатов ${gen.total}`);
+        `вариантов ${variants.length}, кандидатов ${gen.total}`, 'info', {
+        ref: [journal.ref('variant', `run-${runId}`, 'подбор вариантов'),
+          ...((saved && saved.variants) || []).map((v) => journal.ref('variant', v.id, `вариант ${v.number}`)),
+          site.buildable && journal.ref('buildable', 'plan', 'допустимая территория')],
+        cause: lastNoteRef(sessionId, 'variants'),
+      });
 
       stages.addCard(sessionId, 'variants', {
         runId, requirements, notes: [...buildNotes, ...engineNotes],
@@ -566,7 +592,9 @@ async function startDrawingStage(sessionId) {
         annotations: annotations.list(sessionId, planId),
         signal,
       });
-      for (const note of drawingNotes) logEvent(sessionId, 'Выгрузка чертежа', note, 'warn');
+      for (const note of drawingNotes) {
+        logEvent(sessionId, 'Выгрузка чертежа', note, 'warn', { ref: journal.ref('variant', variant.id, `вариант ${variant.number}`) });
+      }
 
       stages.addCard(sessionId, 'drawing', {
         variantNumber: variant.number,
@@ -575,7 +603,10 @@ async function startDrawingStage(sessionId) {
       });
       stages.set(sessionId, 'done');
       setJobStatus(sessionId, 'completed');
-      logEvent(sessionId, 'Задача завершена', `файлов ${created.length}`);
+      logEvent(sessionId, 'Задача завершена', `файлов ${created.length}`, 'info', {
+        ref: created.map((c) => journal.ref('result', c.id, c.filename)),
+        cause: journal.ref('variant', variant.id, `вариант ${variant.number}`),
+      });
     },
   });
 }

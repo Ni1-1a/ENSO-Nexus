@@ -365,6 +365,12 @@ for (const sql of [
   // без этого резюме пересоставлялось (отдельным вызовом модели) после КАЖДОГО
   // сообщения, стоило ленте перевалить за порог (2026-09-09)
   'ALTER TABLE sessions ADD COLUMN summary_msg_count INTEGER NOT NULL DEFAULT 0',
+  // Структурный журнал (07.10.2026): событие ссылается на сущности (`ref` —
+  // JSON-массив {type, id, label}) и на причину (`cause` — JSON-объект той же
+  // формы: замечание, правка, решение человека). Старые строки остаются
+  // пустыми и читаются как прежде; пишет и читает services/journal.js.
+  "ALTER TABLE events ADD COLUMN ref TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE events ADD COLUMN cause TEXT NOT NULL DEFAULT ''",
 ]) {
   try { db.exec(sql); } catch { /* колонка уже есть */ }
 }
